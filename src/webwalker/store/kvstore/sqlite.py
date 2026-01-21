@@ -1,33 +1,28 @@
 from __future__ import annotations
 
+import os
 import bz2
 import json
 import sqlite3
 import tarfile
 from dataclasses import dataclass
-from typing import Optional, Iterable, Callable
-from webwalker.type import AnyHashable as K, AnyObj as V
-from webwalker.store.protocol import KVStore
+from typing import Optional, Callable
 
 from rich.progress import (
 	Progress, SpinnerColumn, TextColumn, BarColumn,
-	MofNCompleteColumn, TimeElapsedColumn, TimeRemainingColumn
+	TimeElapsedColumn, TimeRemainingColumn
 )
-import logging
-logger = logging.getLogger(__name__)
+
+from webwalker.store.protocol import KVStore
+from webwalker.type import AnyHashable as K, AnyObj as V
 
 
 def _iter_jsonl_from_inner_bz2(inner_file, encoding: str = "utf-8"):
-	"""
-	inner_fileobj: file-like object containing *bz2-compressed* JSONL bytes
-	yields decoded JSON objects line by line (streaming).
-	"""
 	decomp = bz2.BZ2Decompressor()
 	buf = b""
 	while True:
 		chunk = inner_file.read(1 << 20)  # 1MB
 		if not chunk:
-			# flush remaining
 			if buf.strip():
 				for line in buf.split(b"\n"):
 					if line.strip():
@@ -66,30 +61,15 @@ class SQLiteKVStore(KVStore[K, V]):
 			commit_every: int = 5000,
 			member_pred: Optional[Callable[[str], bool]] = None,
 	) -> "SQLiteKVStore":
-		
 		store = cls(db_path=db_path, table=table)
 		
-		# 1) 预扫描 members（不解压内容）
-		logger.info(f"Scanning tar for members matching {member_pred or 'all'}...")
-		with tarfile.open(tar_bz2_path, "r:bz2") as tf:
-			members = [
-				m for m in tf.getmembers()
-				if	m.isfile()
-					and m.name.endswith(".bz2")
-					and (member_pred(m.name) if member_pred else True)
-			]
+		total_bytes = os.path.getsize(tar_bz2_path)
 		
-		total_files = len(members)
-		logger.info(f"Found {total_files} matching members.")
-		if total_files == 0:
-			raise ValueError("No matching .bz2 members found in tar.")
-		
-		# 2) 真正构建：一边处理一边显示进度
 		progress = Progress(
 			SpinnerColumn(),
 			TextColumn("[bold]{task.description}[/bold]"),
 			BarColumn(),
-			MofNCompleteColumn(),
+			TextColumn("{task.percentage:>6.2f}%"),
 			TextColumn("•"),
 			TimeElapsedColumn(),
 			TextColumn("•"),
@@ -98,63 +78,64 @@ class SQLiteKVStore(KVStore[K, V]):
 			TextColumn("[cyan]{task.fields[detail]}[/cyan]"),
 		)
 		
-		files_task = progress.add_task("members", total=total_files, detail="")
-		rows_task = progress.add_task("rows", total=None, detail="")  # total unknown
+		bytes_task = progress.add_task("tar bytes", total=total_bytes, detail="")
+		rows_task = progress.add_task("rows", total=None, detail="")  # unknown total
+		files_task = progress.add_task("members", total=None, detail="")
 		
 		with progress:
-			with sqlite3.connect(db_path) as conn, tarfile.open(tar_bz2_path, "r:bz2") as tf:
+			with sqlite3.connect(db_path) as conn:
 				cur = conn.cursor()
-				
 				batch: list[tuple[str, str]] = []
-				rows_written = 0
-				logger.info(f"Processing {total_files} files...")
-				for i, m in enumerate(members, start=1):
-					f = tf.extractfile(m)
-					if f is None:
-						progress.update(files_task, advance=1, detail=f"skip: {m.name}")
-						continue
-					
-					progress.update(files_task, detail=m.name)
-					
-					for obj in _iter_jsonl_from_inner_bz2(f, encoding=encoding):
-						k = key_fn(obj)
-						v = val_fn(obj)
-						batch.append((k, json.dumps(v, ensure_ascii=False)))
-						rows_written += 1
-						
-						if rows_written % commit_every == 0:
-							cur.executemany(
-								f"INSERT OR REPLACE INTO {table}(k, v) VALUES (?, ?)",
-								batch,
-							)
-							conn.commit()
-							batch.clear()
-							
-							# rows 进度：用 advance 更新（更准确显示速率）
-							progress.update(rows_task, advance=commit_every, detail=f"last commit @ {rows_written:,}")
-					
-					# 每处理完一个 member，推进文件进度
-					progress.update(files_task, advance=1)
+				rows = 0
 				
-				# flush remaining
-				if batch:
-					cur.executemany(
-						f"INSERT OR REPLACE INTO {table}(k, v) VALUES (?, ?)",
-						batch,
-					)
-					conn.commit()
-					progress.update(rows_task, advance=len(batch), detail=f"final commit (+{len(batch)})")
-					batch.clear()
-		logger.info("Done!")
+				# 用 fileobj + r|bz2 真流式：不构建 member 列表
+				with open(tar_bz2_path, "rb") as raw, tarfile.open(fileobj=raw, mode="r|bz2") as tf:
+					last_pos = raw.tell()
+					
+					for m in tf:
+						# 更新压缩包字节进度（位置变化是“已读取的压缩字节”）
+						pos = raw.tell()
+						if pos > last_pos:
+							progress.update(bytes_task, advance=(pos - last_pos))
+							last_pos = pos
+						
+						if not m.isfile():
+							continue
+						if not m.name.endswith(".bz2"):
+							continue
+						if member_pred is not None and not member_pred(m.name):
+							continue
+						
+						progress.update(bytes_task, detail=m.name)
+						progress.update(files_task, advance=1, detail=m.name)
+						
+						f = tf.extractfile(m)
+						if f is None:
+							continue
+						
+						for obj in _iter_jsonl_from_inner_bz2(f, encoding=encoding):
+							k = key_fn(obj)
+							v = val_fn(obj)
+							batch.append((k, json.dumps(v, ensure_ascii=False)))
+							rows += 1
+							
+							if rows % commit_every == 0:
+								cur.executemany(
+									f"INSERT OR REPLACE INTO {table}(k, v) VALUES (?, ?)",
+									batch,
+								)
+								conn.commit()
+								batch.clear()
+								progress.update(rows_task, advance=commit_every, detail=f"{rows:,}")
+					
+					# flush remaining
+					if batch:
+						cur.executemany(
+							f"INSERT OR REPLACE INTO {table}(k, v) VALUES (?, ?)",
+							batch,
+						)
+						conn.commit()
+						progress.update(rows_task, advance=len(batch), detail=f"{rows:,}")
+						batch.clear()
+		
 		return store
-
-
-def get(self, key: str) -> Optional[dict]:
-	with sqlite3.connect(self.db_path) as conn:
-		row = conn.execute(
-			f"SELECT v FROM {self.table} WHERE k = ?",
-			(key,),
-		).fetchone()
-	if row is None:
-		return None
-	return json.loads(row[0])
