@@ -13,6 +13,8 @@ from rich.progress import (
 	Progress, SpinnerColumn, TextColumn, BarColumn,
 	MofNCompleteColumn, TimeElapsedColumn, TimeRemainingColumn
 )
+import logging
+logger = logging.getLogger(__name__)
 
 
 def _iter_jsonl_from_inner_bz2(inner_file, encoding: str = "utf-8"):
@@ -68,6 +70,7 @@ class SQLiteKVStore(KVStore[K, V]):
 		store = cls(db_path=db_path, table=table)
 		
 		# 1) 预扫描 members（不解压内容）
+		logger.info(f"Scanning tar for members matching {member_pred or 'all'}...")
 		with tarfile.open(tar_bz2_path, "r:bz2") as tf:
 			members = [
 				m for m in tf.getmembers()
@@ -77,6 +80,7 @@ class SQLiteKVStore(KVStore[K, V]):
 			]
 		
 		total_files = len(members)
+		logger.info(f"Found {total_files} matching members.")
 		if total_files == 0:
 			raise ValueError("No matching .bz2 members found in tar.")
 		
@@ -103,7 +107,7 @@ class SQLiteKVStore(KVStore[K, V]):
 				
 				batch: list[tuple[str, str]] = []
 				rows_written = 0
-				
+				logger.info(f"Processing {total_files} files...")
 				for i, m in enumerate(members, start=1):
 					f = tf.extractfile(m)
 					if f is None:
@@ -141,7 +145,7 @@ class SQLiteKVStore(KVStore[K, V]):
 					conn.commit()
 					progress.update(rows_task, advance=len(batch), detail=f"final commit (+{len(batch)})")
 					batch.clear()
-		
+		logger.info("Done!")
 		return store
 
 
