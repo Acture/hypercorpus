@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-webwalker = "webwalker.cli:app"
+webwalker = "webwalker-cli:app"
 
 [build-system]
 requires = ["uv>=0.5.26,<0.6"]
