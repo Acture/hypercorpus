@@ -12,3 +12,4 @@ dataset
 graphrag/logs
 graphrag/cache
 graphrag/output
+*.db
