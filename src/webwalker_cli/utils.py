@@ -4,6 +4,8 @@ import csv
 import json
 from pathlib import Path
 from typing import Optional
+
+from webwalker.store.kvstore.sqlite import SQLiteKVStore
 from webwalker.utils.jsonl2csv import jsonl_to_csv as jsonl2csv_impl
 from webwalker.utils.fetch_wiki import fetch_wiki as fetch_wiki_impl
 
@@ -53,3 +55,22 @@ def fetch_wiki(
 	Fetch Wikipedia articles and save to JSONL file.
 	"""
 	fetch_wiki_impl(output_file, target_count, min_char_length)
+
+
+
+@utils_app.command("hotqa2db")
+def hotqa2db(
+		db_path: Path = typer.Argument(..., dir_okay=False, writable=True),
+		tar_bz2_path: Path = typer.Argument(..., dir_okay=False, exists=True),
+		table: str = typer.Option("hotqa", help="SQLite table name"),
+		key_name: str = typer.Option("title", help="SQLite column name for key"),
+):
+	"""
+	Fetch Wikipedia articles and save to JSONL file.
+	"""
+	store = SQLiteKVStore.build_from_tar_bz2(
+		str(db_path.resolve()),
+		tar_bz2_path=str(tar_bz2_path.resolve()),
+		table=table,
+		key_fn=lambda o: o[key_name],
+	)
