@@ -7,7 +7,9 @@ authors = [
     { name = "acture", email = "acturea@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "graphrag>=2.7.0",
+]
 
 [project.scripts]
 webwalker = "webwalker:main"
