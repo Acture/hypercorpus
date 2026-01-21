@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Hashable, Protocol, TypeVar, runtime_checkable, Sequence
+from typing import Any, Dict, Protocol, runtime_checkable, Sequence
 
 from webwalker.type import AnyHashable as T
 

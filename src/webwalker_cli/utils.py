@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import csv
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -74,3 +72,5 @@ def hotqa2db(
 		table=table,
 		key_fn=lambda o: o[key_name],
 	)
+	
+	logger.info(f"Loaded {len(store)} items into {db_path}")

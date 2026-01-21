@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import math
 
 from .protocol import GraphLike, EmbeddedGraphLike
-from typing import Any, Dict, Hashable, Protocol, TypeVar, runtime_checkable, Generic, Sequence
+from typing import Protocol, Generic, Sequence
 from webwalker.type import AnyHashable as T
 
 

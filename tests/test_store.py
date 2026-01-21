@@ -2,7 +2,6 @@ from pathlib import Path
 
 from webwalker.store.kvstore.sqlite import SQLiteKVStore
 
-from pytest import fixture
 
 
 def test_build_from_bz(project_dir: Path, hotqa_dir: Path):

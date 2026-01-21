@@ -1,4 +1,4 @@
-from typing import Any, Dict, Hashable, Protocol, TypeVar, runtime_checkable, Sequence
+from typing import Any, Hashable, TypeVar
 
 AnyObj = TypeVar("AnyObj", bound=Any)
 AnyHashable = TypeVar("AnyHashable", bound=Hashable)

@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_wiki(output_file: Path, target_count: int, min_char_length=None):
-	logger.info(f"Loading wikimedia/wikipedia (20231101.en)...")
+	logger.info("Loading wikimedia/wikipedia (20231101.en)...")
 	
 	# 使用 streaming=True，避免下载几十GB的数据
 	# "20231101.en" 是目前常用的英文版本，如果你测中文请改为 "20231101.zh"
