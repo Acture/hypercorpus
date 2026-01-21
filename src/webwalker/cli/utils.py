@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+import csv
+import json
+from pathlib import Path
+from typing import Optional
+from webwalker.utils.jsonl2csv import jsonl_to_csv as jsonl2csv_impl
+from webwalker.utils.fetch_wiki import fetch_wiki as fetch_wiki_impl
+
+import typer
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+utils_app = typer.Typer(
+	name="webwalker utils",
+	help="webwalker utilities",
+	add_completion=False,
+)
+
+
+@utils_app.command("jsonl2csv")
+def jsonl2csv(
+		in_path: Path = typer.Argument(..., exists=True, dir_okay=False),
+		out_path: Path = typer.Argument(..., dir_okay=False),
+		*,
+		id_key: str = typer.Option("id", help="JSON key for id"),
+		title_key: str = typer.Option("title", help="JSON key for title"),
+		url_key: str = typer.Option("url", help="JSON key for url"),
+		text_key: str = typer.Option("text", help="JSON key for text (list[str] or str)"),
+		encoding: str = typer.Option("utf-8", help="File encoding"),
+):
+	"""
+	Convert JSONL -> CSV (id,title,url,curid,text).
+	"""
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	
+	jsonl2csv_impl(
+		in_path, out_path,
+		{id_key: "id", title_key: "title", url_key: "url", text_key: "text"},
+		encoding=encoding
+	)
+
+
+@utils_app.command("fetch_wiki")
+def fetch_wiki(
+		output_file: Path = typer.Argument(..., dir_okay=False),
+		target_count: int = typer.Option(100, "-c", "--count", help="Number of articles to fetch"),
+		min_char_length: Optional[int] = typer.Option(None, help="Minimum character length for article text"),
+):
+	"""
+	Fetch Wikipedia articles and save to JSONL file.
+	"""
+	fetch_wiki_impl(output_file, target_count, min_char_length)

@@ -4,15 +4,17 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "acture", email = "acturea@gmail.com" }
+	{ name = "acture", email = "acturea@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "graphrag>=2.7.0",
+	"datasets>=4.5.0",
+	"graphrag>=2.7.0",
+	"pandas>=2.3.3",
 ]
 
 [project.scripts]
-webwalker = "webwalker:main"
+webwalker = "webwalker.cli:app"
 
 [build-system]
 requires = ["uv>=0.5.26,<0.6"]

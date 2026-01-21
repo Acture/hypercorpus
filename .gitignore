@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 dataset
+graphrag/logs
+graphrag/cache
+graphrag/output
