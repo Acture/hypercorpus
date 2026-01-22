@@ -60,7 +60,7 @@ def fetch_wiki(
 def hotqa2db(
 		db_path: Path = typer.Argument(..., dir_okay=False, writable=True),
 		tar_bz2_path: Path = typer.Argument(..., dir_okay=False, exists=True),
-		table: str = typer.Option("hotqa", help="SQLite table name"),
+		table: str = typer.Option("hotqa", "-t", "--table", help="SQLite table name"),
 		key_name: str = typer.Option("title", help="SQLite column name for key"),
 ):
 	"""
@@ -73,4 +73,6 @@ def hotqa2db(
 		key_fn=lambda o: o[key_name],
 	)
 	
-	logger.info(f"Loaded {len(store)} items into {db_path}")
+	assert store is not None
+	
+	logger.info(f"Loaded into {db_path}")
