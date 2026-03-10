@@ -1,28 +1,35 @@
-# Core Research Direction: Semantic Link-Guided Graph Walking & Subgraph Screening
+# Core Research Direction: Semantic Link-Guided Corpus Selection Before RAG
 
 ## The Problem
-There are two major blind spots in current knowledge-graph retrieval methods:
+There are two major blind spots in current retrieval pipelines over linked corpora:
 1. **The GraphRAG Extraction Bottleneck**: Microsoft's GraphRAG requires "eager" information extraction over the entire corpus using large, expensive LLMs to build an entity-relation graph from scratch. This process is excessively slow and costly, especially since it completely ignores the existing, natural graph structure of documents.
-2. **The Neglect of Natural Semantic Links**: Many document corpora (like Wikipedia, internal wikis, or the broader web) are *already naturally connected* by hyperlinks. Traditional graph algorithms (like PageRank or Random Walk) utilize the topology of these links but ignore their rich semantics (e.g., anchor text, surrounding context). Conversely, GraphRAG extracts semantics but ignores the existing natural hyperlink topology, preferring to rebuild a graph from scratch.
+2. **The Weakness of Dense Top-k as a Corpus Selector**: Dense retrieval gives a fast ranked list, but it treats documents as isolated items. It usually misses bridge documents and throws away the semantic value embedded in the hyperlinks themselves.
+3. **The Neglect of Natural Semantic Links**: Many document corpora (like Wikipedia, internal wikis, or the broader web) are *already naturally connected* by hyperlinks. Traditional graph algorithms (like PageRank or Random Walk) use topology but ignore the rich semantics of links such as anchor text and surrounding sentence context.
 
-## Proposed Solution: Semantic Link-Guided Walker + Small LLM Subgraph Screening
-We propose leveraging the **naturally existing document hyperlink graph**, enriched with local semantic context, to perform "Lazy" Subgraph Screening. 
+## Proposed Solution: Semantic Link-Guided Corpus Selector
+We propose using the **naturally existing document hyperlink graph**, enriched with local link semantics, as a query-time corpus selector before downstream RAG or GraphRAG.
 
-1. **Semantic Link-Guided Walking (The Navigator)**: Instead of a blind topological walk or rebuilding the graph, a highly optimized, lightweight mechanism (like a small SLM, RL agent, or context-aware GNN) "walks" the *natural document hyperlink graph*. At each node (document), the walker examines the outgoing hyperlinks and their **semantic context** (the anchor text and surrounding sentence) to decide the most promising path to resolve the query.
-2. **Small LLM Subgraph Screening (The Filter)**: As the walker traverses these semantically-rich natural links, it uses a fast, small LLM (e.g., Llama-3-8B, Qwen-2.5-7B) to quickly screen and extract fine-grained entities/relations *only* for the documents visited on the path. This creates a highly relevant, query-specific "subgraph."
-3. **Targeted GraphRAG (The Solver)**: A more capable LLM then applies GraphRAG-style reasoning (like community summarization or global path reasoning) strictly on this dynamically extracted, highly condensed subgraph to synthesize the final answer.
+1. **Semantic Link-Guided Selection (The Selector)**: Instead of a blind topological walk or a dense top-k over isolated documents, a lightweight selector operates directly on the natural hyperlink graph. At query time it scores links using anchor text and local sentence context, then expands a budgeted subgraph using path search and local diffusion.
+2. **Lazy Subgraph Construction (The Filter)**: Only the selected documents are passed downstream. This avoids global eager extraction and yields a smaller, query-specific subgraph for later reasoning.
+3. **Targeted RAG / GraphRAG (The Solver)**: A downstream answer stage then consumes only the selected corpus. The selector therefore becomes the true optimization target: how to maximize support recall and bridge recall under a fixed budget.
 
 ## Key Research Questions & Contributions
 
-1. **Unlocking Natural Semantics vs. Eager Extraction**: By utilizing native document hyperlinks and their contextual semantics for navigation, can we bypass the need for GraphRAG's exorbitant full-corpus indexing phase while maintaining >90% of its multi-hop QA accuracy?
-2. **Efficiency vs. Accuracy**: Does "Lazy" path-bound extraction by a 7B-class LLM provide a dense enough subgraph for targeted GraphRAG, compared to the global pass done by GPT-4-class models?
-3. **Walker Policy Design (The "Web Walker")**: What is the optimal policy for evaluating semantic links? Does reinforcement learning (RL) guided by QA reward out-perform LLM zero-shot routing when deciding which hyperlinks to follow based on anchor text?
+1. **Natural Links vs. Eager GraphRAG**: Can link-semantic corpus selection avoid GraphRAG's full-corpus indexing cost while preserving or improving downstream answer quality?
+2. **Natural Links vs. Dense Top-k**: Can a query-time selector recover more support documents and bridge documents than dense top-k at the same or lower token budget?
+3. **Controllability**: Does an explicit selector with hop, node, and token budgets provide a better recall-cost tradeoff than dense retrieval or eager global extraction?
+4. **Selector Policy Design**: Which selection policy works best over semantic hyperlinks: beam search, A*-like best-first search, greedy best-first, uniform-cost search, PPR, or hybrid path-plus-diffusion variants?
 
 ## Proposed Implementation Plan in `webwalker`
 - **Link Context Parsing**: Update the data ingestion pipeline (handling `2wikimultihop`/`musique`) to preserve not just the document text, but the outgoing hyperlinks and the semantic context (sentences) surrounding those links.
 - **Anchor Selection (`candidate.policy`)**: Select initial starting documents using fast dense retrieval (`SelectByCosTopK`).
-- **Semantic Walker Module (`webwalker`)**: Implement a new `DynamicWalker` class that:
-  - Reads the current document's outgoing semantic links.
-  - Scores which web link to walk next based on the user's multi-hop query.
-  - Passes the visited documents to a small, local LLM to extract the targeted subgraph.
-- **Evaluation**: Compare `webwalker` against standard GraphRAG (which rebuilds the graph ignoring natural links) and traditional RAG in aspects of **Time-to-First-Answer**, **Total Token Cost**, and **Exact Match (EM) Score** on multi-hop benchmarks.
+- **Corpus Selector Module (`webwalker.selector`)**: Implement selector policies that:
+  - Read outgoing semantic links.
+  - Expand a budgeted candidate corpus using link semantics rather than document-only similarity.
+  - Emit a weighted subgraph for downstream RAG / GraphRAG.
+- **Evaluation**: Compare selector policies against dense top-k and a local eager GraphRAG-style baseline using:
+  - support document recall
+  - bridge document recall
+  - token cost
+  - recall at fixed budget
+  - downstream EM/F1 as a secondary check

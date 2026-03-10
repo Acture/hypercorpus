@@ -4,9 +4,9 @@
 
 `webwalker` is currently a research prototype for validating a specific retrieval hypothesis:
 
-`query -> anchor retrieval -> semantic graph walk -> lazy subgraph extraction -> answer synthesis -> evaluation`
+`query -> anchor retrieval -> corpus selection over semantic hyperlinks -> lazy subgraph extraction -> answer synthesis -> evaluation`
 
-The implementation is local, heuristic, and testable without network calls. It is meant to make the research loop concrete before introducing small LLMs or full GraphRAG orchestration.
+The implementation is local, heuristic, and testable without network calls. The current center of gravity is no longer "build a walker," but "optimize the corpus selector that runs before downstream RAG or GraphRAG."
 
 ## What Is Implemented
 
@@ -24,18 +24,28 @@ The implementation is local, heuristic, and testable without network calls. It i
 - `SelectByCosTopK` now returns node ids only, not `(node, score)` tuples.
 - Helper functions in `webwalker.candidate` expose both the ranked list and the single best start node.
 
-### 3. Query-time walker
+### 3. Query-time corpus selector
 
-- `DynamicWalker.walk(...)` executes a greedy semantic walk over outgoing links.
-- `WalkBudget` controls max steps, revisit policy, and minimum edge score.
-- `WalkResult` records ordered steps, visited nodes, and an explicit stop reason.
-- Current edge scoring is lexical and local:
+- `selector.py` is now the primary query-time selection layer.
+- Implemented selector families:
+  - semantic beam search
+  - semantic A*-like best-first search
+  - semantic greedy best-first search
+  - semantic uniform-cost search
+  - semantic personalized PageRank
+  - hybrid pathfinding + PPR variants
+- Selection is budgeted by node count, hop count, and token count.
+- The main scoring signal comes from link semantics only:
   - anchor overlap with query
   - surrounding sentence overlap with query
-  - target title overlap with query
-  - novelty bonus for unseen nodes
+- The output is a weighted, query-specific subgraph candidate set rather than a single path.
 
-### 4. Lazy subgraph extraction
+### 4. Legacy walker baseline
+
+- `DynamicWalker.walk(...)` remains in the repo as a greedy baseline.
+- It is still useful as a cheap reference point, but it is no longer the main abstraction for research progress.
+
+### 5. Lazy subgraph extraction
 
 - `SubgraphExtractor.extract(...)` only reads from visited nodes.
 - It emits:
@@ -44,7 +54,7 @@ The implementation is local, heuristic, and testable without network calls. It i
 - Unvisited targets are filtered unless the edge itself is query-relevant through anchor or target-title overlap.
 - This keeps the extracted subgraph query-bounded rather than expanding back into eager global indexing.
 
-### 5. Answer synthesis
+### 6. Answer synthesis
 
 - `Answerer.answer(...)` produces:
   - `answer`
@@ -56,30 +66,42 @@ The implementation is local, heuristic, and testable without network calls. It i
   - capitalized phrase extraction is used for `who` / `where`-style questions
 - This is enough to validate pipeline behavior and regression-test the research scaffold.
 
-### 6. Evaluation orchestrator
+### 7. Evaluation orchestrator
 
-- `Evaluator` runs three local pipelines over the same graph and case:
-  - `webwalker`
+- `Evaluator` now runs a selector-centric experiment matrix over the same graph and case:
   - `dense_rag`
   - `baseline_graphrag`
-- `baseline_graphrag` is intentionally a local stand-in, not Microsoft GraphRAG proper.
+  - `webwalker` as a legacy greedy baseline
+  - selector-family standalone pipelines
+  - selector-family hybrid-with-PPR pipelines
+- `baseline_graphrag` is intentionally a local eager stand-in, not Microsoft GraphRAG proper.
 - Reported metrics:
+  - support recall
+  - support precision
+  - selected nodes
+  - selected links
+  - tokens per recalled support document
+  - coverage ratio
   - runtime
   - time-to-first-answer
   - token-cost estimate
   - visited steps
   - exact-match correctness when an expected answer is provided
+- `CaseEvaluation.selection_report()` sorts results selector-first, prioritizing:
+  - higher support recall
+  - lower token cost
+  - higher coverage ratio
 
-### 7. Corpus storage
+### 8. Corpus storage
 
 - `SQLiteKVStore` now supports `get(...)` for query-time document access.
 - `build_from_tar_bz2(...)` remains the streaming ingest path for large Hotpot-style Wikipedia archives.
 
 ## What Is Still Not Implemented
 
-- small-LLM path-bound graph extraction
+- model-backed selector scoring and heuristics
 - full GraphRAG integration as the answer backend
-- training or RL-based walker policies
+- training or RL-based selector policies
 - real benchmark runners over HotpotQA / MuSiQue / 2Wiki question sets
 - open-web crawling or online serving
 
@@ -103,9 +125,19 @@ The repo now uses fast synthetic tests instead of requiring the real corpora for
 ### Walker tests
 
 - `test_walker.py`
-  - verifies next-hop selection on a small semantic graph
+  - verifies the legacy greedy baseline still behaves as expected
   - verifies cycle avoidance
   - verifies stop conditions for dead ends and low-confidence edges
+
+### Selector tests
+
+- `test_selector.py`
+  - verifies the weighted-subgraph contract
+  - verifies budget presets
+  - verifies beam search keeps bridge paths
+  - verifies A* / GBFS / UCS produce distinct priority behavior
+  - verifies semantic PPR prefers relevant branches over noisy hubs
+  - verifies hybrid selection improves support recall in a synthetic case
 
 ### Subgraph and answer tests
 
@@ -116,9 +148,9 @@ The repo now uses fast synthetic tests instead of requiring the real corpora for
 ### Evaluation smoke test
 
 - `test_eval.py`
-  - verifies all three pipelines run
+  - verifies the full selector matrix runs
   - verifies metrics are present
-  - verifies the `webwalker` pipeline returns the expected answer on the synthetic graph
+  - verifies selection reporting is available and ordered around recall and cost
 
 ### Storage tests
 
@@ -130,5 +162,6 @@ The repo now uses fast synthetic tests instead of requiring the real corpora for
 
 - The repo is an offline research sandbox.
 - Natural hyperlinks are the primary graph structure.
-- The current answerer and baselines are heuristic placeholders designed to preserve the architecture and keep tests cheap.
-- The next implementation layer should swap heuristics for model-backed components without changing the graph, walk, subgraph, and evaluation interfaces.
+- The corpus selector is the primary optimization target.
+- The current answerer and baselines are heuristic placeholders designed to keep downstream validation cheap.
+- The next implementation layer should swap heuristics for model-backed selector components without changing the graph, selector, subgraph, and evaluation interfaces.
