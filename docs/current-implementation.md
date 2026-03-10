@@ -77,27 +77,63 @@ The implementation is local, heuristic, and testable without network calls. The 
 
 - `load_2wiki_graph(...)` reads hyperlink paragraph JSONL and builds a title-keyed `LinkContextGraph`.
 - `load_2wiki_questions(...)` reads the question JSON and maps supporting facts into evaluation metadata.
+- `prepare_2wiki_store(...)` converts local raw files or URL sources into:
+  - `manifest.json`
+  - `questions/{train,dev,test}.json`
+  - `index/catalog.sqlite`
+  - `shards/part-*.jsonl.gz`
+- `ShardedLinkContextStore` keeps the selector runtime off the full raw graph:
+  - metadata and retrieval come from `catalog.sqlite`
+  - document sentences are loaded lazily from the selected shard
 - `run_2wiki_experiment(...)` runs the selector matrix over a batch of cases and writes:
   - `results.jsonl`
   - `summary.json`
   - GraphRAG-compatible CSV slices under `graphrag_inputs/`
+- `run_2wiki_store_experiment(...)` runs the same selector matrix against a prepared store and writes chunked outputs under `runs/<exp>/chunks/<chunk-id>/`
 - The CLI entrypoint is:
   - `webwalker-cli experiments run-2wiki ...`
+  - `webwalker-cli experiments run-2wiki-store ...`
+  - `webwalker-cli experiments merge-2wiki-results ...`
+  - `webwalker-cli datasets fetch-2wiki ...`
+  - `webwalker-cli datasets prepare-2wiki-store ...`
+  - `webwalker-cli datasets inspect-2wiki-store ...`
+  - `webwalker-cli datasets write-2wiki-sample ...`
 - The output schema is selector-first:
   - each record contains nested `selection`
   - each record may optionally contain `end_to_end`
   - each record is keyed by selector and budget ratio
 
-### 7. Lazy extraction and secondary end-to-end QA
+### 7. Dataset fetch workflow
+
+- `fetch-2wiki` keeps question files and the large hyperlink graph separate.
+- Default fetch behavior is question-only so the large shared graph download stays explicit.
+- `inspect-2wiki-store` reports:
+  - local raw data availability
+  - local store/cache state
+  - free disk space
+  - remote raw archive sizes when they are discoverable
+  - a recommended next action
+- Extracted layout is stable:
+  - `questions/<split>.json`
+  - `graph/para_with_hyperlink.jsonl`
+- `prepare-2wiki-store` adds hard space guards and defaults to `--no-keep-raw`.
+- `write-2wiki-sample` writes a tiny smoke dataset in the same layout, so the experiment CLI can be tested without network or large downloads.
+
+### 8. Lazy extraction and secondary end-to-end QA
 
 - `SubgraphExtractor.extract(...)` only reads from selected nodes.
 - `Answerer.answer(...)` remains heuristic and local.
 - End-to-end answer quality is still produced because reviewers will likely want it, but it is treated as secondary evidence rather than the primary claim.
 
-### 8. Corpus storage
+### 9. Corpus storage
 
 - `SQLiteKVStore` supports `get(...)` for query-time document access.
 - `build_from_tar_bz2(...)` remains the streaming ingest path for large Hotpot-style Wikipedia archives.
+- `TwoWikiStoreManifest` and `catalog.sqlite` now provide the selector runtime with:
+  - node -> shard mapping
+  - lightweight full-corpus retrieval
+  - link-context lookup without loading the full raw graph
+- `LocalDirectoryStore` and `S3CompatibleObjectStore` share the same `ObjectStore` contract so a prepared store can live on local disk or behind an `s3://` URI.
 
 ## What Is Still Not Implemented
 
@@ -152,9 +188,20 @@ The repo uses fast synthetic tests instead of requiring the real corpora for bas
   - verifies selector x budget output files
   - verifies `summary.json` grouping and full-corpus proxy accounting
   - verifies GraphRAG-compatible CSV export
+  - verifies chunked store-backed runs and merged summaries
 - `test_cli_experiments.py`
   - verifies the Typer CLI command works end to end on a tiny sample
   - verifies `--budget-ratios`, `--no-e2e`, and `--no-export-graphrag-inputs`
+  - verifies `run-2wiki-store` and `merge-2wiki-results`
+- `test_dataset_fetch.py`
+  - verifies split-specific 2Wiki extraction, archive retention, and the sample dataset writer
+  - verifies the prepare flow rejects unsafe free-space configurations
+- `test_cli_datasets.py`
+  - verifies dataset fetch and sample writer CLI flows without external network access
+  - verifies store prepare and inspect commands
+- `test_twowiki_store.py`
+  - verifies manifest/catalog/shard generation
+  - verifies lazy shard loading and mocked remote-store downloads
 
 ### Storage tests
 
