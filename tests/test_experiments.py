@@ -1,7 +1,13 @@
 import csv
 import json
 
-from webwalker.experiments import parse_budget_ratios, parse_selector_names, run_2wiki_experiment
+from webwalker.experiments import (
+    merge_2wiki_results,
+    parse_budget_ratios,
+    parse_selector_names,
+    run_2wiki_experiment,
+    run_2wiki_store_experiment,
+)
 
 
 def test_parse_selector_names_handles_empty_values():
@@ -122,3 +128,56 @@ def test_run_2wiki_experiment_can_disable_e2e_and_export(two_wiki_files, tmp_pat
     first_record = json.loads((output_dir / "results.jsonl").read_text(encoding="utf-8").strip())
     assert first_record["end_to_end"] is None
     assert first_record["selection"]["graphrag_input_path"] is None
+
+
+def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store, tmp_path):
+    evaluations, summary, chunk_dir = run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot",
+        chunk_size=1,
+        chunk_index=0,
+        selector_names=["webwalker_selector", "eager_full_corpus_proxy"],
+        budget_ratios=[0.10, 1.0],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert len(evaluations) == 1
+    assert summary.total_cases == 1
+    assert chunk_dir == tmp_path / "runs" / "pilot" / "chunks" / "chunk-00000"
+    assert (chunk_dir / "results.jsonl").exists()
+    assert (chunk_dir / "summary.json").exists()
+    assert (chunk_dir / "chunk.json").exists()
+
+
+def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared_two_wiki_store, tmp_path):
+    run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot",
+        chunk_size=1,
+        chunk_index=0,
+        selector_names=["dense_topk"],
+        budget_ratios=[0.10],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+    run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot",
+        chunk_size=1,
+        chunk_index=1,
+        selector_names=["dense_topk"],
+        budget_ratios=[0.10],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    summary, missing = merge_2wiki_results(run_dir=tmp_path / "runs" / "pilot")
+
+    assert summary.total_cases == 2
+    assert missing == []
+    assert (tmp_path / "runs" / "pilot" / "results.jsonl").exists()
+    assert (tmp_path / "runs" / "pilot" / "summary.json").exists()
