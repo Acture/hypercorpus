@@ -36,6 +36,11 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "webwalker" / "2wiki"
 
 logger = logging.getLogger(__name__)
 
+STORE_STATE_PATHS: tuple[str, ...] = (
+    "manifest.json",
+    "index/catalog.sqlite",
+)
+
 
 @dataclass(slots=True)
 class StoreObjectInfo:
@@ -526,6 +531,11 @@ def prepare_2wiki_store(
     )
     if overwrite and output_root.exists():
         shutil.rmtree(output_root)
+    elif _has_existing_store_state(output_root):
+        raise RuntimeError(
+            f"Output directory already contains a prepared or partial 2Wiki store: {output_root}. "
+            "Re-run with --overwrite or choose a different --output-dir."
+        )
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "questions").mkdir(parents=True, exist_ok=True)
     (output_root / "index").mkdir(parents=True, exist_ok=True)
@@ -1137,6 +1147,21 @@ def _find_member_by_basename(names: Iterable[str], basename: str) -> str | None:
         if Path(name).name == basename:
             return name
     return None
+
+
+def _has_existing_store_state(path: Path) -> bool:
+    if not path.exists():
+        return False
+    for relative in STORE_STATE_PATHS:
+        if (path / relative).exists():
+            return True
+    shards_dir = path / "shards"
+    if shards_dir.exists() and any(shards_dir.iterdir()):
+        return True
+    questions_dir = path / "questions"
+    if questions_dir.exists() and any(questions_dir.glob("*.json")):
+        return True
+    return False
 
 
 def _iter_records_with_progress(

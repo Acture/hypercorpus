@@ -119,3 +119,27 @@ def test_inspect_2wiki_store_cli_reports_recommendation(tmp_path):
 
     assert result.exit_code == 0, result.stdout
     assert "recommended_action -> use-local-raw" in result.stdout
+
+
+def test_prepare_2wiki_store_cli_rejects_existing_partial_output(two_wiki_archives, tmp_path):
+    questions_zip, graph_zip = two_wiki_archives
+    output_dir = tmp_path / "existing-store"
+    (output_dir / "index").mkdir(parents=True)
+    (output_dir / "index" / "catalog.sqlite").write_text("partial", encoding="utf-8")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "datasets",
+            "prepare-2wiki-store",
+            "--output-dir",
+            str(output_dir),
+            "--questions-source",
+            questions_zip.as_uri(),
+            "--graph-source",
+            graph_zip.as_uri(),
+        ],
+    )
+
+    assert result.exit_code != 0

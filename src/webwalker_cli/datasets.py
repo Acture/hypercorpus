@@ -100,14 +100,17 @@ def prepare_2wiki_store_cli(
     console = Console()
     graph_size = probe_source_size(graph_source or TWOWIKI_GRAPH_URL)
     ensure_min_free_space(output_dir, min_free_gib=min_free_gib, expected_new_bytes=estimate_prepare_bytes(graph_size))
-    prepared = prepare_2wiki_store(
-        output_dir,
-        questions_source=questions_source,
-        graph_source=graph_source,
-        keep_raw=keep_raw,
-        overwrite=overwrite,
-        min_free_gib=min_free_gib,
-    )
+    try:
+        prepared = prepare_2wiki_store(
+            output_dir,
+            questions_source=questions_source,
+            graph_source=graph_source,
+            keep_raw=keep_raw,
+            overwrite=overwrite,
+            min_free_gib=min_free_gib,
+        )
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     console.print(f"store root -> {prepared.root}")
     console.print(f"manifest.json -> {prepared.manifest_path}")
     console.print(f"catalog.sqlite -> {prepared.catalog_path}")

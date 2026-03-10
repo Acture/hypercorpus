@@ -152,3 +152,21 @@ def test_prepare_2wiki_store_skips_duplicate_titles(tmp_path, two_wiki_questions
     assert prepared.manifest.total_document_count == 1
     messages = [record.getMessage() for record in caplog.records]
     assert any("Skipped 1 duplicate 2Wiki node title" in message for message in messages)
+
+
+def test_prepare_2wiki_store_rejects_existing_partial_output(two_wiki_archives, tmp_path):
+    questions_zip, graph_zip = two_wiki_archives
+    output_dir = tmp_path / "existing-store"
+    (output_dir / "index").mkdir(parents=True)
+    (output_dir / "index" / "catalog.sqlite").write_text("partial", encoding="utf-8")
+
+    try:
+        prepare_2wiki_store(
+            output_dir,
+            questions_source=questions_zip.as_uri(),
+            graph_source=graph_zip.as_uri(),
+        )
+    except RuntimeError as exc:
+        assert "already contains a prepared or partial 2Wiki store" in str(exc)
+    else:
+        raise AssertionError("prepare_2wiki_store should reject an existing partial output directory")
