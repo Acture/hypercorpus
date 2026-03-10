@@ -111,3 +111,44 @@ def test_prepare_2wiki_store_emits_phase_logs(two_wiki_archives, tmp_path, caplo
     assert any("Preparing sharded 2Wiki store" in message for message in messages)
     assert any("Phase 1/2: indexing 2Wiki titles" in message for message in messages)
     assert any("Phase 2/2: writing catalog and shards" in message for message in messages)
+
+
+def test_prepare_2wiki_store_skips_duplicate_titles(tmp_path, two_wiki_questions, caplog):
+    graph_path = tmp_path / "duplicate-graph.jsonl"
+    questions_dir = tmp_path / "questions"
+    questions_dir.mkdir()
+    duplicate_records = [
+        {
+            "id": "1",
+            "title": "Unconquered",
+            "sentences": ["First record."],
+            "mentions": [],
+        },
+        {
+            "id": "2",
+            "title": "Unconquered",
+            "sentences": ["Second record."],
+            "mentions": [],
+        },
+    ]
+    graph_path.write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in duplicate_records) + "\n",
+        encoding="utf-8",
+    )
+    for split in ("train", "dev", "test"):
+        (questions_dir / f"{split}.json").write_text(json.dumps(two_wiki_questions, ensure_ascii=False), encoding="utf-8")
+
+    caplog.set_level("WARNING")
+    prepared = prepare_2wiki_store(
+        tmp_path / "duplicate-store",
+        questions_source=questions_dir,
+        graph_source=graph_path,
+    )
+
+    with sqlite3.connect(prepared.catalog_path) as conn:
+        doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+    assert doc_count == 1
+    assert prepared.manifest.total_document_count == 1
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Skipped 1 duplicate 2Wiki node title" in message for message in messages)

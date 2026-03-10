@@ -782,6 +782,8 @@ def _write_store_from_raw_graph(
     shard_infos: list[ShardInfo] = []
     total_documents = 0
     total_tokens = 0
+    duplicate_node_ids: list[str] = []
+    seen_node_ids: set[str] = set()
     version = _store_version(questions_source, graph_source, target_shard_size_bytes)
 
     with sqlite3.connect(catalog_path) as conn:
@@ -797,6 +799,10 @@ def _write_store_from_raw_graph(
                 start=1,
             ):
                 normalized = normalize_2wiki_graph_record(raw_record, id_to_title=id_to_title)
+                if normalized["node_id"] in seen_node_ids:
+                    duplicate_node_ids.append(str(normalized["node_id"]))
+                    continue
+                seen_node_ids.add(str(normalized["node_id"]))
                 normalized["url"] = str(raw_record.get("url", ""))
                 shard_relpath = writer.write_record(normalized)
                 text = " ".join(str(sentence) for sentence in normalized["sentences"])
@@ -848,10 +854,18 @@ def _write_store_from_raw_graph(
         finally:
             conn.commit()
             shard_paths = [output_root / shard.path for shard in shard_infos]
+    if duplicate_node_ids:
+        unique_duplicates = list(dict.fromkeys(duplicate_node_ids))
+        preview = ", ".join(unique_duplicates[:5])
+        logger.warning(
+            "Skipped %s duplicate 2Wiki node title(s) while preparing the store; duplicates collapse to the first record. Examples: %s",
+            len(unique_duplicates),
+            preview,
+        )
     logger.info(
         "Wrote catalog.sqlite and %s shard(s) from %s 2Wiki records",
         len(shard_infos),
-        total_documents,
+        len(seen_node_ids),
     )
 
     manifest = TwoWikiStoreManifest(
@@ -859,7 +873,7 @@ def _write_store_from_raw_graph(
         version=version,
         shard_count=len(shard_infos),
         target_shard_size_bytes=target_shard_size_bytes,
-        total_document_count=total_documents,
+        total_document_count=len(seen_node_ids),
         total_token_estimate=total_tokens,
         questions_source=questions_source,
         graph_source=graph_source,
