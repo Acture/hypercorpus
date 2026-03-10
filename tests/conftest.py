@@ -2,10 +2,12 @@ import bz2
 import io
 import json
 import tarfile
+import zipfile
 from pathlib import Path
 
 from pytest import fixture
 
+from webwalker.datasets import prepare_2wiki_store
 from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
 
 
@@ -254,3 +256,33 @@ def two_wiki_files(tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_
 	)
 
 	return questions_path, graph_path
+
+
+@fixture
+def two_wiki_archives(tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_questions: list[dict]) -> tuple[Path, Path]:
+	questions_zip = tmp_path / "data_ids_april7.zip"
+	graph_zip = tmp_path / "para_with_hyperlink.zip"
+
+	with zipfile.ZipFile(questions_zip, "w") as archive:
+		archive.writestr("data_ids_april7/dev.json", json.dumps(two_wiki_questions, ensure_ascii=False))
+		archive.writestr("data_ids_april7/train.json", json.dumps(two_wiki_questions, ensure_ascii=False))
+		archive.writestr("data_ids_april7/test.json", json.dumps(two_wiki_questions, ensure_ascii=False))
+
+	with zipfile.ZipFile(graph_zip, "w") as archive:
+		archive.writestr(
+			"para_with_hyperlink.jsonl",
+			"\n".join(json.dumps(record, ensure_ascii=False) for record in two_wiki_graph_records) + "\n",
+		)
+
+	return questions_zip, graph_zip
+
+
+@fixture
+def prepared_two_wiki_store(two_wiki_archives, tmp_path: Path):
+	questions_zip, graph_zip = two_wiki_archives
+	output_dir = tmp_path / "2wiki-store"
+	return prepare_2wiki_store(
+		output_dir,
+		questions_source=questions_zip.as_uri(),
+		graph_source=graph_zip.as_uri(),
+	)
