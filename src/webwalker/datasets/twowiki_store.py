@@ -22,6 +22,8 @@ from .fetch import TWOWIKI_GRAPH_URL, TWOWIKI_QUESTIONS_URL
 from .twowiki import (
     TWOWIKI_DEFAULT_GRAPH_PATH,
     TWOWIKI_DEFAULT_QUESTIONS_DIR,
+    _graph_progress_total_bytes,
+    _iter_records_with_progress_bytes,
     iter_2wiki_graph_records,
     load_2wiki_questions,
     normalize_2wiki_graph_record,
@@ -1134,14 +1136,21 @@ def _iter_records_with_progress(
             yield record
         return
 
+    total_bytes = _graph_progress_total_bytes(path)
     count = 0
     with create_progress(transient=True) as progress:
-        task_id = progress.add_task(description, total=None)
-        for count, record in enumerate(iter_2wiki_graph_records(path), start=1):
+        task_id = progress.add_task(description, total=total_bytes)
+        for count, (record, progress_value) in enumerate(_iter_records_with_progress_bytes(path), start=1):
             if count == 1 or count % update_every == 0:
-                progress.update(task_id, description=f"{description} [{count:,} records]")
+                kwargs = {"description": f"{description} [{count:,} records]"}
+                if total_bytes is not None:
+                    kwargs["completed"] = progress_value
+                progress.update(task_id, **kwargs)
             yield record
-        progress.update(task_id, description=f"{description} [{count:,} records]")
+        kwargs = {"description": f"{description} [{count:,} records]"}
+        if total_bytes is not None:
+            kwargs["completed"] = total_bytes
+        progress.update(task_id, **kwargs)
 
 
 def _store_version(questions_source: str, graph_source: str, target_shard_size_bytes: int) -> str:

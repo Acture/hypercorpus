@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import logging
 import zipfile
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, TextIO
+from typing import Any, Callable, Iterable, Iterator, Mapping, TextIO
 
 from webwalker.logging import create_progress, should_render_progress
 from webwalker.eval import EvaluationCase
@@ -181,12 +182,77 @@ def _iter_records_with_optional_progress(
         logger.info("%s complete (%s records)", description.capitalize(), count)
         return
 
+    total_bytes = _graph_progress_total_bytes(path)
     count = 0
     with create_progress(transient=True) as progress:
-        task_id = progress.add_task(description, total=None)
-        for count, record in enumerate(iter_2wiki_graph_records(path), start=1):
+        task_id = progress.add_task(description, total=total_bytes)
+        for count, (record, progress_value) in enumerate(_iter_records_with_progress_bytes(path), start=1):
             if count == 1 or count % update_every == 0:
-                progress.update(task_id, description=f"{description} [{count:,} records]")
+                kwargs = {"description": f"{description} [{count:,} records]"}
+                if total_bytes is not None:
+                    kwargs["completed"] = progress_value
+                progress.update(task_id, **kwargs)
             yield record
-        progress.update(task_id, description=f"{description} [{count:,} records]")
+        kwargs = {"description": f"{description} [{count:,} records]"}
+        if total_bytes is not None:
+            kwargs["completed"] = total_bytes
+        progress.update(task_id, **kwargs)
     logger.info("%s complete (%s records)", description.capitalize(), count)
+
+
+def _graph_progress_total_bytes(path: Path) -> int | None:
+    suffixes = [suffix.lower() for suffix in path.suffixes]
+    if suffixes[-2:] == [".jsonl", ".gz"]:
+        return path.stat().st_size
+    if suffixes and suffixes[-1] == ".jsonl":
+        return path.stat().st_size
+    if suffixes and suffixes[-1] == ".zip":
+        with zipfile.ZipFile(path) as archive:
+            member_name = _find_zip_member(archive, "para_with_hyperlink.jsonl")
+            if member_name is None:
+                return None
+            return archive.getinfo(member_name).file_size
+    return None
+
+
+def _iter_records_with_progress_bytes(path: Path) -> Iterator[tuple[dict[str, Any], int]]:
+    suffixes = [suffix.lower() for suffix in path.suffixes]
+    if suffixes[-2:] == [".jsonl", ".gz"]:
+        with path.open("rb") as raw_handle:
+            with gzip.GzipFile(fileobj=raw_handle, mode="rb") as gzip_handle:
+                text_handle = io.TextIOWrapper(gzip_handle, encoding="utf-8")
+                yield from _iter_jsonl_lines_with_progress(text_handle, lambda: raw_handle.tell())
+        return
+    if suffixes and suffixes[-1] == ".jsonl":
+        with path.open("rb") as raw_handle:
+            text_handle = io.TextIOWrapper(raw_handle, encoding="utf-8")
+            yield from _iter_jsonl_lines_with_progress(text_handle, lambda: raw_handle.tell())
+        return
+    if suffixes and suffixes[-1] == ".zip":
+        with zipfile.ZipFile(path) as archive:
+            member_name = _find_zip_member(archive, "para_with_hyperlink.jsonl")
+            if member_name is None:
+                raise FileNotFoundError(f"Archive {path} does not contain para_with_hyperlink.jsonl")
+            with archive.open(member_name, "r") as handle:
+                text_handle = io.TextIOWrapper(handle, encoding="utf-8")
+                bytes_read = 0
+                for line in text_handle:
+                    bytes_read += len(line.encode("utf-8"))
+                    line = line.strip()
+                    if not line:
+                        continue
+                    yield json.loads(line), bytes_read
+        return
+    raise ValueError(f"Unsupported 2Wiki graph source: {path}")
+
+
+def _iter_jsonl_lines_with_progress(
+    handle: Iterable[str],
+    position: Callable[[], int],
+) -> Iterator[tuple[dict[str, Any], int]]:
+    for line in handle:
+        current = position()
+        line = line.strip()
+        if not line:
+            continue
+        yield json.loads(line), current
