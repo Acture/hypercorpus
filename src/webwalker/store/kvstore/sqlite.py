@@ -48,6 +48,16 @@ class SQLiteKVStore(KVStore[K, V]):
 			)
 			conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{self.table}_k ON {self.table}(k)")
 			conn.commit()
+
+	def get(self, key: K) -> Optional[V]:
+		with sqlite3.connect(self.db_path) as conn:
+			row = conn.execute(
+				f"SELECT v FROM {self.table} WHERE k = ?",
+				(str(key),),
+			).fetchone()
+		if row is None:
+			return None
+		return json.loads(row[0])
 	
 	@classmethod
 	def build_from_tar_bz2(
