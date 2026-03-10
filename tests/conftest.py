@@ -148,3 +148,109 @@ def tiny_tar_bz2(tmp_path: Path) -> Path:
 		archive.addfile(info, io.BytesIO(inner_bz2))
 
 	return archive_path
+
+
+@fixture
+def two_wiki_graph_records() -> list[dict]:
+	return [
+		{
+			"id": "100",
+			"title": "Moon Launch Program",
+			"sentences": [
+				"Moon Launch Program uses Cape Canaveral as its launch site.",
+				"The program was directed by Alice Johnson.",
+			],
+			"mentions": [
+				{
+					"id": 0,
+					"start": 25,
+					"end": 40,
+					"ref_url": "Cape_Canaveral",
+					"ref_ids": ["200"],
+					"sent_idx": 0,
+				},
+				{
+					"id": 1,
+					"start": 28,
+					"end": 41,
+					"ref_url": "Alice_Johnson",
+					"ref_ids": ["300"],
+					"sent_idx": 1,
+				},
+			],
+		},
+		{
+			"id": "200",
+			"title": "Cape Canaveral",
+			"sentences": [
+				"Cape Canaveral is a city in Florida.",
+			],
+			"mentions": [
+				{
+					"id": 0,
+					"start": 29,
+					"end": 36,
+					"ref_url": "Florida",
+					"ref_ids": ["400"],
+					"sent_idx": 0,
+				},
+			],
+		},
+		{
+			"id": "300",
+			"title": "Alice Johnson",
+			"sentences": [
+				"Alice Johnson directed the Moon Launch Program in 1969.",
+			],
+			"mentions": [],
+		},
+		{
+			"id": "400",
+			"title": "Florida",
+			"sentences": [
+				"Florida is a state in the southeastern United States.",
+			],
+			"mentions": [],
+		},
+	]
+
+
+@fixture
+def two_wiki_questions() -> list[dict]:
+	return [
+		{
+			"_id": "q1",
+			"question": "Which city hosts the launch site?",
+			"answer": "Cape Canaveral",
+			"supporting_facts": [
+				["Moon Launch Program", 0],
+				["Cape Canaveral", 0],
+			],
+		},
+		{
+			"_id": "q2",
+			"question": "Who directed the Moon Launch Program?",
+			"answer": "Alice Johnson",
+			"supporting_facts": [
+				["Moon Launch Program", 1],
+				["Alice Johnson", 0],
+			],
+		},
+	]
+
+
+@fixture
+def two_wiki_files(tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_questions: list[dict]) -> tuple[Path, Path]:
+	graph_path = tmp_path / "para_with_hyperlink.jsonl"
+	questions_path = tmp_path / "dev.json"
+
+	graph_path.write_text(
+		"\n".join(json.dumps(record, ensure_ascii=False) for record in two_wiki_graph_records) + "\n",
+		encoding="utf-8",
+	)
+	questions_path.write_text(
+		json.dumps(two_wiki_questions, ensure_ascii=False),
+		encoding="utf-8",
+	)
+
+	return questions_path, graph_path
