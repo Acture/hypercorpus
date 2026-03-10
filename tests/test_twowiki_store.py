@@ -3,7 +3,12 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from webwalker.datasets import ShardedLinkContextStore, StoreObjectInfo, inspect_2wiki_store
+from webwalker.datasets import (
+    ShardedLinkContextStore,
+    StoreObjectInfo,
+    inspect_2wiki_store,
+    prepare_2wiki_store,
+)
 
 
 def test_prepare_2wiki_store_writes_manifest_catalog_and_shards(prepared_two_wiki_store):
@@ -90,3 +95,19 @@ def test_inspect_2wiki_store_reports_use_local_raw(tmp_path, monkeypatch):
 
     inspection = inspect_2wiki_store(raw_root=raw_root, cache_dir=tmp_path / "cache")
     assert inspection.recommended_action == "use-local-raw"
+
+
+def test_prepare_2wiki_store_emits_phase_logs(two_wiki_archives, tmp_path, caplog):
+    questions_zip, graph_zip = two_wiki_archives
+    caplog.set_level("INFO")
+
+    prepare_2wiki_store(
+        tmp_path / "logged-store",
+        questions_source=questions_zip.as_uri(),
+        graph_source=graph_zip.as_uri(),
+    )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Preparing sharded 2Wiki store" in message for message in messages)
+    assert any("Phase 1/2: indexing 2Wiki titles" in message for message in messages)
+    assert any("Phase 2/2: writing catalog and shards" in message for message in messages)

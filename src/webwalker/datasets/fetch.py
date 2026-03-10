@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import shutil
+import logging
 import tempfile
 import urllib.parse
 import urllib.request
@@ -10,12 +10,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from webwalker.logging import copy_stream_with_progress
+
 TWOWIKI_QUESTIONS_URL = "https://www.dropbox.com/s/ms2m13252h6xubs/data_ids_april7.zip?dl=1"
 TWOWIKI_GRAPH_URL = "https://www.dropbox.com/s/wlhw26kik59wbh8/para_with_hyperlink.zip?dl=1"
 TWOWIKI_GRAPH_BASENAME = "para_with_hyperlink.jsonl"
 TWOWIKI_SPLITS = ("train", "dev", "test")
 
 DownloadFn = Callable[[str, Path], None]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -42,6 +46,15 @@ def fetch_2wiki_dataset(
     if not include_questions and not include_graph:
         raise ValueError("At least one of include_questions or include_graph must be enabled.")
 
+    logger.info(
+        "Preparing 2Wiki dataset under %s (split=%s, questions=%s, graph=%s, keep_archives=%s, overwrite=%s)",
+        output_dir,
+        split,
+        include_questions,
+        include_graph,
+        keep_archives,
+        overwrite,
+    )
     resolved_output = Path(output_dir)
     resolved_output.mkdir(parents=True, exist_ok=True)
     download_impl = downloader or _download_url
@@ -56,6 +69,7 @@ def fetch_2wiki_dataset(
         required = {name: questions_dir / f"{name}.json" for name in selected_splits}
         missing = [name for name, path in required.items() if overwrite or not path.exists()]
         if missing:
+            logger.info("Fetching 2Wiki questions for splits: %s", ", ".join(missing))
             archive_path = _prepare_archive(
                 resolved_output,
                 archive_name="2wiki-questions.zip",
@@ -81,6 +95,7 @@ def fetch_2wiki_dataset(
         graph_dir.mkdir(parents=True, exist_ok=True)
         destination = graph_dir / TWOWIKI_GRAPH_BASENAME
         if overwrite or not destination.exists():
+            logger.info("Fetching shared 2Wiki graph archive into %s", destination)
             archive_path = _prepare_archive(
                 resolved_output,
                 archive_name="2wiki-graph.zip",
@@ -100,6 +115,12 @@ def fetch_2wiki_dataset(
             _cleanup_archive(archive_path, keep_archives=keep_archives)
         layout.graph_path = destination
 
+    logger.info(
+        "Prepared 2Wiki dataset under %s (question_files=%s, graph=%s)",
+        resolved_output,
+        len(layout.question_paths),
+        layout.graph_path is not None,
+    )
     return layout
 
 
@@ -108,6 +129,7 @@ def write_2wiki_sample_dataset(
     *,
     overwrite: bool = False,
 ) -> TwoWikiDatasetLayout:
+    logger.info("Writing bundled 2Wiki sample dataset into %s", output_dir)
     resolved_output = Path(output_dir)
     resolved_output.mkdir(parents=True, exist_ok=True)
     questions_dir = resolved_output / "questions"
@@ -151,11 +173,13 @@ def _prepare_archive(
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / archive_name
         if overwrite or not archive_path.exists():
+            logger.info("Downloading archive %s from %s", archive_name, source_url)
             downloader(source_url, archive_path)
         return archive_path
 
     with tempfile.NamedTemporaryFile(prefix="webwalker-", suffix=f"-{archive_name}", delete=False) as handle:
         archive_path = Path(handle.name)
+    logger.info("Downloading temporary archive %s from %s", archive_name, source_url)
     downloader(source_url, archive_path)
     return archive_path
 
@@ -180,9 +204,16 @@ def _extract_zip_member(
         member_name = _find_member_by_basename(archive.namelist(), basename)
         if member_name is None:
             raise FileNotFoundError(f"Archive {archive_path} does not contain {basename}")
+        info = archive.getinfo(member_name)
+        logger.info("Extracting %s from %s to %s", basename, archive_path, destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with archive.open(member_name) as src, destination.open("wb") as dst:
-            shutil.copyfileobj(src, dst)
+            copy_stream_with_progress(
+                src,
+                dst,
+                description=f"extract {basename}",
+                total=info.file_size,
+            )
 
 
 def _find_member_by_basename(names: list[str], basename: str) -> str | None:
@@ -207,15 +238,28 @@ def _download_url(source_url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(normalized_url)
     request_or_url: str | urllib.request.Request
+    expected_bytes: int | None = None
     if parsed.scheme == "file":
         request_or_url = normalized_url
+        file_path = Path(parsed.path)
+        if file_path.exists():
+            expected_bytes = file_path.stat().st_size
     else:
         request_or_url = urllib.request.Request(
             normalized_url,
             headers={"User-Agent": "webwalker/0.1 (+https://github.com/Acture/webwalker)"},
         )
     with urllib.request.urlopen(request_or_url) as response, destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle)
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            expected_bytes = int(content_length)
+        logger.info("Downloading %s to %s", normalized_url, destination)
+        copy_stream_with_progress(
+            response,
+            handle,
+            description=f"download {destination.name}",
+            total=expected_bytes,
+        )
 
 
 def _normalize_dropbox_url(source_url: str) -> str:

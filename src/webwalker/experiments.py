@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
@@ -19,6 +20,9 @@ from webwalker.eval import (
     select_selectors,
     summarize_evaluations,
 )
+from webwalker.logging import create_progress, should_render_progress
+
+logger = logging.getLogger(__name__)
 
 
 def run_2wiki_experiment(
@@ -35,7 +39,9 @@ def run_2wiki_experiment(
     with_e2e: bool = True,
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
+    logger.info("Loading raw 2Wiki graph from %s", graph_records_path)
     graph = load_2wiki_graph(graph_records_path)
+    logger.info("Loading 2Wiki questions from %s", questions_path)
     cases = load_2wiki_questions(questions_path, limit=limit)
     selectors = select_selectors(
         selector_names,
@@ -55,29 +61,36 @@ def run_2wiki_experiment(
         )
         for ratio in ratios
     ]
+    logger.info(
+        "Running raw 2Wiki experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, export_graphrag_inputs=%s)",
+        len(cases),
+        [selector.name for selector in selectors],
+        ratios,
+        with_e2e,
+        export_graphrag_inputs,
+    )
 
-    evaluations: list[CaseEvaluation] = []
-    for case in cases:
-        selections = []
-        for evaluator in evaluators:
-            selections.extend(evaluator.evaluate_case(graph, case).selections)
-        evaluations.append(CaseEvaluation(case=case, selections=selections))
+    evaluations = _evaluate_cases(
+        graph=graph,
+        cases=cases,
+        evaluators=evaluators,
+        description="evaluate raw 2wiki cases",
+    )
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     if export_graphrag_inputs:
-        for evaluation in evaluations:
-            for selection in evaluation.selections:
-                selection.graphrag_input_path = _write_graphrag_input(
-                    graph=graph,
-                    case_id=evaluation.case.case_id,
-                    selection=selection,
-                    output_dir=output_path,
-                )
+        _export_graphrag_inputs(
+            graph=graph,
+            evaluations=evaluations,
+            output_dir=output_path,
+            description="export raw graphrag inputs",
+        )
 
     summary = Evaluator().summarize(evaluations)
     _write_result_files(chunk_dir=output_path, evaluations=evaluations, summary=summary)
+    logger.info("Completed raw 2Wiki experiment; results written to %s", output_path)
 
     return evaluations, summary
 
@@ -103,6 +116,7 @@ def run_2wiki_store_experiment(
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
     store = ShardedLinkContextStore(store_uri, cache_dir=cache_dir)
+    logger.info("Loading %s split questions from sharded store", split)
     cases = store.load_questions(split)
     selected_cases, chunk_meta = _slice_cases(
         cases,
@@ -131,26 +145,33 @@ def run_2wiki_store_experiment(
         )
         for ratio in ratios
     ]
+    logger.info(
+        "Running store-backed 2Wiki experiment (split=%s, selected_cases=%s, selectors=%s, budgets=%s, with_e2e=%s, export_graphrag_inputs=%s)",
+        split,
+        len(selected_cases),
+        [selector.name for selector in selectors],
+        ratios,
+        with_e2e,
+        export_graphrag_inputs,
+    )
 
-    evaluations: list[CaseEvaluation] = []
-    for case in selected_cases:
-        selections = []
-        for evaluator in evaluators:
-            selections.extend(evaluator.evaluate_case(store, case).selections)
-        evaluations.append(CaseEvaluation(case=case, selections=selections))
+    evaluations = _evaluate_cases(
+        graph=store,
+        cases=selected_cases,
+        evaluators=evaluators,
+        description="evaluate store-backed 2wiki cases",
+    )
 
     chunk_dir = _chunk_output_dir(output_root=Path(output_root), exp_name=exp_name, chunk_meta=chunk_meta)
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
     if export_graphrag_inputs:
-        for evaluation in evaluations:
-            for selection in evaluation.selections:
-                selection.graphrag_input_path = _write_graphrag_input(
-                    graph=store,
-                    case_id=evaluation.case.case_id,
-                    selection=selection,
-                    output_dir=chunk_dir,
-                )
+        _export_graphrag_inputs(
+            graph=store,
+            evaluations=evaluations,
+            output_dir=chunk_dir,
+            description="export store graphrag inputs",
+        )
 
     summary = summarize_evaluations(evaluations, dataset_name=selected_cases[0].dataset_name if selected_cases else "2wikimultihop")
     _write_result_files(chunk_dir=chunk_dir, evaluations=evaluations, summary=summary)
@@ -169,6 +190,7 @@ def run_2wiki_store_experiment(
         ),
         encoding="utf-8",
     )
+    logger.info("Completed store-backed 2Wiki chunk; results written to %s", chunk_dir)
     return evaluations, summary, chunk_dir
 
 
@@ -180,12 +202,13 @@ def merge_2wiki_results(
     root = Path(run_dir)
     chunk_root = root / "chunks"
     chunk_dirs = sorted(path for path in chunk_root.iterdir() if path.is_dir())
+    logger.info("Merging 2Wiki chunk results from %s (%s chunks)", root, len(chunk_dirs))
     records: list[dict[str, Any]] = []
     chunk_indices: list[int] = []
     total_cases: int | None = None
     chunk_size: int | None = None
 
-    for chunk_dir in chunk_dirs:
+    for chunk_dir in _iterate_with_optional_progress(chunk_dirs, description="merge chunk results"):
         chunk_meta_path = chunk_dir / "chunk.json"
         if chunk_meta_path.exists():
             chunk_meta = json.loads(chunk_meta_path.read_text(encoding="utf-8"))
@@ -217,6 +240,12 @@ def merge_2wiki_results(
     )
 
     missing_chunks = _missing_chunk_indices(chunk_indices, total_cases=total_cases, chunk_size=chunk_size)
+    logger.info(
+        "Merged %s result records into %s (missing_chunks=%s)",
+        len(records),
+        merged_dir,
+        missing_chunks,
+    )
     return summary, missing_chunks
 
 
@@ -251,6 +280,76 @@ def budget_ratio_choices_help() -> str:
 
 def store_budget_ratio_choices_help() -> str:
     return budget_ratio_choices_help()
+
+
+def _evaluate_cases(
+    *,
+    graph,
+    cases: Sequence[Any],
+    evaluators: Sequence[Evaluator],
+    description: str,
+) -> list[CaseEvaluation]:
+    evaluations: list[CaseEvaluation] = []
+    total = len(cases)
+    if total == 0:
+        return evaluations
+    logger.info("%s (%s cases)", description.capitalize(), total)
+    for case in _iterate_with_optional_progress(cases, description=description):
+        selections = []
+        for evaluator in evaluators:
+            selections.extend(evaluator.evaluate_case(graph, case).selections)
+        evaluations.append(CaseEvaluation(case=case, selections=selections))
+    return evaluations
+
+
+def _export_graphrag_inputs(
+    *,
+    graph,
+    evaluations: Sequence[CaseEvaluation],
+    output_dir: Path,
+    description: str,
+) -> None:
+    total = sum(len(evaluation.selections) for evaluation in evaluations)
+    logger.info("%s (%s exports)", description.capitalize(), total)
+    selection_iter = (
+        (evaluation.case.case_id, selection)
+        for evaluation in evaluations
+        for selection in evaluation.selections
+    )
+    for case_id, selection in _iterate_with_optional_progress(
+        selection_iter,
+        total=total,
+        description=description,
+    ):
+        selection.graphrag_input_path = _write_graphrag_input(
+            graph=graph,
+            case_id=case_id,
+            selection=selection,
+            output_dir=output_dir,
+        )
+
+
+def _iterate_with_optional_progress(
+    items,
+    *,
+    description: str,
+    total: int | None = None,
+):
+    if total is None:
+        try:
+            total = len(items)
+        except TypeError:
+            total = None
+    if not should_render_progress():
+        for item in items:
+            yield item
+        return
+
+    with create_progress(transient=True) as progress:
+        task_id = progress.add_task(description, total=total)
+        for item in items:
+            yield item
+            progress.advance(task_id, 1)
 
 
 def _write_graphrag_input(

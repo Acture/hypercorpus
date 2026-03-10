@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable, Optional, Union
+from typing import BinaryIO, Iterable, Optional, Union
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.progress import (
+	BarColumn,
+	DownloadColumn,
+	Progress,
+	SpinnerColumn,
+	TaskProgressColumn,
+	TextColumn,
+	TimeElapsedColumn,
+	TimeRemainingColumn,
+	TransferSpeedColumn,
+)
 
 
 class PrefixFilter(logging.Filter):
@@ -58,3 +69,77 @@ def setup_rich_logging(
 	
 	# Optional hardening: keep 3rd-party quiet even if they add handlers later
 	logging.getLogger().setLevel(level)  # root level
+
+
+def progress_console(console: Optional[Console] = None) -> Console:
+	return console or Console(stderr=True)
+
+
+def should_render_progress(console: Optional[Console] = None) -> bool:
+	return progress_console(console).is_terminal
+
+
+def create_progress(
+		*,
+		console: Optional[Console] = None,
+		transient: bool = False,
+) -> Progress:
+	return Progress(
+		SpinnerColumn(),
+		TextColumn("[progress.description]{task.description}"),
+		BarColumn(bar_width=None),
+		TaskProgressColumn(),
+		TimeElapsedColumn(),
+		TimeRemainingColumn(),
+		console=progress_console(console),
+		transient=transient,
+	)
+
+
+def create_transfer_progress(
+		*,
+		console: Optional[Console] = None,
+		transient: bool = False,
+) -> Progress:
+	return Progress(
+		SpinnerColumn(),
+		TextColumn("[progress.description]{task.description}"),
+		BarColumn(bar_width=None),
+		DownloadColumn(),
+		TransferSpeedColumn(),
+		TimeElapsedColumn(),
+		TimeRemainingColumn(),
+		console=progress_console(console),
+		transient=transient,
+	)
+
+
+def copy_stream_with_progress(
+		source: BinaryIO,
+		destination: BinaryIO,
+		*,
+		description: str,
+		total: int | None = None,
+		chunk_size: int = 1024 * 1024,
+		console: Optional[Console] = None,
+) -> int:
+	total_written = 0
+	if not should_render_progress(console):
+		while True:
+			chunk = source.read(chunk_size)
+			if not chunk:
+				break
+			destination.write(chunk)
+			total_written += len(chunk)
+		return total_written
+
+	with create_transfer_progress(console=console, transient=True) as progress:
+		task_id = progress.add_task(description, total=total)
+		while True:
+			chunk = source.read(chunk_size)
+			if not chunk:
+				break
+			destination.write(chunk)
+			total_written += len(chunk)
+			progress.advance(task_id, len(chunk))
+	return total_written

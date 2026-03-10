@@ -181,3 +181,23 @@ def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared
     assert missing == []
     assert (tmp_path / "runs" / "pilot" / "results.jsonl").exists()
     assert (tmp_path / "runs" / "pilot" / "summary.json").exists()
+
+
+def test_run_2wiki_store_experiment_emits_progress_logs(prepared_two_wiki_store, tmp_path, caplog):
+    caplog.set_level("INFO")
+
+    run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot",
+        chunk_size=1,
+        chunk_index=0,
+        selector_names=["dense_topk"],
+        budget_ratios=[0.10],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Running store-backed 2Wiki experiment" in message for message in messages)
+    assert any("Completed store-backed 2Wiki chunk" in message for message in messages)

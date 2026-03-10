@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable, Protocol, Sequence
 
 from webwalker.graph import DocumentNode, LinkContext
+from webwalker.logging import copy_stream_with_progress, create_progress, should_render_progress
 from webwalker.text import approx_token_count, normalized_token_overlap
 
 from .fetch import TWOWIKI_GRAPH_URL, TWOWIKI_QUESTIONS_URL
@@ -29,6 +31,8 @@ from .twowiki import (
 DEFAULT_SHARD_TARGET_SIZE_BYTES = 128 * 1024 * 1024
 DEFAULT_MIN_FREE_GIB = 25.0
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "webwalker" / "2wiki"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -129,6 +133,7 @@ class S3CompatibleObjectStore:
         if local_path.exists():
             return local_path
         client = self._client()
+        logger.info("Downloading dataset store object %s to local cache %s", relative_path, local_path)
         client.download_file(self.bucket, self._key(relative_path), str(local_path))
         return local_path
 
@@ -263,6 +268,7 @@ class ShardedLinkContextStore:
         object_store: ObjectStore | None = None,
     ):
         self.store = object_store or open_object_store(store_uri)
+        logger.info("Opening sharded 2Wiki store from %s", self.store.uri)
         manifest_path = self._ensure_metadata_file("manifest.json", cache_dir=cache_dir)
         self.manifest = TwoWikiStoreManifest.from_dict(json.loads(manifest_path.read_text(encoding="utf-8")))
         self.cache_root = self._resolve_cache_root(cache_dir)
@@ -274,6 +280,13 @@ class ShardedLinkContextStore:
         self._links_from_cache: dict[str, list[LinkContext]] = {}
         self._neighbors_cache: dict[str, list[str]] = {}
         self._shard_cache: dict[str, dict[str, dict[str, Any]]] = {}
+        logger.info(
+            "Opened sharded 2Wiki store %s (nodes=%s, shards=%s, cache=%s)",
+            self.store.uri,
+            len(self._nodes),
+            self.manifest.shard_count,
+            self.cache_root,
+        )
 
     @property
     def nodes(self) -> list[str]:
@@ -398,6 +411,8 @@ class ShardedLinkContextStore:
             return path
         base = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
         local_path = base / relative_path
+        if not local_path.exists():
+            logger.info("Materializing metadata file %s into %s", relative_path, local_path)
         return self.store.ensure_local(relative_path, local_path)
 
     def _ensure_shard(self, shard_path: str) -> Path:
@@ -407,6 +422,8 @@ class ShardedLinkContextStore:
                 raise FileNotFoundError(f"Shard missing: {path}")
             return path
         local_path = self.cache_root / shard_path
+        if not local_path.exists():
+            logger.info("Materializing shard %s into %s", shard_path, local_path)
         return self.store.ensure_local(shard_path, local_path)
 
     def _load_nodes(self) -> list[str]:
@@ -497,6 +514,14 @@ def prepare_2wiki_store(
     min_free_gib: float = DEFAULT_MIN_FREE_GIB,
 ) -> PreparedTwoWikiStore:
     output_root = Path(output_dir)
+    logger.info(
+        "Preparing sharded 2Wiki store under %s (questions_source=%s, graph_source=%s, keep_raw=%s, overwrite=%s)",
+        output_root,
+        questions_source or "auto",
+        graph_source or "auto",
+        keep_raw,
+        overwrite,
+    )
     if overwrite and output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -506,6 +531,11 @@ def prepare_2wiki_store(
 
     resolved_questions_source = resolve_2wiki_questions_source(questions_source)
     resolved_graph_source = resolve_2wiki_graph_source(graph_source)
+    logger.info(
+        "Resolved 2Wiki sources: questions=%s, graph=%s",
+        resolved_questions_source.source,
+        resolved_graph_source.source,
+    )
 
     _ensure_min_free_space(
         output_root,
@@ -538,6 +568,13 @@ def prepare_2wiki_store(
         manifest_path.write_text(
             json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+        logger.info(
+            "Prepared sharded 2Wiki store under %s (documents=%s, shards=%s, total_tokens=%s)",
+            output_root,
+            manifest.total_document_count,
+            manifest.shard_count,
+            manifest.total_token_estimate,
         )
         return PreparedTwoWikiStore(
             root=output_root,
@@ -639,7 +676,9 @@ def resolve_2wiki_graph_source(source: str | Path | None) -> PreparedSource:
 
 def _materialize_questions_source(source: PreparedSource, *, temp_paths: list[Path]) -> Path:
     if source.local_path is not None and source.local_path.exists():
+        logger.info("Using local 2Wiki questions source at %s", source.local_path)
         return source.local_path
+    logger.info("Downloading 2Wiki questions source from %s", source.source)
     temp_path = _download_to_temp(source.source)
     temp_paths.append(temp_path)
     return temp_path
@@ -653,13 +692,16 @@ def _materialize_graph_source(
     temp_paths: list[Path],
 ) -> Path:
     if source.local_path is not None and source.local_path.exists():
+        logger.info("Using local 2Wiki graph source at %s", source.local_path)
         return source.local_path
     if keep_raw:
         raw_dir = output_root / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         destination = raw_dir / _basename_from_source(source.source, default="para_with_hyperlink.zip")
+        logger.info("Downloading 2Wiki graph source from %s into %s", source.source, destination)
         _download_url(source.source, destination)
         return destination
+    logger.info("Downloading temporary 2Wiki graph source from %s", source.source)
     temp_path = _download_to_temp(source.source)
     temp_paths.append(temp_path)
     return temp_path
@@ -669,6 +711,7 @@ def _write_questions(output_dir: Path, questions_source_path: Path) -> dict[str,
     output_dir.mkdir(parents=True, exist_ok=True)
     question_paths: dict[str, Path] = {}
     if questions_source_path.is_dir():
+        logger.info("Copying 2Wiki question files from directory %s", questions_source_path)
         for split_name in ("train", "dev", "test"):
             candidate = questions_source_path / f"{split_name}.json"
             if not candidate.exists():
@@ -676,6 +719,7 @@ def _write_questions(output_dir: Path, questions_source_path: Path) -> dict[str,
             destination = output_dir / candidate.name
             shutil.copyfile(candidate, destination)
             question_paths[split_name] = destination
+            logger.info("Wrote question split %s to %s", split_name, destination)
         return question_paths
 
     suffixes = [suffix.lower() for suffix in questions_source_path.suffixes]
@@ -683,10 +727,12 @@ def _write_questions(output_dir: Path, questions_source_path: Path) -> dict[str,
         destination = output_dir / questions_source_path.name
         shutil.copyfile(questions_source_path, destination)
         question_paths[destination.stem] = destination
+        logger.info("Copied single question file to %s", destination)
         return question_paths
     if suffixes and suffixes[-1] == ".zip":
         import zipfile
 
+        logger.info("Extracting 2Wiki question files from archive %s", questions_source_path)
         with zipfile.ZipFile(questions_source_path) as archive:
             for split_name in ("train", "dev", "test"):
                 member = _find_member_by_basename(archive.namelist(), f"{split_name}.json")
@@ -694,8 +740,14 @@ def _write_questions(output_dir: Path, questions_source_path: Path) -> dict[str,
                     continue
                 destination = output_dir / f"{split_name}.json"
                 with archive.open(member) as src, destination.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                    copy_stream_with_progress(
+                        src,
+                        dst,
+                        description=f"extract {split_name}.json",
+                        total=archive.getinfo(member).file_size,
+                    )
                 question_paths[split_name] = destination
+                logger.info("Wrote question split %s to %s", split_name, destination)
         return question_paths
 
     raise ValueError(f"Unsupported 2Wiki questions source: {questions_source_path}")
@@ -710,10 +762,18 @@ def _write_store_from_raw_graph(
     graph_source: str,
     questions_paths: dict[str, Path],
 ) -> tuple[TwoWikiStoreManifest, Path, list[Path]]:
-    graph_records = iter_2wiki_graph_records(graph_source_path)
     id_to_title: dict[str, str] = {}
-    for record in graph_records:
+    logger.info("Phase 1/2: indexing 2Wiki titles from %s", graph_source_path)
+    indexed_count = 0
+    for indexed_count, record in enumerate(
+        _iter_records_with_progress(
+            graph_source_path,
+            description="index graph titles",
+        ),
+        start=1,
+    ):
         id_to_title[str(record.get("id"))] = normalize_2wiki_title(record.get("title", ""))
+    logger.info("Indexed %s 2Wiki graph titles", indexed_count)
 
     catalog_path = output_root / "index" / "catalog.sqlite"
     shard_paths: list[Path] = []
@@ -726,11 +786,17 @@ def _write_store_from_raw_graph(
         _create_catalog_schema(conn)
         writer = _ShardWriter(output_root / "shards", target_shard_size_bytes=target_shard_size_bytes)
         try:
-            for raw_record in iter_2wiki_graph_records(graph_source_path):
+            logger.info("Phase 2/2: writing catalog and shards into %s", output_root)
+            for total_documents, raw_record in enumerate(
+                _iter_records_with_progress(
+                    graph_source_path,
+                    description="write catalog and shards",
+                ),
+                start=1,
+            ):
                 normalized = normalize_2wiki_graph_record(raw_record, id_to_title=id_to_title)
                 normalized["url"] = str(raw_record.get("url", ""))
                 shard_relpath = writer.write_record(normalized)
-                total_documents += 1
                 text = " ".join(str(sentence) for sentence in normalized["sentences"])
                 token_estimate = approx_token_count(text)
                 total_tokens += token_estimate
@@ -780,6 +846,11 @@ def _write_store_from_raw_graph(
         finally:
             conn.commit()
             shard_paths = [output_root / shard.path for shard in shard_infos]
+    logger.info(
+        "Wrote catalog.sqlite and %s shard(s) from %s 2Wiki records",
+        len(shard_infos),
+        total_documents,
+    )
 
     manifest = TwoWikiStoreManifest(
         dataset_name="2wikimultihop",
@@ -925,6 +996,7 @@ def _download_to_temp(source_url: str) -> Path:
     suffix = Path(urllib.parse.urlparse(source_url).path).suffix or ".bin"
     with tempfile.NamedTemporaryFile(prefix="webwalker-", suffix=suffix, delete=False) as handle:
         temp_path = Path(handle.name)
+    logger.info("Downloading %s into temporary file %s", source_url, temp_path)
     _download_url(source_url, temp_path)
     return temp_path
 
@@ -934,15 +1006,28 @@ def _download_url(source_url: str, destination: Path) -> None:
     parsed = urllib.parse.urlparse(normalized_url)
     destination.parent.mkdir(parents=True, exist_ok=True)
     request_or_url: str | urllib.request.Request
+    expected_bytes: int | None = None
     if parsed.scheme == "file":
         request_or_url = normalized_url
+        file_path = Path(parsed.path)
+        if file_path.exists():
+            expected_bytes = file_path.stat().st_size
     else:
         request_or_url = urllib.request.Request(
             normalized_url,
             headers={"User-Agent": "webwalker/0.1 (+https://github.com/Acture/webwalker)"},
         )
     with urllib.request.urlopen(request_or_url) as response, destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle)
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            expected_bytes = int(content_length)
+        logger.info("Downloading %s to %s", normalized_url, destination)
+        copy_stream_with_progress(
+            response,
+            handle,
+            description=f"download {destination.name}",
+            total=expected_bytes,
+        )
 
 
 def _probe_remote_size(source: str) -> int | None:
@@ -1036,6 +1121,27 @@ def _find_member_by_basename(names: Iterable[str], basename: str) -> str | None:
         if Path(name).name == basename:
             return name
     return None
+
+
+def _iter_records_with_progress(
+    path: Path,
+    *,
+    description: str,
+    update_every: int = 10_000,
+):
+    if not should_render_progress():
+        for record in iter_2wiki_graph_records(path):
+            yield record
+        return
+
+    count = 0
+    with create_progress(transient=True) as progress:
+        task_id = progress.add_task(description, total=None)
+        for count, record in enumerate(iter_2wiki_graph_records(path), start=1):
+            if count == 1 or count % update_every == 0:
+                progress.update(task_id, description=f"{description} [{count:,} records]")
+            yield record
+        progress.update(task_id, description=f"{description} [{count:,} records]")
 
 
 def _store_version(questions_source: str, graph_source: str, target_shard_size_bytes: int) -> str:

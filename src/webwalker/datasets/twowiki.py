@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import zipfile
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, TextIO
 
+from webwalker.logging import create_progress, should_render_progress
 from webwalker.eval import EvaluationCase
 from webwalker.graph import LinkContextGraph
 
@@ -13,26 +15,36 @@ TWOWIKI_DEFAULT_ROOT = Path("dataset/2wikimultihop")
 TWOWIKI_DEFAULT_QUESTIONS_DIR = TWOWIKI_DEFAULT_ROOT / "data_ids_april7"
 TWOWIKI_DEFAULT_GRAPH_PATH = TWOWIKI_DEFAULT_ROOT / "para_with_hyperlink.jsonl"
 
+logger = logging.getLogger(__name__)
+
 
 def load_2wiki_graph(graph_records_path: str | Path) -> LinkContextGraph:
     records_path = Path(graph_records_path)
-    raw_records = list(iter_2wiki_graph_records(records_path))
     id_to_title = {
         str(record.get("id")): normalize_2wiki_title(record.get("title", ""))
-        for record in raw_records
+        for record in _iter_records_with_optional_progress(
+            records_path,
+            description="index 2wiki titles",
+        )
     }
     normalized_records = [
         normalize_2wiki_graph_record(record, id_to_title=id_to_title)
-        for record in raw_records
+        for record in _iter_records_with_optional_progress(
+            records_path,
+            description="normalize 2wiki graph",
+        )
     ]
+    logger.info("Building LinkContextGraph from %s normalized 2Wiki records", len(normalized_records))
 
-    return LinkContextGraph.from_2wikimultihop_records(
+    graph = LinkContextGraph.from_2wikimultihop_records(
         normalized_records,
         id_field="node_id",
         title_field="title",
         sentences_field="sentences",
         mentions_field="mentions",
     )
+    logger.info("Loaded 2Wiki graph from %s with %s nodes", records_path, len(graph.nodes))
+    return graph
 
 
 def load_2wiki_questions(
@@ -153,3 +165,28 @@ def _find_zip_member(archive: zipfile.ZipFile, basename: str) -> str | None:
 
 def _dedupe(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
+
+
+def _iter_records_with_optional_progress(
+    path: Path,
+    *,
+    description: str,
+    update_every: int = 10_000,
+) -> Iterator[dict[str, Any]]:
+    logger.info("%s from %s", description.capitalize(), path)
+    if not should_render_progress():
+        count = 0
+        for count, record in enumerate(iter_2wiki_graph_records(path), start=1):
+            yield record
+        logger.info("%s complete (%s records)", description.capitalize(), count)
+        return
+
+    count = 0
+    with create_progress(transient=True) as progress:
+        task_id = progress.add_task(description, total=None)
+        for count, record in enumerate(iter_2wiki_graph_records(path), start=1):
+            if count == 1 or count % update_every == 0:
+                progress.update(task_id, description=f"{description} [{count:,} records]")
+            yield record
+        progress.update(task_id, description=f"{description} [{count:,} records]")
+    logger.info("%s complete (%s records)", description.capitalize(), count)
