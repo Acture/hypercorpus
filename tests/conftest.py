@@ -286,3 +286,136 @@ def prepared_two_wiki_store(two_wiki_archives, tmp_path: Path):
 		questions_source=questions_zip.as_uri(),
 		graph_source=graph_zip.as_uri(),
 	)
+
+
+@fixture
+def iirc_graph_records() -> list[dict]:
+	return [
+		{
+			"node_id": "Moon Launch Program",
+			"title": "Moon Launch Program",
+			"sentences": [
+				"Moon Launch Program launches from Cape Canaveral.",
+			],
+			"links": [
+				{
+					"target": "Cape Canaveral",
+					"anchor_text": "Cape Canaveral",
+					"sentence": "Moon Launch Program launches from Cape Canaveral.",
+					"sent_idx": 0,
+				}
+			],
+		},
+		{
+			"node_id": "Cape Canaveral",
+			"title": "Cape Canaveral",
+			"sentences": [
+				"Cape Canaveral is in Florida.",
+			],
+			"links": [
+				{
+					"target": "Florida",
+					"anchor_text": "Florida",
+					"sentence": "Cape Canaveral is in Florida.",
+					"sent_idx": 0,
+				}
+			],
+		},
+		{
+			"node_id": "Florida",
+			"title": "Florida",
+			"sentences": [
+				"Florida is a state in the southeastern United States.",
+			],
+			"links": [],
+		},
+	]
+
+
+@fixture
+def iirc_questions() -> list[dict]:
+	return [
+		{
+			"case_id": "i1",
+			"question": "Which state contains the launch city?",
+			"answer": "Florida",
+			"gold_support_nodes": ["Moon Launch Program", "Cape Canaveral", "Florida"],
+			"gold_start_nodes": ["Moon Launch Program"],
+		},
+		{
+			"case_id": "i2",
+			"question": "Which city is the launch site?",
+			"answer": "Cape Canaveral",
+			"gold_support_nodes": ["Moon Launch Program", "Cape Canaveral"],
+			"gold_start_nodes": ["Moon Launch Program"],
+			"gold_path_nodes": ["Moon Launch Program", "Cape Canaveral"],
+		},
+	]
+
+
+@fixture
+def iirc_files(tmp_path: Path, iirc_graph_records: list[dict], iirc_questions: list[dict]) -> tuple[Path, Path]:
+	graph_path = tmp_path / "iirc-graph.json"
+	questions_path = tmp_path / "iirc-questions.json"
+	graph_path.write_text(json.dumps(iirc_graph_records, ensure_ascii=False), encoding="utf-8")
+	questions_path.write_text(json.dumps(iirc_questions, ensure_ascii=False), encoding="utf-8")
+	return questions_path, graph_path
+
+
+@fixture
+def docs_files(tmp_path: Path) -> tuple[Path, Path]:
+	docs_root = tmp_path / "python-docs"
+	docs_root.mkdir()
+	(docs_root / "index.html").write_text(
+		"""
+		<html>
+		  <head><title>Python Docs</title></head>
+		  <body>
+		    <p>Start with the <a href="guide.html">guide</a>.</p>
+		  </body>
+		</html>
+		""",
+		encoding="utf-8",
+	)
+	(docs_root / "guide.html").write_text(
+		"""
+		<html>
+		  <head><title>TLS Guide</title></head>
+		  <body>
+		    <p>The guide points to the <a href="api.html">API reference</a>.</p>
+		    <p>Enable TLS by configuring the client.</p>
+		  </body>
+		</html>
+		""",
+		encoding="utf-8",
+	)
+	(docs_root / "api.html").write_text(
+		"""
+		<html>
+		  <head><title>API Reference</title></head>
+		  <body>
+		    <p>The <a href="index.html">documentation home</a> links here.</p>
+		    <p>Client.connect enables TLS mode.</p>
+		  </body>
+		</html>
+		""",
+		encoding="utf-8",
+	)
+	questions_path = tmp_path / "docs-questions.json"
+	questions_path.write_text(
+		json.dumps(
+			[
+				{
+					"case_id": "d1",
+					"question": "Which page explains TLS mode?",
+					"answer": "API Reference",
+					"gold_support_nodes": ["guide", "api"],
+					"gold_start_nodes": ["guide"],
+					"gold_path_nodes": ["guide", "api"],
+				}
+			],
+			ensure_ascii=False,
+		),
+		encoding="utf-8",
+	)
+	return questions_path, docs_root

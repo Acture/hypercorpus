@@ -3,6 +3,8 @@ import json
 
 from webwalker.experiments import (
     merge_2wiki_results,
+    run_docs_experiment,
+    run_iirc_experiment,
     parse_budget_ratios,
     parse_selector_names,
     run_2wiki_experiment,
@@ -201,3 +203,48 @@ def test_run_2wiki_store_experiment_emits_progress_logs(prepared_two_wiki_store,
     messages = [record.getMessage() for record in caplog.records]
     assert any("Running store-backed 2Wiki experiment" in message for message in messages)
     assert any("Completed store-backed 2Wiki chunk" in message for message in messages)
+
+
+def test_run_iirc_experiment_handles_missing_path_supervision(iirc_files, tmp_path):
+    questions_path, graph_path = iirc_files
+    output_dir = tmp_path / "iirc-out"
+
+    evaluations, summary = run_iirc_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        selector_names=["dense_topk"],
+        budget_ratios=[0.10],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert len(evaluations) == 2
+    assert summary.dataset_name == "iirc"
+    assert summary.total_cases == 2
+    assert summary.selector_budgets[0].avg_path_hit is not None
+    lines = (output_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    first_record = json.loads(lines[0])
+    assert first_record["dataset_name"] == "iirc"
+    assert first_record["selection"]["metrics"]["path_hit"] is None
+
+
+def test_run_docs_experiment_accepts_html_root(docs_files, tmp_path):
+    questions_path, docs_root = docs_files
+    output_dir = tmp_path / "docs-out"
+
+    evaluations, summary = run_docs_experiment(
+        questions_path=questions_path,
+        docs_source=docs_root,
+        output_dir=output_dir,
+        dataset_name="python_docs",
+        selector_names=["dense_topk"],
+        budget_ratios=[0.10],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert len(evaluations) == 1
+    assert summary.dataset_name == "python_docs"
+    assert (output_dir / "results.jsonl").exists()
+    assert json.loads((output_dir / "results.jsonl").read_text(encoding="utf-8").strip())["dataset_name"] == "python_docs"

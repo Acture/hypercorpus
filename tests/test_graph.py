@@ -39,3 +39,33 @@ def test_induced_subgraph_keeps_only_selected_nodes(sample_graph):
 	assert subgraph.nodes == ["mission", "cape"]
 	assert subgraph.neighbors("mission") == ["cape"]
 	assert subgraph.neighbors("cape") == []
+
+
+def test_from_normalized_records_builds_graph():
+	graph = LinkContextGraph.from_normalized_records(
+		[
+			{
+				"node_id": "guide",
+				"title": "Guide",
+				"text": "Guide points to the API.",
+				"links": [
+					{
+						"target": "api",
+						"anchor_text": "API",
+						"sentence": "Guide points to the API.",
+						"sent_idx": 0,
+					}
+				],
+			},
+			{
+				"node_id": "api",
+				"title": "API Reference",
+				"text": "API Reference explains TLS mode.",
+			},
+		],
+		dataset_name="docs",
+	)
+
+	assert graph.neighbors("guide") == ["api"]
+	assert graph.node_attr["guide"]["dataset"] == "docs"
+	assert graph.links_between("guide", "api")[0].anchor_text == "API"

@@ -1,3 +1,5 @@
+from webwalker.datasets.common import BaseDatasetAdapter, DatasetAdapter, PreparedDataset
+from webwalker.datasets.docs import DocumentationAdapter, load_docs_graph, load_docs_questions
 from webwalker.datasets.fetch import (
     TWOWIKI_GRAPH_BASENAME,
     TWOWIKI_GRAPH_URL,
@@ -7,7 +9,8 @@ from webwalker.datasets.fetch import (
     fetch_2wiki_dataset,
     write_2wiki_sample_dataset,
 )
-from webwalker.datasets.twowiki import load_2wiki_graph, load_2wiki_questions
+from webwalker.datasets.iirc import IIRCAdapter, load_iirc_graph, load_iirc_questions
+from webwalker.datasets.twowiki import TwoWikiAdapter, load_2wiki_graph, load_2wiki_questions
 from webwalker.datasets.twowiki_store import (
     DEFAULT_CACHE_DIR,
     DEFAULT_MIN_FREE_GIB,
@@ -29,6 +32,12 @@ from webwalker.datasets.twowiki_store import (
 )
 
 __all__ = [
+    "BaseDatasetAdapter",
+    "DatasetAdapter",
+    "PreparedDataset",
+    "DocumentationAdapter",
+    "IIRCAdapter",
+    "TwoWikiAdapter",
     "TWOWIKI_GRAPH_BASENAME",
     "TWOWIKI_GRAPH_URL",
     "TWOWIKI_QUESTIONS_URL",
@@ -49,8 +58,12 @@ __all__ = [
     "estimate_prepare_bytes",
     "fetch_2wiki_dataset",
     "inspect_2wiki_store",
+    "load_docs_graph",
+    "load_docs_questions",
     "load_2wiki_graph",
     "load_2wiki_questions",
+    "load_iirc_graph",
+    "load_iirc_questions",
     "open_object_store",
     "prepare_2wiki_store",
     "probe_source_size",

@@ -7,7 +7,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
-from webwalker.datasets.twowiki import load_2wiki_graph, load_2wiki_questions
+from webwalker.datasets.common import DatasetAdapter
+from webwalker.datasets.docs import DocumentationAdapter
+from webwalker.datasets.iirc import IIRCAdapter
+from webwalker.datasets.twowiki import TwoWikiAdapter
 from webwalker.datasets.twowiki_store import ShardedLinkContextStore
 from webwalker.eval import (
     DEFAULT_BUDGET_RATIOS,
@@ -25,6 +28,77 @@ from webwalker.logging import create_progress, should_render_progress
 logger = logging.getLogger(__name__)
 
 
+def run_dataset_experiment(
+    *,
+    adapter: DatasetAdapter,
+    questions_path: str | Path,
+    graph_source: str | Path,
+    output_dir: str | Path,
+    limit: int | None = None,
+    selector_names: Sequence[str] | None = None,
+    budget_ratios: Sequence[float] | None = None,
+    seed: int = 0,
+    max_steps: int = 3,
+    top_k: int = 2,
+    with_e2e: bool = True,
+    export_graphrag_inputs: bool = True,
+) -> tuple[list[CaseEvaluation], ExperimentSummary]:
+    dataset_label = getattr(adapter, "dataset_name", "dataset")
+    logger.info("Loading %s graph from %s", dataset_label, graph_source)
+    graph = adapter.load_graph(graph_source)
+    logger.info("Loading %s questions from %s", dataset_label, questions_path)
+    cases = adapter.load_cases(questions_path, limit=limit)
+    selectors = select_selectors(
+        selector_names,
+        seed=seed,
+        include_diagnostics=selector_names is not None,
+    )
+    ratios = list(budget_ratios or DEFAULT_BUDGET_RATIOS)
+    evaluators = _build_evaluators(
+        selectors=selectors,
+        budget_ratios=ratios,
+        max_steps=max_steps,
+        top_k=top_k,
+        with_e2e=with_e2e,
+    )
+    logger.info(
+        "Running %s experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, export_graphrag_inputs=%s)",
+        dataset_label,
+        len(cases),
+        [selector.name for selector in selectors],
+        ratios,
+        with_e2e,
+        export_graphrag_inputs,
+    )
+
+    evaluations = _evaluate_cases(
+        graph=graph,
+        cases=cases,
+        evaluators=evaluators,
+        description=f"evaluate {dataset_label} cases",
+    )
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    if export_graphrag_inputs:
+        _export_graphrag_inputs(
+            graph=graph,
+            evaluations=evaluations,
+            output_dir=output_path,
+            description=f"export {dataset_label} graphrag inputs",
+        )
+
+    summary = summarize_evaluations(
+        evaluations,
+        dataset_name=cases[0].dataset_name if cases else dataset_label,
+    )
+    _write_result_files(chunk_dir=output_path, evaluations=evaluations, summary=summary)
+    logger.info("Completed %s experiment; results written to %s", dataset_label, output_path)
+
+    return evaluations, summary
+
+
 def run_2wiki_experiment(
     *,
     questions_path: str | Path,
@@ -39,60 +113,81 @@ def run_2wiki_experiment(
     with_e2e: bool = True,
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
-    logger.info("Loading raw 2Wiki graph from %s", graph_records_path)
-    graph = load_2wiki_graph(graph_records_path)
-    logger.info("Loading 2Wiki questions from %s", questions_path)
-    cases = load_2wiki_questions(questions_path, limit=limit)
-    selectors = select_selectors(
-        selector_names,
+    return run_dataset_experiment(
+        adapter=TwoWikiAdapter(),
+        questions_path=questions_path,
+        graph_source=graph_records_path,
+        output_dir=output_dir,
+        limit=limit,
+        selector_names=selector_names,
+        budget_ratios=budget_ratios,
         seed=seed,
-        include_diagnostics=selector_names is not None,
-    )
-    ratios = list(budget_ratios or DEFAULT_BUDGET_RATIOS)
-    evaluators = [
-        Evaluator(
-            selectors,
-            budget=SelectionBudget(
-                max_steps=max_steps,
-                top_k=top_k,
-                token_budget_ratio=ratio,
-            ),
-            with_e2e=with_e2e,
-        )
-        for ratio in ratios
-    ]
-    logger.info(
-        "Running raw 2Wiki experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, export_graphrag_inputs=%s)",
-        len(cases),
-        [selector.name for selector in selectors],
-        ratios,
-        with_e2e,
-        export_graphrag_inputs,
+        max_steps=max_steps,
+        top_k=top_k,
+        with_e2e=with_e2e,
+        export_graphrag_inputs=export_graphrag_inputs,
     )
 
-    evaluations = _evaluate_cases(
-        graph=graph,
-        cases=cases,
-        evaluators=evaluators,
-        description="evaluate raw 2wiki cases",
+
+def run_iirc_experiment(
+    *,
+    questions_path: str | Path,
+    graph_records_path: str | Path,
+    output_dir: str | Path,
+    limit: int | None = None,
+    selector_names: Sequence[str] | None = None,
+    budget_ratios: Sequence[float] | None = None,
+    seed: int = 0,
+    max_steps: int = 3,
+    top_k: int = 2,
+    with_e2e: bool = False,
+    export_graphrag_inputs: bool = True,
+) -> tuple[list[CaseEvaluation], ExperimentSummary]:
+    return run_dataset_experiment(
+        adapter=IIRCAdapter(),
+        questions_path=questions_path,
+        graph_source=graph_records_path,
+        output_dir=output_dir,
+        limit=limit,
+        selector_names=selector_names,
+        budget_ratios=budget_ratios,
+        seed=seed,
+        max_steps=max_steps,
+        top_k=top_k,
+        with_e2e=with_e2e,
+        export_graphrag_inputs=export_graphrag_inputs,
     )
 
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
 
-    if export_graphrag_inputs:
-        _export_graphrag_inputs(
-            graph=graph,
-            evaluations=evaluations,
-            output_dir=output_path,
-            description="export raw graphrag inputs",
-        )
-
-    summary = Evaluator().summarize(evaluations)
-    _write_result_files(chunk_dir=output_path, evaluations=evaluations, summary=summary)
-    logger.info("Completed raw 2Wiki experiment; results written to %s", output_path)
-
-    return evaluations, summary
+def run_docs_experiment(
+    *,
+    questions_path: str | Path,
+    docs_source: str | Path,
+    output_dir: str | Path,
+    dataset_name: str = "docs",
+    limit: int | None = None,
+    selector_names: Sequence[str] | None = None,
+    budget_ratios: Sequence[float] | None = None,
+    seed: int = 0,
+    max_steps: int = 3,
+    top_k: int = 2,
+    with_e2e: bool = False,
+    export_graphrag_inputs: bool = True,
+) -> tuple[list[CaseEvaluation], ExperimentSummary]:
+    return run_dataset_experiment(
+        adapter=DocumentationAdapter(dataset_name=dataset_name),
+        questions_path=questions_path,
+        graph_source=docs_source,
+        output_dir=output_dir,
+        limit=limit,
+        selector_names=selector_names,
+        budget_ratios=budget_ratios,
+        seed=seed,
+        max_steps=max_steps,
+        top_k=top_k,
+        with_e2e=with_e2e,
+        export_graphrag_inputs=export_graphrag_inputs,
+    )
 
 
 def run_2wiki_store_experiment(
@@ -133,18 +228,13 @@ def run_2wiki_store_experiment(
         include_diagnostics=selector_names is not None,
     )
     ratios = list(budget_ratios or DEFAULT_BUDGET_RATIOS)
-    evaluators = [
-        Evaluator(
-            selectors,
-            budget=SelectionBudget(
-                max_steps=max_steps,
-                top_k=top_k,
-                token_budget_ratio=ratio,
-            ),
-            with_e2e=with_e2e,
-        )
-        for ratio in ratios
-    ]
+    evaluators = _build_evaluators(
+        selectors=selectors,
+        budget_ratios=ratios,
+        max_steps=max_steps,
+        top_k=top_k,
+        with_e2e=with_e2e,
+    )
     logger.info(
         "Running store-backed 2Wiki experiment (split=%s, selected_cases=%s, selectors=%s, budgets=%s, with_e2e=%s, export_graphrag_inputs=%s)",
         split,
@@ -280,6 +370,28 @@ def budget_ratio_choices_help() -> str:
 
 def store_budget_ratio_choices_help() -> str:
     return budget_ratio_choices_help()
+
+
+def _build_evaluators(
+    *,
+    selectors,
+    budget_ratios: Sequence[float],
+    max_steps: int,
+    top_k: int,
+    with_e2e: bool,
+) -> list[Evaluator]:
+    return [
+        Evaluator(
+            selectors,
+            budget=SelectionBudget(
+                max_steps=max_steps,
+                top_k=top_k,
+                token_budget_ratio=ratio,
+            ),
+            with_e2e=with_e2e,
+        )
+        for ratio in budget_ratios
+    ]
 
 
 def _evaluate_cases(

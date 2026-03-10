@@ -11,6 +11,8 @@ from webwalker.experiments import (
     merge_2wiki_results,
     parse_budget_ratios,
     parse_selector_names,
+    run_docs_experiment,
+    run_iirc_experiment,
     run_2wiki_experiment,
     run_2wiki_store_experiment,
     selector_choices_help,
@@ -54,6 +56,102 @@ def run_2wiki(
         questions_path=questions,
         graph_records_path=graph_records,
         output_dir=output,
+        limit=limit,
+        selector_names=parse_selector_names(selectors),
+        budget_ratios=parse_budget_ratios(budget_ratios),
+        seed=seed,
+        max_steps=max_steps,
+        top_k=top_k,
+        with_e2e=with_e2e,
+        export_graphrag_inputs=export_graphrag_inputs,
+    )
+    _print_summary(console, summary)
+    console.print(f"results.jsonl -> {output / 'results.jsonl'}")
+    console.print(f"summary.json -> {output / 'summary.json'}")
+    if export_graphrag_inputs:
+        console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
+
+
+@experiments_app.command("run-iirc")
+def run_iirc(
+    questions: Path = typer.Option(..., "--questions", exists=True, dir_okay=False, help="Path to IIRC-style questions JSON/JSONL"),
+    graph_records: Path = typer.Option(..., "--graph-records", exists=True, dir_okay=False, help="Path to normalized IIRC graph JSON/JSONL"),
+    output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    selectors: str | None = typer.Option(
+        None,
+        "--selectors",
+        help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
+    ),
+    budget_ratios: str | None = typer.Option(
+        None,
+        "--budget-ratios",
+        help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
+    ),
+    seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
+    max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
+    top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    export_graphrag_inputs: bool = typer.Option(
+        True,
+        "--export-graphrag-inputs/--no-export-graphrag-inputs",
+        help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
+    ),
+) -> None:
+    console = Console()
+    _, summary = run_iirc_experiment(
+        questions_path=questions,
+        graph_records_path=graph_records,
+        output_dir=output,
+        limit=limit,
+        selector_names=parse_selector_names(selectors),
+        budget_ratios=parse_budget_ratios(budget_ratios),
+        seed=seed,
+        max_steps=max_steps,
+        top_k=top_k,
+        with_e2e=with_e2e,
+        export_graphrag_inputs=export_graphrag_inputs,
+    )
+    _print_summary(console, summary)
+    console.print(f"results.jsonl -> {output / 'results.jsonl'}")
+    console.print(f"summary.json -> {output / 'summary.json'}")
+    if export_graphrag_inputs:
+        console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
+
+
+@experiments_app.command("run-docs")
+def run_docs(
+    questions: Path = typer.Option(..., "--questions", exists=True, dir_okay=False, help="Path to documentation QA questions JSON/JSONL"),
+    docs_source: Path = typer.Option(..., "--docs-source", exists=True, help="Documentation HTML root or normalized graph JSON/JSONL"),
+    output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
+    dataset_name: str = typer.Option("docs", "--dataset-name", help="Dataset label for the experiment summary"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    selectors: str | None = typer.Option(
+        None,
+        "--selectors",
+        help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
+    ),
+    budget_ratios: str | None = typer.Option(
+        None,
+        "--budget-ratios",
+        help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
+    ),
+    seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
+    max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
+    top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    export_graphrag_inputs: bool = typer.Option(
+        True,
+        "--export-graphrag-inputs/--no-export-graphrag-inputs",
+        help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
+    ),
+) -> None:
+    console = Console()
+    _, summary = run_docs_experiment(
+        questions_path=questions,
+        docs_source=docs_source,
+        output_dir=output,
+        dataset_name=dataset_name,
         limit=limit,
         selector_names=parse_selector_names(selectors),
         budget_ratios=parse_budget_ratios(budget_ratios),

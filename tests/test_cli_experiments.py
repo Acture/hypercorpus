@@ -104,6 +104,68 @@ def test_run_2wiki_store_cli_smoke(prepared_two_wiki_store, tmp_path):
     assert (tmp_path / "runs" / "pilot" / "chunks" / "chunk-00000" / "results.jsonl").exists()
 
 
+def test_run_iirc_cli_smoke(iirc_files, tmp_path):
+    questions_path, graph_path = iirc_files
+    output_dir = tmp_path / "iirc-cli-out"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-iirc",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--selectors",
+            "dense_topk",
+            "--budget-ratios",
+            "0.10",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "iirc summary" in result.stdout
+    assert (output_dir / "results.jsonl").exists()
+
+
+def test_run_docs_cli_smoke(docs_files, tmp_path):
+    questions_path, docs_root = docs_files
+    output_dir = tmp_path / "docs-cli-out"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-docs",
+            "--questions",
+            str(questions_path),
+            "--docs-source",
+            str(docs_root),
+            "--output",
+            str(output_dir),
+            "--dataset-name",
+            "python_docs",
+            "--selectors",
+            "dense_topk",
+            "--budget-ratios",
+            "0.10",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "python_docs summary" in result.stdout
+    assert (output_dir / "results.jsonl").exists()
+
+
 def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store, tmp_path):
     runner = CliRunner()
     run_root = tmp_path / "runs"

@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, TextIO
 
+from webwalker.datasets.common import BaseDatasetAdapter
 from webwalker.logging import create_progress, should_render_progress
 from webwalker.eval import EvaluationCase
 from webwalker.graph import LinkContextGraph
@@ -141,6 +142,21 @@ def iter_2wiki_question_records(path: str | Path) -> list[dict[str, Any]]:
 def default_2wiki_raw_paths(root: str | Path = TWOWIKI_DEFAULT_ROOT) -> tuple[Path, Path]:
     resolved = Path(root)
     return resolved / "data_ids_april7" / "dev.json", resolved / "para_with_hyperlink.jsonl"
+
+
+class TwoWikiAdapter(BaseDatasetAdapter):
+    dataset_name = "2wikimultihop"
+
+    def load_graph(self, graph_source: str | Path) -> LinkContextGraph:
+        return load_2wiki_graph(graph_source)
+
+    def load_cases(
+        self,
+        questions_source: str | Path,
+        *,
+        limit: int | None = None,
+    ) -> list[EvaluationCase]:
+        return load_2wiki_questions(questions_source, limit=limit)
 
 
 def _iter_jsonl_lines(handle: Iterable[str]) -> Iterator[dict[str, Any]]:
