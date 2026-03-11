@@ -84,9 +84,20 @@ class OverlapLinkScorer:
 
 
 class DynamicWalker:
-	def __init__(self, graph: LinkContextGraph, scorer: LinkScorer | None = None):
+	def __init__(
+		self,
+		graph: LinkContextGraph,
+		scorer: LinkScorer | None = None,
+		*,
+		lookahead_steps: int = 1,
+		lookahead_gamma: float = 0.6,
+	):
+		if lookahead_steps <= 0:
+			raise ValueError("lookahead_steps must be positive.")
 		self.graph = graph
 		self.scorer = scorer or OverlapLinkScorer()
+		self.lookahead_steps = lookahead_steps
+		self.lookahead_gamma = lookahead_gamma
 
 	def walk(
 		self,
@@ -113,13 +124,23 @@ class DynamicWalker:
 
 		stop_reason = StopReason.BUDGET_EXHAUSTED
 		while len(steps) < budget.max_steps:
+			remaining_steps = budget.max_steps - len(steps)
 			candidates: list[tuple[float, LinkContext]] = []
 			for neighbor in self.graph.neighbors(current):
 				if not budget.allow_revisit and neighbor in visited_set:
 					continue
 				for link in self.graph.links_between(current, neighbor):
 					candidates.append(
-						(self.scorer.score(query, self.graph, link, visited_set), link)
+						(
+							self._score_candidate_link(
+								query,
+								link,
+								visited_set,
+								remaining_steps=remaining_steps,
+								allow_revisit=budget.allow_revisit,
+							),
+							link,
+						)
 					)
 
 			if not candidates:
@@ -154,6 +175,58 @@ class DynamicWalker:
 			visited_nodes=visited_nodes,
 			stop_reason=stop_reason,
 		)
+
+	def _score_candidate_link(
+		self,
+		query: str,
+		link: LinkContext,
+		visited_nodes: set[str],
+		*,
+		remaining_steps: int,
+		allow_revisit: bool,
+	) -> float:
+		return self._lookahead_score(
+			query,
+			link,
+			visited_nodes,
+			remaining_steps=remaining_steps,
+			depth=self.lookahead_steps,
+			allow_revisit=allow_revisit,
+		)
+
+	def _lookahead_score(
+		self,
+		query: str,
+		link: LinkContext,
+		visited_nodes: set[str],
+		*,
+		remaining_steps: int,
+		depth: int,
+		allow_revisit: bool,
+	) -> float:
+		immediate = self.scorer.score(query, self.graph, link, visited_nodes)
+		if depth <= 1 or remaining_steps <= 1:
+			return immediate
+
+		next_visited = set(visited_nodes)
+		next_visited.add(link.target)
+		best_future_score = 0.0
+		for neighbor in self.graph.neighbors(link.target):
+			if not allow_revisit and neighbor in next_visited:
+				continue
+			for next_link in self.graph.links_between(link.target, neighbor):
+				best_future_score = max(
+					best_future_score,
+					self._lookahead_score(
+						query,
+						next_link,
+						next_visited,
+						remaining_steps=remaining_steps - 1,
+						depth=depth - 1,
+						allow_revisit=allow_revisit,
+					),
+				)
+		return immediate + self.lookahead_gamma * best_future_score
 
 	def _choose_start_node(self, query: str, start_nodes: list[str]) -> str:
 		scored = sorted(

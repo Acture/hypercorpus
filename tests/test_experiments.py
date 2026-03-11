@@ -1,12 +1,13 @@
 import csv
 import json
+import pytest
 
 from webwalker.experiments import (
     merge_2wiki_results,
-    run_docs_experiment,
-    run_iirc_experiment,
     parse_budget_ratios,
     parse_selector_names,
+    run_docs_experiment,
+    run_iirc_experiment,
     run_2wiki_experiment,
     run_2wiki_store_experiment,
 )
@@ -15,13 +16,29 @@ from webwalker.experiments import (
 def test_parse_selector_names_handles_empty_values():
     assert parse_selector_names(None) is None
     assert parse_selector_names("") is None
-    assert parse_selector_names("webwalker_selector,dense_topk") == ["webwalker_selector", "dense_topk"]
+    assert parse_selector_names("adaptive_link_context_walk,seed_rerank") == ["adaptive_link_context_walk", "seed_rerank"]
 
 
 def test_parse_budget_ratios_handles_empty_values():
     assert parse_budget_ratios(None) is None
     assert parse_budget_ratios("") is None
     assert parse_budget_ratios("0.05,1.0") == [0.05, 1.0]
+
+
+def test_run_2wiki_experiment_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+
+    with pytest.raises(ValueError, match="Unknown selector: dense_topk"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=tmp_path / "legacy-selector",
+            limit=1,
+            selector_names=["dense_topk"],
+            budget_ratios=[0.10],
+            with_e2e=False,
+            export_graphrag_inputs=False,
+        )
 
 
 def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp_path):
@@ -33,7 +50,11 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
         graph_records_path=graph_path,
         output_dir=output_dir,
         limit=1,
-        selector_names=["webwalker_selector", "oracle_start_webwalker", "eager_full_corpus_proxy"],
+        selector_names=[
+            "adaptive_link_context_walk",
+            "oracle_seed_adaptive_link_context_walk",
+            "full_corpus_upper_bound",
+        ],
         budget_ratios=[0.10, 1.0],
         seed=11,
         max_steps=3,
@@ -43,12 +64,12 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert len(evaluations) == 1
     assert summary.total_cases == 1
     assert [(row.name, row.token_budget_ratio) for row in summary.selector_budgets] == [
-        ("webwalker_selector", 0.10),
-        ("oracle_start_webwalker", 0.10),
-        ("eager_full_corpus_proxy", 0.10),
-        ("webwalker_selector", 1.0),
-        ("oracle_start_webwalker", 1.0),
-        ("eager_full_corpus_proxy", 1.0),
+        ("adaptive_link_context_walk", 0.10),
+        ("oracle_seed_adaptive_link_context_walk", 0.10),
+        ("full_corpus_upper_bound", 0.10),
+        ("adaptive_link_context_walk", 1.0),
+        ("oracle_seed_adaptive_link_context_walk", 1.0),
+        ("full_corpus_upper_bound", 1.0),
     ]
 
     results_path = output_dir / "results.jsonl"
@@ -60,7 +81,7 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert len(lines) == 6
     first_record = json.loads(lines[0])
     assert first_record["case_id"] == "q1"
-    assert first_record["selector"] == "webwalker_selector"
+    assert first_record["selector"] == "adaptive_link_context_walk"
     assert first_record["token_budget_ratio"] == 0.10
     assert "selection" in first_record
     assert "budget" in first_record["selection"]
@@ -71,7 +92,7 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     eager_full = [
         row
         for row in summary_record["selector_budgets"]
-        if row["name"] == "eager_full_corpus_proxy" and row["token_budget_ratio"] == 1.0
+        if row["name"] == "full_corpus_upper_bound" and row["token_budget_ratio"] == 1.0
     ][0]
     assert eager_full["avg_compression_ratio"] == 1.0
 
@@ -85,7 +106,7 @@ def test_run_2wiki_experiment_exports_graphrag_csv(two_wiki_files, tmp_path):
         graph_records_path=graph_path,
         output_dir=output_dir,
         limit=1,
-        selector_names=["eager_full_corpus_proxy"],
+        selector_names=["full_corpus_upper_bound"],
         budget_ratios=[1.0],
     )
 
@@ -115,7 +136,7 @@ def test_run_2wiki_experiment_can_disable_e2e_and_export(two_wiki_files, tmp_pat
         graph_records_path=graph_path,
         output_dir=output_dir,
         limit=1,
-        selector_names=["dense_topk"],
+        selector_names=["seed_rerank"],
         budget_ratios=[0.10],
         with_e2e=False,
         export_graphrag_inputs=False,
@@ -139,7 +160,7 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
         exp_name="pilot",
         chunk_size=1,
         chunk_index=0,
-        selector_names=["webwalker_selector", "eager_full_corpus_proxy"],
+        selector_names=["adaptive_link_context_walk", "full_corpus_upper_bound"],
         budget_ratios=[0.10, 1.0],
         with_e2e=False,
         export_graphrag_inputs=False,
@@ -160,7 +181,7 @@ def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared
         exp_name="pilot",
         chunk_size=1,
         chunk_index=0,
-        selector_names=["dense_topk"],
+        selector_names=["seed_rerank"],
         budget_ratios=[0.10],
         with_e2e=False,
         export_graphrag_inputs=False,
@@ -171,7 +192,7 @@ def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared
         exp_name="pilot",
         chunk_size=1,
         chunk_index=1,
-        selector_names=["dense_topk"],
+        selector_names=["seed_rerank"],
         budget_ratios=[0.10],
         with_e2e=False,
         export_graphrag_inputs=False,
@@ -194,7 +215,7 @@ def test_run_2wiki_store_experiment_emits_progress_logs(prepared_two_wiki_store,
         exp_name="pilot",
         chunk_size=1,
         chunk_index=0,
-        selector_names=["dense_topk"],
+        selector_names=["seed_rerank"],
         budget_ratios=[0.10],
         with_e2e=False,
         export_graphrag_inputs=False,
@@ -213,7 +234,7 @@ def test_run_iirc_experiment_handles_missing_path_supervision(iirc_files, tmp_pa
         questions_path=questions_path,
         graph_records_path=graph_path,
         output_dir=output_dir,
-        selector_names=["dense_topk"],
+        selector_names=["seed_rerank"],
         budget_ratios=[0.10],
         with_e2e=False,
         export_graphrag_inputs=False,
@@ -238,7 +259,7 @@ def test_run_docs_experiment_accepts_html_root(docs_files, tmp_path):
         docs_source=docs_root,
         output_dir=output_dir,
         dataset_name="python_docs",
-        selector_names=["dense_topk"],
+        selector_names=["seed_rerank"],
         budget_ratios=[0.10],
         with_e2e=False,
         export_graphrag_inputs=False,

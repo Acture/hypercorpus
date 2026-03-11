@@ -1,14 +1,22 @@
+import pytest
+
 from webwalker.eval import (
-    DenseTopKSelector,
-    EagerFullCorpusProxySelector,
+    AdaptiveAnchorWalk2StepSelector,
+    AdaptiveAnchorWalkSelector,
+    AdaptiveLinkContextWalk2StepSelector,
+    AdaptiveLinkContextWalkSelector,
+    AdaptiveTitleAwareWalkSelector,
     EvaluationCase,
     Evaluator,
-    ExpandAnchorSelector,
-    ExpandLinkContextSelector,
-    ExpandTopologySelector,
+    FullCorpusUpperBoundSelector,
+    OracleSeedAdaptiveLinkContextWalkSelector,
     RandomWalkSelector,
+    SeedPlusAnchorNeighborsSelector,
+    SeedPlusLinkContextNeighborsSelector,
+    SeedPlusTopologyNeighborsSelector,
+    SeedRerankSelector,
     SelectionBudget,
-    WebWalkerSelector,
+    available_selector_names,
     select_selectors,
 )
 from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
@@ -22,7 +30,39 @@ class StaticStartPolicy:
         return list(self.node_ids)
 
 
-def test_evaluator_runs_reviewer_facing_selector_registry(sample_graph):
+def test_available_selector_names_split_main_and_diagnostics():
+    assert available_selector_names(include_diagnostics=False) == [
+        "seed_rerank",
+        "seed_plus_topology_neighbors",
+        "seed_plus_anchor_neighbors",
+        "seed_plus_link_context_neighbors",
+        "adaptive_anchor_walk",
+        "adaptive_link_context_walk",
+        "adaptive_anchor_walk_2step",
+        "adaptive_link_context_walk_2step",
+    ]
+    assert available_selector_names(include_diagnostics=True) == [
+        "seed_rerank",
+        "seed_plus_topology_neighbors",
+        "seed_plus_anchor_neighbors",
+        "seed_plus_link_context_neighbors",
+        "adaptive_anchor_walk",
+        "adaptive_link_context_walk",
+        "adaptive_anchor_walk_2step",
+        "adaptive_link_context_walk_2step",
+        "adaptive_title_aware_walk",
+        "oracle_seed_adaptive_link_context_walk",
+        "random_walk",
+        "full_corpus_upper_bound",
+    ]
+
+
+def test_select_selectors_rejects_legacy_ids():
+    with pytest.raises(ValueError, match="Unknown selector: dense_topk"):
+        select_selectors(["dense_topk"])
+
+
+def test_evaluator_runs_research_facing_selector_registry(sample_graph):
     case = EvaluationCase(
         case_id="launch-site",
         query="Which city hosts the launch site?",
@@ -30,42 +70,36 @@ def test_evaluator_runs_reviewer_facing_selector_registry(sample_graph):
         gold_support_nodes=["mission", "cape"],
         gold_start_nodes=["mission"],
     )
+    selector_names = [
+        "seed_rerank",
+        "seed_plus_topology_neighbors",
+        "seed_plus_anchor_neighbors",
+        "seed_plus_link_context_neighbors",
+        "adaptive_anchor_walk",
+        "adaptive_link_context_walk",
+        "adaptive_anchor_walk_2step",
+        "adaptive_link_context_walk_2step",
+        "adaptive_title_aware_walk",
+        "oracle_seed_adaptive_link_context_walk",
+        "full_corpus_upper_bound",
+    ]
     evaluation = Evaluator(
-        select_selectors(
-            [
-                "dense_topk",
-                "expand_topology",
-                "expand_anchor",
-                "expand_link_context",
-                "webwalker_selector",
-                "oracle_start_webwalker",
-                "eager_full_corpus_proxy",
-            ],
-            include_diagnostics=False,
-        ),
+        select_selectors(selector_names),
         budget=SelectionBudget(max_steps=3, top_k=2, token_budget_ratio=1.0),
     ).evaluate_case(sample_graph, case)
     results = {selection.selector_name: selection for selection in evaluation.selections}
 
-    assert set(results) == {
-        "dense_topk",
-        "expand_topology",
-        "expand_anchor",
-        "expand_link_context",
-        "webwalker_selector",
-        "oracle_start_webwalker",
-        "eager_full_corpus_proxy",
-    }
-    assert results["webwalker_selector"].metrics.support_recall == 1.0
-    assert results["oracle_start_webwalker"].metrics.start_hit is True
-    assert results["webwalker_selector"].end_to_end is not None
-    assert results["webwalker_selector"].end_to_end.em == 1.0
-    assert results["eager_full_corpus_proxy"].metrics.compression_ratio == 1.0
+    assert set(results) == set(selector_names)
+    assert results["adaptive_link_context_walk"].metrics.support_recall == 1.0
+    assert results["oracle_seed_adaptive_link_context_walk"].metrics.start_hit is True
+    assert results["adaptive_title_aware_walk"].end_to_end is not None
+    assert results["adaptive_title_aware_walk"].end_to_end.em == 1.0
+    assert results["full_corpus_upper_bound"].metrics.compression_ratio == 1.0
 
 
-def test_expand_topology_ignores_anchor_and_sentence_text():
+def test_seed_plus_topology_neighbors_ignores_anchor_and_sentence_text():
     query = "Which harbor hosts the launch?"
-    selector = ExpandTopologySelector(
+    selector = SeedPlusTopologyNeighborsSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
     graph_a = _build_ablation_graph(
@@ -89,9 +123,9 @@ def test_expand_topology_ignores_anchor_and_sentence_text():
     assert result_b.corpus.node_ids[1] == "alpha"
 
 
-def test_expand_anchor_reacts_to_anchor_text_but_not_sentence_context():
+def test_seed_plus_anchor_neighbors_reacts_to_anchor_text_but_not_sentence_context():
     query = "Which harbor hosts the launch?"
-    selector = ExpandAnchorSelector(
+    selector = SeedPlusAnchorNeighborsSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
     graph_anchor_alpha = _build_ablation_graph(
@@ -99,14 +133,12 @@ def test_expand_anchor_reacts_to_anchor_text_but_not_sentence_context():
         alpha_sentence="generic context",
         beta_anchor="plain note",
         beta_sentence="launch harbor appears only in the sentence",
-        titles=("Node Alpha", "Node Beta"),
     )
     graph_anchor_beta = _build_ablation_graph(
         alpha_anchor="plain note",
         alpha_sentence="launch harbor appears only in the sentence",
         beta_anchor="launch harbor",
         beta_sentence="generic context",
-        titles=("Node Alpha", "Node Beta"),
     )
 
     budget = SelectionBudget(max_steps=2, top_k=1, token_budget_ratio=1.0)
@@ -117,9 +149,9 @@ def test_expand_anchor_reacts_to_anchor_text_but_not_sentence_context():
     assert result_beta.corpus.node_ids[1] == "beta"
 
 
-def test_expand_link_context_reacts_to_sentence_context():
+def test_seed_plus_link_context_neighbors_reacts_to_sentence_context():
     query = "Which harbor hosts the launch?"
-    selector = ExpandLinkContextSelector(
+    selector = SeedPlusLinkContextNeighborsSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
         anchor_weight=0.0,
         sentence_weight=1.0,
@@ -129,14 +161,12 @@ def test_expand_link_context_reacts_to_sentence_context():
         alpha_sentence="The launch harbor is in Alpha.",
         beta_anchor="plain note",
         beta_sentence="Generic Beta sentence.",
-        titles=("Node Alpha", "Node Beta"),
     )
     graph_sentence_beta = _build_ablation_graph(
         alpha_anchor="plain note",
         alpha_sentence="Generic Alpha sentence.",
         beta_anchor="plain note",
         beta_sentence="The launch harbor is in Beta.",
-        titles=("Node Alpha", "Node Beta"),
     )
 
     budget = SelectionBudget(max_steps=2, top_k=1, token_budget_ratio=1.0)
@@ -145,6 +175,112 @@ def test_expand_link_context_reacts_to_sentence_context():
 
     assert result_alpha.corpus.node_ids[1] == "alpha"
     assert result_beta.corpus.node_ids[1] == "beta"
+
+
+def test_adaptive_anchor_walk_ignores_sentence_context():
+    query = "Which harbor hosts the launch?"
+    selector = AdaptiveAnchorWalkSelector(
+        start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
+    )
+    graph_anchor_alpha = _build_ablation_graph(
+        alpha_anchor="launch harbor",
+        alpha_sentence="generic context",
+        beta_anchor="plain note",
+        beta_sentence="The launch harbor is in Beta.",
+    )
+    graph_anchor_beta = _build_ablation_graph(
+        alpha_anchor="plain note",
+        alpha_sentence="The launch harbor is in Alpha.",
+        beta_anchor="launch harbor",
+        beta_sentence="generic context",
+    )
+
+    budget = SelectionBudget(max_steps=2, top_k=1, token_budget_ratio=1.0)
+    result_alpha = selector.select(graph_anchor_alpha, EvaluationCase(case_id="a", query=query), budget)
+    result_beta = selector.select(graph_anchor_beta, EvaluationCase(case_id="b", query=query), budget)
+
+    assert result_alpha.corpus.node_ids[1] == "alpha"
+    assert result_beta.corpus.node_ids[1] == "beta"
+
+
+def test_adaptive_link_context_walk_reacts_to_sentence_context():
+    query = "Which harbor hosts the launch?"
+    selector = AdaptiveLinkContextWalkSelector(
+        start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
+    )
+    graph_sentence_alpha = _build_ablation_graph(
+        alpha_anchor="plain note",
+        alpha_sentence="The launch harbor is in Alpha.",
+        beta_anchor="plain note",
+        beta_sentence="Generic Beta sentence.",
+    )
+    graph_sentence_beta = _build_ablation_graph(
+        alpha_anchor="plain note",
+        alpha_sentence="Generic Alpha sentence.",
+        beta_anchor="plain note",
+        beta_sentence="The launch harbor is in Beta.",
+    )
+
+    budget = SelectionBudget(max_steps=2, top_k=1, token_budget_ratio=1.0)
+    result_alpha = selector.select(graph_sentence_alpha, EvaluationCase(case_id="a", query=query), budget)
+    result_beta = selector.select(graph_sentence_beta, EvaluationCase(case_id="b", query=query), budget)
+
+    assert result_alpha.corpus.node_ids[1] == "alpha"
+    assert result_beta.corpus.node_ids[1] == "beta"
+
+
+def test_adaptive_link_context_walk_2step_prefers_bridge_node_over_greedy_decoy():
+    query = "harbor location"
+    graph = _build_bridge_graph(anchor_only=False)
+    greedy = AdaptiveLinkContextWalkSelector(
+        start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
+    )
+    lookahead = AdaptiveLinkContextWalk2StepSelector(
+        start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
+    )
+    case = EvaluationCase(
+        case_id="bridge-context",
+        query=query,
+        gold_support_nodes=["root", "bridge", "answer"],
+        gold_start_nodes=["root"],
+        gold_path_nodes=["root", "bridge", "answer"],
+    )
+    budget = SelectionBudget(max_steps=3, top_k=1, token_budget_ratio=1.0)
+
+    greedy_result = greedy.select(graph, case, budget)
+    lookahead_result = lookahead.select(graph, case, budget)
+
+    assert greedy_result.corpus.node_ids == ["root", "bait"]
+    assert lookahead_result.corpus.node_ids == ["root", "bridge", "answer"]
+    assert greedy_result.metrics.path_hit is False
+    assert lookahead_result.metrics.path_hit is True
+
+
+def test_adaptive_anchor_walk_2step_prefers_bridge_node_over_greedy_decoy():
+    query = "harbor location"
+    graph = _build_bridge_graph(anchor_only=True)
+    greedy = AdaptiveAnchorWalkSelector(
+        start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
+    )
+    lookahead = AdaptiveAnchorWalk2StepSelector(
+        start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
+    )
+    case = EvaluationCase(
+        case_id="bridge-anchor",
+        query=query,
+        gold_support_nodes=["root", "bridge", "answer"],
+        gold_start_nodes=["root"],
+        gold_path_nodes=["root", "bridge", "answer"],
+    )
+    budget = SelectionBudget(max_steps=3, top_k=1, token_budget_ratio=1.0)
+
+    greedy_result = greedy.select(graph, case, budget)
+    lookahead_result = lookahead.select(graph, case, budget)
+
+    assert greedy_result.corpus.node_ids == ["root", "bait"]
+    assert lookahead_result.corpus.node_ids == ["root", "bridge", "answer"]
+    assert greedy_result.metrics.path_hit is False
+    assert lookahead_result.metrics.path_hit is True
 
 
 def test_random_walk_is_deterministic_for_fixed_seed(cyclic_graph):
@@ -162,7 +298,7 @@ def test_random_walk_is_deterministic_for_fixed_seed(cyclic_graph):
     assert [step.node_id for step in first.trace] == [step.node_id for step in second.trace]
 
 
-def test_budget_adherence_for_dense_expand_and_walker(sample_graph):
+def test_budget_adherence_for_seed_expand_and_adaptive_walks(sample_graph):
     case = EvaluationCase(
         case_id="budget",
         query="Which city hosts the launch site?",
@@ -171,21 +307,21 @@ def test_budget_adherence_for_dense_expand_and_walker(sample_graph):
     )
     tight_budget = SelectionBudget(max_steps=2, top_k=2, token_budget_ratio=0.20)
 
-    dense = DenseTopKSelector().select(sample_graph, case, tight_budget)
-    expand = ExpandLinkContextSelector().select(sample_graph, case, tight_budget)
-    walker = WebWalkerSelector().select(sample_graph, case, tight_budget)
+    results = [
+        SeedRerankSelector().select(sample_graph, case, tight_budget),
+        SeedPlusLinkContextNeighborsSelector().select(sample_graph, case, tight_budget),
+        AdaptiveLinkContextWalkSelector().select(sample_graph, case, tight_budget),
+        AdaptiveLinkContextWalk2StepSelector().select(sample_graph, case, tight_budget),
+    ]
 
-    assert dense.metrics.budget_adherence is True
-    assert expand.metrics.budget_adherence is True
-    assert walker.metrics.budget_adherence is True
-    assert dense.metrics.selected_token_estimate <= dense.metrics.budget_token_limit
-    assert expand.metrics.selected_token_estimate <= expand.metrics.budget_token_limit
-    assert walker.metrics.selected_token_estimate <= walker.metrics.budget_token_limit
-    assert len(walker.corpus.node_ids) <= tight_budget.max_steps
+    for result in results:
+        assert result.metrics.budget_adherence is True
+        assert result.metrics.selected_token_estimate <= result.metrics.budget_token_limit
+        assert len(result.corpus.node_ids) <= tight_budget.max_steps
 
 
-def test_eager_full_corpus_proxy_ignores_small_budget_but_reports_non_adherence(sample_graph):
-    selector = EagerFullCorpusProxySelector()
+def test_full_corpus_upper_bound_ignores_small_budget_but_reports_non_adherence(sample_graph):
+    selector = FullCorpusUpperBoundSelector()
     case = EvaluationCase(case_id="full", query="Which city hosts the launch site?")
     small_budget = SelectionBudget(max_steps=3, top_k=2, token_budget_ratio=0.10)
     full_budget = SelectionBudget(max_steps=3, top_k=2, token_budget_ratio=1.0)
@@ -229,6 +365,45 @@ def _build_ablation_graph(
             target="beta",
             anchor_text=beta_anchor,
             sentence=beta_sentence,
+            sent_idx=0,
+        )
+    )
+    return graph
+
+
+def _build_bridge_graph(*, anchor_only: bool) -> LinkContextGraph:
+    graph = LinkContextGraph(
+        documents=[
+            DocumentNode("root", "Launch Root", ("Launch Root offers multiple navigation paths.",)),
+            DocumentNode("bait", "Bait Page", ("Bait page looks relevant but dead ends.",)),
+            DocumentNode("bridge", "Bridge Page", ("Bridge page leads onward to the answer.",)),
+            DocumentNode("answer", "Answer Page", ("Answer page contains the true launch harbor location.",)),
+        ]
+    )
+    graph.add_link(
+        LinkContext(
+            source="root",
+            target="bait",
+            anchor_text="harbor location" if anchor_only else "harbor location",
+            sentence="generic bait sentence" if anchor_only else "generic bait sentence",
+            sent_idx=0,
+        )
+    )
+    graph.add_link(
+        LinkContext(
+            source="root",
+            target="bridge",
+            anchor_text="harbor" if anchor_only else "plain note",
+            sentence="generic bridge sentence" if anchor_only else "harbor",
+            sent_idx=0,
+        )
+    )
+    graph.add_link(
+        LinkContext(
+            source="bridge",
+            target="answer",
+            anchor_text="harbor location",
+            sentence="harbor location",
             sent_idx=0,
         )
     )

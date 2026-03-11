@@ -27,15 +27,20 @@ The implementation is local, heuristic, and testable without network calls. The 
 ### 3. Corpus-selection baselines
 
 - The default evaluator now uses a fixed reviewer-facing comparison set:
-  - `dense_topk`
-  - `expand_topology`
-  - `expand_anchor`
-  - `expand_link_context`
-  - `webwalker_selector`
-  - `oracle_start_webwalker`
-  - `eager_full_corpus_proxy`
-- `random_walk` remains available as a diagnostic selector, but it is not part of the default study matrix.
-- `eager_full_corpus_proxy` is a GraphRAG-compatible full-corpus proxy:
+  - `seed_rerank`
+  - `seed_plus_topology_neighbors`
+  - `seed_plus_anchor_neighbors`
+  - `seed_plus_link_context_neighbors`
+  - `adaptive_anchor_walk`
+  - `adaptive_link_context_walk`
+  - `adaptive_anchor_walk_2step`
+  - `adaptive_link_context_walk_2step`
+- Diagnostic selectors remain available outside the default study matrix:
+  - `adaptive_title_aware_walk`
+  - `oracle_seed_adaptive_link_context_walk`
+  - `random_walk`
+  - `full_corpus_upper_bound`
+- `full_corpus_upper_bound` is a GraphRAG-compatible full-corpus proxy:
   - it always selects the full graph
   - it reports full-corpus token cost
   - it exports the exact CSV slice that a downstream GraphRAG run would consume

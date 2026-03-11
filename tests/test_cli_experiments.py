@@ -22,7 +22,7 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
             "--limit",
             "1",
             "--selectors",
-            "webwalker_selector,eager_full_corpus_proxy",
+            "adaptive_link_context_walk,full_corpus_upper_bound",
             "--budget-ratios",
             "0.10,1.0",
             "--seed",
@@ -59,7 +59,7 @@ def test_run_2wiki_cli_supports_no_e2e_and_no_export(two_wiki_files, tmp_path):
             "--limit",
             "1",
             "--selectors",
-            "dense_topk",
+            "seed_rerank",
             "--budget-ratios",
             "0.10",
             "--no-e2e",
@@ -70,6 +70,38 @@ def test_run_2wiki_cli_supports_no_e2e_and_no_export(two_wiki_files, tmp_path):
     assert result.exit_code == 0, result.stdout
     assert "e2e_em" in result.stdout
     assert not (output_dir / "graphrag_inputs").exists()
+
+
+def test_run_2wiki_cli_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "cli-legacy-selector"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-2wiki",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--limit",
+            "1",
+            "--selectors",
+            "dense_topk",
+            "--budget-ratios",
+            "0.10",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert str(result.exception) == "Unknown selector: dense_topk"
 
 
 def test_run_2wiki_store_cli_smoke(prepared_two_wiki_store, tmp_path):
@@ -91,7 +123,7 @@ def test_run_2wiki_store_cli_smoke(prepared_two_wiki_store, tmp_path):
             "--chunk-index",
             "0",
             "--selectors",
-            "webwalker_selector,eager_full_corpus_proxy",
+            "adaptive_link_context_walk,full_corpus_upper_bound",
             "--budget-ratios",
             "0.10,1.0",
             "--no-e2e",
@@ -121,7 +153,7 @@ def test_run_iirc_cli_smoke(iirc_files, tmp_path):
             "--output",
             str(output_dir),
             "--selectors",
-            "dense_topk",
+            "seed_rerank",
             "--budget-ratios",
             "0.10",
             "--no-e2e",
@@ -153,7 +185,7 @@ def test_run_docs_cli_smoke(docs_files, tmp_path):
             "--dataset-name",
             "python_docs",
             "--selectors",
-            "dense_topk",
+            "seed_rerank",
             "--budget-ratios",
             "0.10",
             "--no-e2e",
@@ -187,7 +219,7 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
             "--chunk-index",
             "0",
             "--selectors",
-            "dense_topk",
+            "seed_rerank",
             "--budget-ratios",
             "0.10",
             "--no-e2e",

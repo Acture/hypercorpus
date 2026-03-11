@@ -15,7 +15,7 @@ The current repo contains a local experimentation pipeline for that claim:
 - budget-swept corpus reduction before downstream reasoning
 - lazy subgraph extraction over selected documents
 - heuristic answer synthesis as a secondary sanity check
-- lightweight evaluation against `dense_topk`, `expand_topology`, `expand_anchor`, `expand_link_context`, `webwalker_selector`, `oracle_start_webwalker`, and `eager_full_corpus_proxy`
+- lightweight evaluation against `seed_rerank`, `seed_plus_topology_neighbors`, `seed_plus_anchor_neighbors`, `seed_plus_link_context_neighbors`, `adaptive_anchor_walk`, `adaptive_link_context_walk`, `adaptive_anchor_walk_2step`, and `adaptive_link_context_walk_2step`
 
 This is still an offline experimentation repo, not a production service.
 
@@ -109,7 +109,7 @@ uv run webwalker-cli experiments run-2wiki \
   --graph-records /path/to/para_with_hyperlink.jsonl \
   --output /tmp/webwalker-2wiki \
   --limit 100 \
-  --selectors dense_topk,expand_topology,expand_anchor,expand_link_context,webwalker_selector,oracle_start_webwalker,eager_full_corpus_proxy \
+  --selectors seed_rerank,seed_plus_topology_neighbors,seed_plus_anchor_neighbors,seed_plus_link_context_neighbors,adaptive_anchor_walk,adaptive_link_context_walk,adaptive_anchor_walk_2step,adaptive_link_context_walk_2step \
   --budget-ratios 0.01,0.02,0.05,0.10,1.00 \
   --seed 7 \
   --max-steps 3 \
@@ -133,7 +133,7 @@ uv run webwalker-cli experiments run-2wiki-store \
   --split dev \
   --chunk-size 100 \
   --chunk-index 0 \
-  --selectors dense_topk,expand_topology,expand_anchor,expand_link_context,webwalker_selector,oracle_start_webwalker,eager_full_corpus_proxy \
+  --selectors seed_rerank,seed_plus_topology_neighbors,seed_plus_anchor_neighbors,seed_plus_link_context_neighbors,adaptive_anchor_walk,adaptive_link_context_walk,adaptive_anchor_walk_2step,adaptive_link_context_walk_2step \
   --budget-ratios 0.02,0.05,0.10,1.00 \
   --no-e2e \
   --no-export-graphrag-inputs

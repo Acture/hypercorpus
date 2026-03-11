@@ -11,7 +11,7 @@ from webwalker.candidate.policy import SelectByCosTopK, StartPolicy
 from webwalker.graph import LinkContext, LinkContextGraph
 from webwalker.subgraph import SubgraphExtractor
 from webwalker.text import approx_token_count, normalize_answer, normalized_token_overlap
-from webwalker.walker import DynamicWalker, StopReason, WalkBudget, WalkResult, WalkStep
+from webwalker.walker import DynamicWalker, OverlapLinkScorer, StopReason, WalkBudget, WalkResult, WalkStep
 
 DEFAULT_BUDGET_RATIOS: tuple[float, ...] = (0.01, 0.02, 0.05, 0.10, 1.0)
 
@@ -152,8 +152,8 @@ class CorpusSelector(Protocol):
         ...
 
 
-class DenseTopKSelector:
-    name = "dense_topk"
+class SeedRerankSelector:
+    name = "seed_rerank"
 
     def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
         self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
@@ -186,8 +186,8 @@ class DenseTopKSelector:
         )
 
 
-class ExpandTopologySelector:
-    name = "expand_topology"
+class SeedPlusTopologyNeighborsSelector:
+    name = "seed_plus_topology_neighbors"
 
     def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
         self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
@@ -208,8 +208,8 @@ class ExpandTopologySelector:
         )
 
 
-class ExpandAnchorSelector:
-    name = "expand_anchor"
+class SeedPlusAnchorNeighborsSelector:
+    name = "seed_plus_anchor_neighbors"
 
     def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
         self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
@@ -226,8 +226,8 @@ class ExpandAnchorSelector:
         )
 
 
-class ExpandLinkContextSelector:
-    name = "expand_link_context"
+class SeedPlusLinkContextNeighborsSelector:
+    name = "seed_plus_link_context_neighbors"
 
     def __init__(
         self,
@@ -255,19 +255,85 @@ class ExpandLinkContextSelector:
         )
 
 
-class WebWalkerSelector:
-    name = "webwalker_selector"
+class _AnchorOverlapLinkScorer:
+    def __init__(self, *, novelty_bonus: float = 0.05):
+        self.novelty_bonus = novelty_bonus
+
+    def score(
+        self,
+        query: str,
+        _graph: LinkContextGraph,
+        link: LinkContext,
+        visited_nodes: set[str],
+    ) -> float:
+        score = normalized_token_overlap(query, link.anchor_text)
+        if link.target not in visited_nodes:
+            score += self.novelty_bonus
+        return score
+
+
+class _LinkContextOverlapLinkScorer:
+    def __init__(
+        self,
+        *,
+        anchor_weight: float = 0.6,
+        sentence_weight: float = 0.4,
+        novelty_bonus: float = 0.05,
+    ):
+        self.anchor_weight = anchor_weight
+        self.sentence_weight = sentence_weight
+        self.novelty_bonus = novelty_bonus
+
+    def score(
+        self,
+        query: str,
+        _graph: LinkContextGraph,
+        link: LinkContext,
+        visited_nodes: set[str],
+    ) -> float:
+        score = (
+            normalized_token_overlap(query, link.anchor_text) * self.anchor_weight
+            + normalized_token_overlap(query, link.sentence) * self.sentence_weight
+        )
+        if link.target not in visited_nodes:
+            score += self.novelty_bonus
+        return score
+
+
+class _AdaptiveWalkSelector:
+    name = "adaptive_walk"
+    signal_mode = "link_context"
+    lookahead_steps = 1
+    lookahead_gamma = 0.6
+    min_score = 0.05
 
     def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
         self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
 
+    def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
+        return self.start_policy_factory(budget.top_k).select_start(graph, case.query)
+
+    def _build_link_scorer(self):
+        if self.signal_mode == "anchor":
+            return _AnchorOverlapLinkScorer()
+        if self.signal_mode == "link_context":
+            return _LinkContextOverlapLinkScorer()
+        if self.signal_mode == "title_aware":
+            return OverlapLinkScorer()
+        raise ValueError(f"Unknown adaptive walk signal_mode: {self.signal_mode}")
+
     def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
         started_at = time.perf_counter()
-        start_nodes = self.start_policy_factory(budget.top_k).select_start(graph, case.query)
-        walk = DynamicWalker(graph).walk(
+        start_nodes = self._select_start_nodes(graph, case, budget)
+        walk = DynamicWalker(
+            graph,
+            scorer=self._build_link_scorer(),
+            lookahead_steps=self.lookahead_steps,
+            lookahead_gamma=self.lookahead_gamma,
+        ).walk(
             case.query,
             start_nodes,
-            WalkBudget(max_steps=budget.max_steps, min_score=0.05),
+            WalkBudget(max_steps=budget.max_steps, min_score=self.min_score),
         )
         runtime_s = time.perf_counter() - started_at
         return _selection_from_walk(
@@ -280,29 +346,42 @@ class WebWalkerSelector:
         )
 
 
-class OracleStartWebWalkerSelector:
-    name = "oracle_start_webwalker"
+class AdaptiveAnchorWalkSelector(_AdaptiveWalkSelector):
+    name = "adaptive_anchor_walk"
+    signal_mode = "anchor"
+
+
+class AdaptiveLinkContextWalkSelector(_AdaptiveWalkSelector):
+    name = "adaptive_link_context_walk"
+    signal_mode = "link_context"
+
+
+class AdaptiveAnchorWalk2StepSelector(_AdaptiveWalkSelector):
+    name = "adaptive_anchor_walk_2step"
+    signal_mode = "anchor"
+    lookahead_steps = 2
+
+
+class AdaptiveLinkContextWalk2StepSelector(_AdaptiveWalkSelector):
+    name = "adaptive_link_context_walk_2step"
+    signal_mode = "link_context"
+    lookahead_steps = 2
+
+
+class AdaptiveTitleAwareWalkSelector(_AdaptiveWalkSelector):
+    name = "adaptive_title_aware_walk"
+    signal_mode = "title_aware"
+
+
+class OracleSeedAdaptiveLinkContextWalkSelector(_AdaptiveWalkSelector):
+    name = "oracle_seed_adaptive_link_context_walk"
+    signal_mode = "link_context"
 
     def __init__(self, *, fallback_start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
         self.fallback_start_policy_factory = fallback_start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
 
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        started_at = time.perf_counter()
-        start_nodes = case.gold_start_nodes or self.fallback_start_policy_factory(budget.top_k).select_start(graph, case.query)
-        walk = DynamicWalker(graph).walk(
-            case.query,
-            start_nodes,
-            WalkBudget(max_steps=budget.max_steps, min_score=0.05),
-        )
-        runtime_s = time.perf_counter() - started_at
-        return _selection_from_walk(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            walk=walk,
-            runtime_s=runtime_s,
-        )
+    def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
+        return case.gold_start_nodes or self.fallback_start_policy_factory(budget.top_k).select_start(graph, case.query)
 
 
 class RandomWalkSelector:
@@ -338,8 +417,8 @@ class RandomWalkSelector:
         )
 
 
-class EagerFullCorpusProxySelector:
-    name = "eager_full_corpus_proxy"
+class FullCorpusUpperBoundSelector:
+    name = "full_corpus_upper_bound"
 
     def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
         self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
@@ -369,19 +448,27 @@ class EagerFullCorpusProxySelector:
 
 
 def build_default_selectors(*, seed: int = 0) -> list[CorpusSelector]:
+    del seed
     return [
-        DenseTopKSelector(),
-        ExpandTopologySelector(),
-        ExpandAnchorSelector(),
-        ExpandLinkContextSelector(),
-        WebWalkerSelector(),
-        OracleStartWebWalkerSelector(),
-        EagerFullCorpusProxySelector(),
+        SeedRerankSelector(),
+        SeedPlusTopologyNeighborsSelector(),
+        SeedPlusAnchorNeighborsSelector(),
+        SeedPlusLinkContextNeighborsSelector(),
+        AdaptiveAnchorWalkSelector(),
+        AdaptiveLinkContextWalkSelector(),
+        AdaptiveAnchorWalk2StepSelector(),
+        AdaptiveLinkContextWalk2StepSelector(),
     ]
 
 
 def build_diagnostic_selectors(*, seed: int = 0) -> list[CorpusSelector]:
-    return [*build_default_selectors(seed=seed), RandomWalkSelector(seed=seed)]
+    return [
+        *build_default_selectors(seed=seed),
+        AdaptiveTitleAwareWalkSelector(),
+        OracleSeedAdaptiveLinkContextWalkSelector(),
+        RandomWalkSelector(seed=seed),
+        FullCorpusUpperBoundSelector(),
+    ]
 
 
 def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
