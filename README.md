@@ -51,3 +51,5 @@ Chunk outputs are written under `runs/<exp-name>/chunks/<chunk-id>/` and include
 - `results.jsonl`
 - `selector_logs.jsonl`
 - `summary.json`
+
+For benchmark preparation, raw dataset conversion, and non-2Wiki experiment flows, use [docs/current-implementation.md](docs/current-implementation.md) as the operational reference rather than expanding the README into a command catalog.
