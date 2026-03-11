@@ -1,5 +1,9 @@
 # Literature Map for `webwalker`
 
+This document is the `full pool / research inventory` for `webwalker`.
+
+It is not the paper outline and it is not the baseline-priority guide. Those responsibilities live in [corpus-selection-literature.md](corpus-selection-literature.md) and [paper-positioning.md](paper-positioning.md).
+
 围绕 `semantic link-guided graph walking + lazy subgraph extraction + targeted GraphRAG for multi-hop QA` 整理的 55 篇带注释文献池。
 
 ## Summary
@@ -14,7 +18,8 @@
 
 ## Notes
 
-- `docs/literature-map.tsv` 是机器可读主清单。
+- `docs/literature-map.tsv` 是唯一的机器可读主清单。
+- `docs/corpus-selection-literature.tsv` 只应视为面向论文写作的 subset/export，不是 source of truth。
 - 下方嵌入同字段、同顺序的 TSV 快照，便于直接复制到表格工具或后续生成 related work 草稿。
 
 ## Corpus Selection Focus
