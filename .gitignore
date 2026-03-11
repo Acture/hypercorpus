@@ -16,3 +16,4 @@ graphrag/output
 
 data/
 runs/
+.claude/
