@@ -13,3 +13,6 @@ graphrag/logs
 graphrag/cache
 graphrag/output
 *.db
+
+data/
+runs/
