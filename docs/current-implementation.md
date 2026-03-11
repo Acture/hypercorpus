@@ -4,17 +4,18 @@
 
 `webwalker` currently implements a selector-first experimentation pipeline:
 
-`query -> start retrieval -> budgeted corpus selection over natural hyperlinks -> lazy extraction -> optional answer synthesis -> evaluation`
+`query -> start retrieval -> budgeted subgraph/corpus discovery over natural hyperlinks -> lazy extraction -> optional answer synthesis -> evaluation`
 
-The current repo is an offline research sandbox for pre-RAG corpus selection. It is local-first where possible, LLM-assisted only when explicitly configured, and organized around selecting a smaller evidence set before downstream RAG or GraphRAG.
+The current repo is an offline research sandbox for pre-RAG subgraph/corpus discovery. It is local-first where possible, LLM-assisted only when explicitly configured, and organized around selecting a smaller evidence set before downstream RAG or GraphRAG.
 
 ## Current Claim Boundary
 
-- The primary claim is pre-RAG corpus selection, not end-to-end QA dominance.
+- The primary claim is pre-RAG subgraph/corpus discovery, not end-to-end QA dominance.
 - The headline metric is `support_f1_zero_on_empty`.
 - `answer_em` and `answer_f1` are secondary reviewer-facing sanity checks.
 - The full-corpus comparison is a GraphRAG proxy, not a full GraphRAG integration.
 - The current version is intentionally lightweight, training-free, and budget-aware.
+- The current implementation supports an algorithmic discovery paper more directly than an answerer-first NLP paper.
 
 ## What Is Implemented
 
@@ -37,7 +38,7 @@ The current repo is an offline research sandbox for pre-RAG corpus selection. It
 
 - The experiment layer uses an explicit budget object with `max_steps`, `top_k`, `token_budget_tokens`, and `token_budget_ratio`.
 - Absolute token budgets are the primary controllability axis for current studies.
-- The evaluator treats corpus selection as the primary output.
+- The evaluator treats subgraph/corpus discovery as the primary output.
 - Primary metrics include:
   - `support_recall`
   - `support_precision`

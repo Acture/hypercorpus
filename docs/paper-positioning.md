@@ -4,19 +4,28 @@
 
 `webwalker` targets a narrow problem:
 
-`query-time corpus selection for naturally linked corpora before downstream RAG or GraphRAG`
+`query-time budgeted subgraph/corpus discovery for naturally linked corpora before downstream RAG or GraphRAG`
 
-The paper should not be framed as a new full-stack RAG system. The core question is whether a lightweight selector can recover compact multi-hop evidence under a fixed token budget by exploiting natural hyperlink structure and local link semantics.
+The paper should not be framed as a new full-stack RAG system or primarily as a QA model. The core question is whether a lightweight selector can discover a compact evidence set or induced subgraph under a fixed token budget by exploiting natural hyperlink structure and local link semantics.
 
 ## One-Sentence Thesis
 
-For naturally linked corpora, a lightweight, training-free, budget-aware selector can recover better compact evidence sets than flat dense top-k baselines, without requiring eager graph construction or a learned retrieval policy.
+For naturally linked corpora, a lightweight, training-free, budget-aware discovery algorithm can recover better compact evidence sets than flat dense top-k baselines, without requiring eager graph construction or a learned retrieval policy.
+
+## Paper Form
+
+Write the project as an algorithmic discovery paper.
+
+- Primary output: a selected corpus or induced subgraph under an explicit token budget.
+- Primary objective: evidence discovery quality before downstream reasoning.
+- Primary comparison class: dense and iterative retrieval baselines, not full answer-generation systems.
+- QA remains an evaluation context, not the core identity of the method.
 
 ## Main Claims We Can Defend Now
 
 These claims are currently `supported on phase-decision-30`, a completed `2Wiki dev / 30 cases / token budget 256 / no-e2e` phase-decision run.
 
-- Budgeted corpus selection over natural hyperlinks is a coherent problem formulation for pre-RAG retrieval.
+- Budgeted subgraph/corpus discovery over natural hyperlinks is a coherent problem formulation for pre-RAG retrieval.
 - In the current phase sample, a dense-seeded hyperlink-local walk outperforms flat dense top-k selection on all-case support F1.
 - Under a fixed `256`-token budget, wider and deeper graph search can hurt the operating point by collapsing precision.
 - Budget-aware fill is an effective component in the current system and should be treated as a real part of the paper contribution.
@@ -64,7 +73,7 @@ These should be written as established ingredients, not as paper novelty.
 - fixed-budget corpus assembly
 - selector-first evaluation with all-case evidence metrics
 
-This combination is the current strongest candidate for the paper's main systems contribution.
+This combination is the current strongest candidate for the paper's main algorithmic systems contribution.
 
 ### Candidate New Components
 

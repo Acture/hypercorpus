@@ -1,11 +1,11 @@
 # webwalker
 
-`webwalker` is a `query-time pre-RAG corpus selector` for naturally linked corpora.
+`webwalker` is a `query-time budgeted subgraph/corpus discovery` prototype for naturally linked corpora.
 
 ## What It Is
 
-- A research prototype for selecting a compact evidence set before downstream RAG or GraphRAG.
-- A selector-first system: the primary output is a selected corpus or evidence set under an explicit token budget.
+- A research prototype for discovering a compact evidence set or induced subgraph before downstream RAG or GraphRAG.
+- A selector-first system: the primary output is a selected corpus or subgraph under an explicit token budget.
 - A lightweight, training-free, budget-aware experimentation repo.
 
 ## What It Is Not
@@ -17,11 +17,13 @@
 
 ## Where To Read Next
 
+- [docs/README.md](docs/README.md): docs map, source-of-truth rules, and recommended reading order.
 - [docs/paper-positioning.md](docs/paper-positioning.md): paper-facing problem framing, defensible claims, and novelty map.
 - [docs/phase-decisions.md](docs/phase-decisions.md): evidence-backed experiment conclusions and next ablations.
 - [docs/current-implementation.md](docs/current-implementation.md): what is implemented now, how it is evaluated, and where the current claim boundary sits.
 - [docs/corpus-selection-literature.md](docs/corpus-selection-literature.md): paper-facing related-work guide and baseline priority.
 - [docs/literature-map.md](docs/literature-map.md): full research inventory.
+- [docs/mc/venue-strategy.md](docs/mc/venue-strategy.md): venue-specific narrative options and current conference strategy notes.
 
 ## Minimal Commands
 

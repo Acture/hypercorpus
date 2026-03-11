@@ -2,6 +2,8 @@
 
 This document is the paper-facing related-work guide for `webwalker`.
 
+Treat the paper as a `linked-corpora discovery` paper first and as a `downstream QA support` paper second.
+
 Use it to answer four writing questions:
 
 - what problem are we actually claiming to solve
@@ -14,7 +16,7 @@ Use it to answer four writing questions:
 
 ## Narrative Order
 
-### 1. Define The Problem As Evidence Selection, Not Answer Generation
+### 1. Define The Problem As Subgraph Or Corpus Discovery, Not Answer Generation
 
 Start from the multi-hop datasets and critiques:
 
@@ -24,7 +26,7 @@ Start from the multi-hop datasets and critiques:
 - `Compositional Questions Do Not Necessitate Multi-hop Reasoning`
 - `IIRC`
 
-The paper should frame the task as selecting compact evidence for downstream reasoning rather than proposing a new answer generator.
+The paper should frame the task as budgeted discovery of compact evidence for downstream reasoning rather than proposing a new answer generator.
 
 ### 2. Establish The Main Baseline Family
 
