@@ -22,7 +22,7 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
             "--limit",
             "1",
             "--selectors",
-            "adaptive_link_context_walk,full_corpus_upper_bound",
+            "seed__link_context_overlap__single_path_walk,full_corpus_upper_bound",
             "--token-budgets",
             "128,256",
             "--seed",
@@ -37,6 +37,7 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
     assert "budget" in result.stdout
     assert "answer_em" in result.stdout
     assert (output_dir / "results.jsonl").exists()
+    assert (output_dir / "selector_logs.jsonl").exists()
     assert (output_dir / "summary.json").exists()
     assert (output_dir / "graphrag_inputs").exists()
 
@@ -158,7 +159,7 @@ def test_run_2wiki_store_cli_smoke(prepared_two_wiki_store, tmp_path):
             "--chunk-index",
             "0",
             "--selectors",
-            "adaptive_link_context_walk,full_corpus_upper_bound",
+            "seed__link_context_overlap__single_path_walk,full_corpus_upper_bound",
             "--token-budgets",
             "128,256",
             "--no-e2e",

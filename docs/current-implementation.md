@@ -6,7 +6,7 @@
 
 `query -> lightweight start retrieval -> corpus selection over semantic hyperlinks -> lazy subgraph extraction -> optional answer synthesis -> evaluation`
 
-The implementation is local, heuristic, and testable without network calls. The center of gravity is no longer "build the best QA agent," but "select a smaller corpus before downstream RAG or GraphRAG."
+The implementation is local-first, selector-first, and still centered on "select a smaller corpus before downstream RAG or GraphRAG." The lexical selector family is fully local and testable without network calls. The LLM selector family is optional, provider-backed, and covered with mocked tests.
 
 ## What Is Implemented
 
@@ -31,15 +31,23 @@ The implementation is local, heuristic, and testable without network calls. The 
   - `seed_plus_topology_neighbors`
   - `seed_plus_anchor_neighbors`
   - `seed_plus_link_context_neighbors`
-  - `adaptive_anchor_walk`
-  - `adaptive_link_context_walk`
-  - `adaptive_anchor_walk_2step`
-  - `adaptive_link_context_walk_2step`
+  - `seed__anchor_overlap__single_path_walk`
+  - `seed__link_context_overlap__single_path_walk`
+  - `seed__anchor_overlap__two_hop_single_path_walk`
+  - `seed__link_context_overlap__two_hop_single_path_walk`
 - Diagnostic selectors remain available outside the default study matrix:
-  - `adaptive_title_aware_walk`
-  - `oracle_seed_adaptive_link_context_walk`
-  - `random_walk`
+  - `seed__title_aware__single_path_walk`
+  - `oracle_seed__link_context_overlap__single_path_walk`
+  - `seed__link_context_llm__single_path_walk`
+  - `seed__link_context_llm__two_hop_single_path_walk`
+  - `oracle_seed__link_context_llm__single_path_walk`
+  - `random__single_path_walk`
   - `full_corpus_upper_bound`
+- The renamed walker family is intentionally explicit about control variables:
+  - `seed__...` means dense-seed start policy
+  - `..._overlap__...` means lexical overlap scoring
+  - `..._llm__...` means provider-backed step scoring with rationale and token accounting
+  - `...__single_path_walk` means a single start node and a single greedy walk path
 - `full_corpus_upper_bound` is a GraphRAG-compatible full-corpus proxy:
   - it always selects the full graph
   - it reports full-corpus token cost
@@ -50,15 +58,16 @@ The implementation is local, heuristic, and testable without network calls. The 
 - The experiment layer uses a single budget object with:
   - `max_steps`
   - `top_k`
+  - `token_budget_tokens`
   - `token_budget_ratio`
-- `token_budget_ratio` is the primary controllability axis.
-- The default budget sweep is:
-  - `0.01`
-  - `0.02`
-  - `0.05`
-  - `0.10`
-  - `1.0`
-- `1.0` is treated as the full-corpus proxy budget for eager extraction comparisons.
+- Exactly one of `token_budget_tokens` or `token_budget_ratio` must be set.
+- Absolute token budgets are now the primary controllability axis.
+- The default token-budget sweep is:
+  - `128`
+  - `256`
+  - `512`
+  - `1024`
+- Ratio budgets remain available for legacy comparisons.
 
 ### 5. Selector-first evaluation
 
@@ -66,17 +75,33 @@ The implementation is local, heuristic, and testable without network calls. The 
 - Primary reported metrics:
   - `support_recall`
   - `support_precision`
+  - `support_f1`
   - `path_hit` when available
   - `selected_nodes_count`
   - `selected_token_estimate`
   - `compression_ratio`
   - `selection_runtime_s`
   - `budget_adherence`
+- Selector-side LLM accounting is recorded when applicable:
+  - `selector_provider`
+  - `selector_model`
+  - `selector_prompt_tokens`
+  - `selector_completion_tokens`
+  - `selector_total_tokens`
+  - `selector_runtime_s`
+  - `selector_llm_calls`
 - Secondary reported metrics:
-  - `e2e_em`
+  - `answer_em`
+  - `answer_f1`
   - `answer`
   - `confidence`
-- Experiment summaries are grouped by `selector x token_budget_ratio`, not by selector only.
+- Step-level selector traces are written to `selector_logs.jsonl` with:
+  - candidate scorecards
+  - structured rationale
+  - backend/provider/model
+  - latency, tokens, and cache hit state
+  - fallback reason when an LLM step drops back to overlap scoring
+- Experiment summaries are grouped by `selector x budget x selector_provider x selector_model`, not by selector only.
 
 ### 6. 2Wiki experiment support
 
@@ -92,6 +117,7 @@ The implementation is local, heuristic, and testable without network calls. The 
   - document sentences are loaded lazily from the selected shard
 - `run_2wiki_experiment(...)` runs the selector matrix over a batch of cases and writes:
   - `results.jsonl`
+  - `selector_logs.jsonl`
   - `summary.json`
   - GraphRAG-compatible CSV slices under `graphrag_inputs/`
 - `run_2wiki_store_experiment(...)` runs the same selector matrix against a prepared store and writes chunked outputs under `runs/<exp>/chunks/<chunk-id>/`
@@ -106,7 +132,8 @@ The implementation is local, heuristic, and testable without network calls. The 
 - The output schema is selector-first:
   - each record contains nested `selection`
   - each record may optionally contain `end_to_end`
-  - each record is keyed by selector and budget ratio
+  - each record is keyed by selector and budget
+  - selector logs are written separately from selection summaries
 
 ### 7. Dataset fetch workflow
 
@@ -128,6 +155,7 @@ The implementation is local, heuristic, and testable without network calls. The 
 
 - `SubgraphExtractor.extract(...)` only reads from selected nodes.
 - `Answerer.answer(...)` remains heuristic and local.
+- `LLMAnswerer` is available as an explicit fixed-reader path for end-to-end answer checks.
 - End-to-end answer quality is still produced because reviewers will likely want it, but it is treated as secondary evidence rather than the primary claim.
 
 ### 9. Corpus storage
@@ -142,7 +170,7 @@ The implementation is local, heuristic, and testable without network calls. The 
 
 ## What Is Still Not Implemented
 
-- model-backed selector scoring
+- multi-path or beam-based walker families
 - real eager GraphRAG indexing/query execution
 - full GraphRAG integration as the answer backend
 - training or RL-based selector policies
@@ -172,7 +200,7 @@ The repo uses fast synthetic tests instead of requiring the real corpora for bas
   - verifies the exploratory selector-family library still behaves correctly
   - verifies selector budgets and search variants
 - `test_walker.py`
-  - verifies the legacy greedy walk baseline still behaves as expected
+  - verifies the single-path greedy walk baselines still behave as expected
   - verifies cycle avoidance
   - verifies stop conditions for dead ends and low-confidence edges
 
@@ -180,9 +208,10 @@ The repo uses fast synthetic tests instead of requiring the real corpora for bas
 
 - `test_eval.py`
   - verifies the reviewer-facing selector registry runs
-  - verifies semantic-link ablations differ for topology, anchor-only, and link-context selection
-  - verifies budget adherence for dense, expansion, walker, and eager full-corpus proxy selection
+  - verifies semantic-link ablations differ for topology, anchor-only, overlap-walk, and link-context selection
+  - verifies budget adherence for dense, expansion, single-path walkers, and eager full-corpus proxy selection
   - verifies secondary end-to-end results are still attached when enabled
+  - verifies legacy selector names now fail fast
 
 ### 2Wiki loader and runner tests
 
@@ -191,13 +220,16 @@ The repo uses fast synthetic tests instead of requiring the real corpora for bas
   - verifies question loading and supporting-fact mapping
 - `test_experiments.py`
   - verifies selector x budget output files
-  - verifies `summary.json` grouping and full-corpus proxy accounting
+  - verifies `summary.json` grouping by selector, budget, provider, and model
   - verifies GraphRAG-compatible CSV export
   - verifies chunked store-backed runs and merged summaries
 - `test_cli_experiments.py`
   - verifies the Typer CLI command works end to end on a tiny sample
-  - verifies `--budget-ratios`, `--no-e2e`, and `--no-export-graphrag-inputs`
+  - verifies `--token-budgets`, `--budget-ratios`, `--no-e2e`, and `--no-export-graphrag-inputs`
   - verifies `run-2wiki-store` and `merge-2wiki-results`
+- `test_selector_llm.py`
+  - verifies multi-backend selector LLM configuration and fail-fast behavior
+  - verifies selector cache, rationale logging, token accounting, and two-hop score parsing with mocked providers
 - `test_dataset_fetch.py`
   - verifies split-specific 2Wiki extraction, archive retention, and the sample dataset writer
   - verifies the prepare flow rejects unsafe free-space configurations

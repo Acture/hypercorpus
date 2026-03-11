@@ -57,6 +57,11 @@ def run_2wiki(
     seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -85,6 +90,11 @@ def run_2wiki(
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=selector_cache_path,
         with_e2e=with_e2e,
         answerer_mode=answerer,
         answer_model=answer_model,
@@ -95,6 +105,7 @@ def run_2wiki(
     )
     _print_summary(console, summary)
     console.print(f"results.jsonl -> {output / 'results.jsonl'}")
+    console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {output / 'summary.json'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
@@ -124,6 +135,11 @@ def run_iirc(
     seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -152,6 +168,11 @@ def run_iirc(
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=selector_cache_path,
         with_e2e=with_e2e,
         answerer_mode=answerer,
         answer_model=answer_model,
@@ -162,6 +183,7 @@ def run_iirc(
     )
     _print_summary(console, summary)
     console.print(f"results.jsonl -> {output / 'results.jsonl'}")
+    console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {output / 'summary.json'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
@@ -192,6 +214,11 @@ def run_docs(
     seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -221,6 +248,11 @@ def run_docs(
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=selector_cache_path,
         with_e2e=with_e2e,
         answerer_mode=answerer,
         answer_model=answer_model,
@@ -231,6 +263,7 @@ def run_docs(
     )
     _print_summary(console, summary)
     console.print(f"results.jsonl -> {output / 'results.jsonl'}")
+    console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {output / 'summary.json'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
@@ -266,6 +299,11 @@ def run_2wiki_store(
     seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -300,6 +338,11 @@ def run_2wiki_store(
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=selector_cache_path,
         with_e2e=with_e2e,
         answerer_mode=answerer,
         answer_model=answer_model,
@@ -311,6 +354,7 @@ def run_2wiki_store(
     _print_summary(console, summary)
     console.print(f"chunk_dir -> {chunk_dir}")
     console.print(f"results.jsonl -> {chunk_dir / 'results.jsonl'}")
+    console.print(f"selector_logs.jsonl -> {chunk_dir / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {chunk_dir / 'summary.json'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {chunk_dir / 'graphrag_inputs'}")
@@ -337,6 +381,7 @@ def _format_metric(value: float | None) -> str:
 
 
 def _print_summary(console: Console, summary) -> None:
+    has_selector_costs = any((row.avg_selector_total_tokens or 0) > 0 for row in summary.selector_budgets)
     table = Table(title=f"{summary.dataset_name} summary")
     table.add_column("selector")
     table.add_column("budget", justify="right")
@@ -348,10 +393,16 @@ def _print_summary(console: Console, summary) -> None:
     table.add_column("runtime_s", justify="right")
     table.add_column("answer_em", justify="right")
     table.add_column("answer_f1", justify="right")
+    if has_selector_costs:
+        table.add_column("selector_tokens", justify="right")
+        table.add_column("selector_calls", justify="right")
 
     for row in summary.selector_budgets:
-        table.add_row(
-            row.name,
+        selector_label = row.name
+        if row.selector_provider and row.selector_model:
+            selector_label = f"{row.name}@{row.selector_provider}:{row.selector_model}"
+        cells = [
+            selector_label,
             row.budget_label,
             _format_metric(row.avg_support_recall),
             _format_metric(row.avg_support_precision),
@@ -361,10 +412,29 @@ def _print_summary(console: Console, summary) -> None:
             _format_metric(row.avg_selection_runtime_s),
             _format_metric(row.avg_answer_em),
             _format_metric(row.avg_answer_f1),
-        )
+        ]
+        if has_selector_costs:
+            cells.extend(
+                [
+                    _format_metric(row.avg_selector_total_tokens),
+                    _format_metric(row.avg_selector_llm_calls),
+                ]
+            )
+        table.add_row(*cells)
 
     console.print(table)
-    console.print(
-        "columns: selector, budget, support_recall, support_precision, support_f1, "
-        "selected_tokens, budget_adherence, runtime_s, answer_em, answer_f1"
-    )
+    columns = [
+        "selector",
+        "budget",
+        "support_recall",
+        "support_precision",
+        "support_f1",
+        "selected_tokens",
+        "budget_adherence",
+        "runtime_s",
+        "answer_em",
+        "answer_f1",
+    ]
+    if has_selector_costs:
+        columns.extend(["selector_tokens", "selector_calls"])
+    console.print(f"columns: {', '.join(columns)}")

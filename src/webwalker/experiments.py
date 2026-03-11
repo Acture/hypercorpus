@@ -44,6 +44,11 @@ def run_dataset_experiment(
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
+    selector_provider: str = "openai",
+    selector_model: str | None = None,
+    selector_api_key_env: str | None = None,
+    selector_base_url: str | None = None,
+    selector_cache_path: str | Path | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -61,6 +66,11 @@ def run_dataset_experiment(
         selector_names,
         seed=seed,
         include_diagnostics=selector_names is not None,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=str(selector_cache_path) if selector_cache_path is not None else None,
     )
     budgets = _resolve_budgets(
         token_budgets=token_budgets,
@@ -129,6 +139,11 @@ def run_2wiki_experiment(
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
+    selector_provider: str = "openai",
+    selector_model: str | None = None,
+    selector_api_key_env: str | None = None,
+    selector_base_url: str | None = None,
+    selector_cache_path: str | Path | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -149,6 +164,11 @@ def run_2wiki_experiment(
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=selector_cache_path,
         with_e2e=with_e2e,
         answerer_mode=answerer_mode,
         answer_model=answer_model,
@@ -171,6 +191,11 @@ def run_iirc_experiment(
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
+    selector_provider: str = "openai",
+    selector_model: str | None = None,
+    selector_api_key_env: str | None = None,
+    selector_base_url: str | None = None,
+    selector_cache_path: str | Path | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -191,6 +216,11 @@ def run_iirc_experiment(
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=selector_cache_path,
         with_e2e=with_e2e,
         answerer_mode=answerer_mode,
         answer_model=answer_model,
@@ -214,6 +244,11 @@ def run_docs_experiment(
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
+    selector_provider: str = "openai",
+    selector_model: str | None = None,
+    selector_api_key_env: str | None = None,
+    selector_base_url: str | None = None,
+    selector_cache_path: str | Path | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -234,6 +269,11 @@ def run_docs_experiment(
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=selector_cache_path,
         with_e2e=with_e2e,
         answerer_mode=answerer_mode,
         answer_model=answer_model,
@@ -262,6 +302,11 @@ def run_2wiki_store_experiment(
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
+    selector_provider: str = "openai",
+    selector_model: str | None = None,
+    selector_api_key_env: str | None = None,
+    selector_base_url: str | None = None,
+    selector_cache_path: str | Path | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -286,6 +331,11 @@ def run_2wiki_store_experiment(
         selector_names,
         seed=seed,
         include_diagnostics=selector_names is not None,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_api_key_env=selector_api_key_env,
+        selector_base_url=selector_base_url,
+        selector_cache_path=str(selector_cache_path) if selector_cache_path is not None else None,
     )
     budgets = _resolve_budgets(
         token_budgets=token_budgets,
@@ -342,6 +392,11 @@ def run_2wiki_store_experiment(
                 "selectors": list(selector_names or []),
                 "token_budgets": list(token_budgets) if token_budgets is not None else None,
                 "budget_ratios": list(budget_ratios) if budget_ratios is not None else None,
+                "selector_provider": selector_provider,
+                "selector_model": selector_model,
+                "selector_api_key_env": selector_api_key_env,
+                "selector_base_url": selector_base_url,
+                "selector_cache_path": str(selector_cache_path) if selector_cache_path is not None else None,
                 "with_e2e": with_e2e,
                 "answerer_mode": answerer_mode,
                 "answer_model": answer_model if with_e2e and answerer_mode == "llm_fixed" else None,
@@ -369,6 +424,7 @@ def merge_2wiki_results(
     chunk_dirs = sorted(path for path in chunk_root.iterdir() if path.is_dir())
     logger.info("Merging 2Wiki chunk results from %s (%s chunks)", root, len(chunk_dirs))
     records: list[dict[str, Any]] = []
+    selector_log_records: list[dict[str, Any]] = []
     chunk_indices: list[int] = []
     total_cases: int | None = None
     chunk_size: int | None = None
@@ -391,13 +447,24 @@ def merge_2wiki_results(
                 line = line.strip()
                 if line:
                     records.append(json.loads(line))
+        selector_logs_path = chunk_dir / "selector_logs.jsonl"
+        if selector_logs_path.exists():
+            with selector_logs_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line:
+                        selector_log_records.append(json.loads(line))
 
     summary = _summarize_result_records(records)
     merged_dir = Path(output_dir) if output_dir is not None else root
     merged_dir.mkdir(parents=True, exist_ok=True)
     merged_results = merged_dir / "results.jsonl"
+    merged_selector_logs = merged_dir / "selector_logs.jsonl"
     with merged_results.open("w", encoding="utf-8") as handle:
         for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with merged_selector_logs.open("w", encoding="utf-8") as handle:
+        for record in selector_log_records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     (merged_dir / "summary.json").write_text(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
@@ -682,12 +749,18 @@ def _write_result_files(
     summary: ExperimentSummary,
 ) -> None:
     results_path = chunk_dir / "results.jsonl"
+    selector_logs_path = chunk_dir / "selector_logs.jsonl"
     summary_path = chunk_dir / "summary.json"
     with results_path.open("w", encoding="utf-8") as handle:
         for evaluation in evaluations:
             for selection in evaluation.selections:
                 record = _selection_record(evaluation, selection)
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with selector_logs_path.open("w", encoding="utf-8") as handle:
+        for evaluation in evaluations:
+            for selection in evaluation.selections:
+                for record in _selector_log_records(evaluation, selection):
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     summary_path.write_text(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -709,6 +782,8 @@ def _selection_record(evaluation: CaseEvaluation, selection) -> dict[str, Any]:
         "budget_label": selection.budget.budget_label,
         "token_budget_tokens": selection.budget.token_budget_tokens,
         "token_budget_ratio": selection.budget.token_budget_ratio,
+        "selector_provider": selection.selector_metadata.provider if selection.selector_metadata is not None else None,
+        "selector_model": selection.selector_metadata.model if selection.selector_metadata is not None else None,
         "answerer_mode": selection.end_to_end.mode if selection.end_to_end is not None else None,
         "answer_model": selection.end_to_end.model if selection.end_to_end is not None else None,
         "selection": {
@@ -718,9 +793,32 @@ def _selection_record(evaluation: CaseEvaluation, selection) -> dict[str, Any]:
             "trace": [asdict(step) for step in selection.trace],
             "stop_reason": selection.stop_reason,
             "graphrag_input_path": selection.graphrag_input_path,
+            "selector_metadata": asdict(selection.selector_metadata) if selection.selector_metadata is not None else None,
+            "selector_usage": asdict(selection.selector_usage) if selection.selector_usage is not None else None,
         },
         "end_to_end": asdict(selection.end_to_end) if selection.end_to_end is not None else None,
     }
+
+
+def _selector_log_records(evaluation: CaseEvaluation, selection) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for log in selection.selector_logs:
+        records.append(
+            {
+                "dataset_name": evaluation.case.dataset_name,
+                "case_id": evaluation.case.case_id,
+                "query": evaluation.case.query,
+                "selector": selection.selector_name,
+                "budget_mode": selection.budget.budget_mode,
+                "budget_value": selection.budget.budget_value,
+                "budget_label": selection.budget.budget_label,
+                "selector_provider": selection.selector_metadata.provider if selection.selector_metadata is not None else None,
+                "selector_model": selection.selector_metadata.model if selection.selector_metadata is not None else None,
+                "selector_metadata": asdict(selection.selector_metadata) if selection.selector_metadata is not None else None,
+                "log": asdict(log),
+            }
+        )
+    return records
 
 
 def _slice_cases(
@@ -768,13 +866,15 @@ def _chunk_output_dir(*, output_root: Path, exp_name: str, chunk_meta: dict[str,
 def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSummary:
     if not records:
         raise ValueError("Cannot summarize empty result records.")
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-    ordered_keys: list[tuple[str, str, str]] = []
+    groups: dict[tuple[str, str, str, str | None, str | None], list[dict[str, Any]]] = {}
+    ordered_keys: list[tuple[str, str, str, str | None, str | None]] = []
     for record in records:
         key = (
             str(record["selector"]),
             str(record["budget_mode"]),
             str(record["budget_value"]),
+            record.get("selector_provider"),
+            record.get("selector_model"),
         )
         if key not in groups:
             groups[key] = []
@@ -787,6 +887,8 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
         name = str(rows[0]["selector"])
         budget_mode = str(rows[0]["budget_mode"])
         budget_value_raw = rows[0]["budget_value"]
+        selector_provider = rows[0].get("selector_provider")
+        selector_model = rows[0].get("selector_model")
         budget_value: int | float = int(budget_value_raw) if budget_mode == "tokens" else float(budget_value_raw)
         budget_label = str(rows[0]["budget_label"])
         token_budget_tokens = rows[0].get("token_budget_tokens")
@@ -821,6 +923,31 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
         compression = [float(row["selection"]["metrics"]["compression_ratio"]) for row in rows]
         adherence = [1.0 if row["selection"]["metrics"]["budget_adherence"] else 0.0 for row in rows]
         runtime = [float(row["selection"]["metrics"]["selection_runtime_s"]) for row in rows]
+        selector_prompt_tokens = [
+            float(row["selection"]["selector_usage"]["prompt_tokens"])
+            for row in rows
+            if row["selection"].get("selector_usage") is not None
+        ]
+        selector_completion_tokens = [
+            float(row["selection"]["selector_usage"]["completion_tokens"])
+            for row in rows
+            if row["selection"].get("selector_usage") is not None
+        ]
+        selector_total_tokens = [
+            float(row["selection"]["selector_usage"]["total_tokens"])
+            for row in rows
+            if row["selection"].get("selector_usage") is not None
+        ]
+        selector_runtime = [
+            float(row["selection"]["selector_usage"]["runtime_s"])
+            for row in rows
+            if row["selection"].get("selector_usage") is not None
+        ]
+        selector_llm_calls = [
+            float(row["selection"]["selector_usage"]["llm_calls"])
+            for row in rows
+            if row["selection"].get("selector_usage") is not None
+        ]
         answer_em = [
             float(row["end_to_end"]["em"])
             for row in rows
@@ -834,6 +961,8 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
         selector_budgets.append(
             {
                 "name": name,
+                "selector_provider": selector_provider,
+                "selector_model": selector_model,
                 "budget_mode": budget_mode,
                 "budget_value": budget_value,
                 "budget_label": budget_label,
@@ -850,6 +979,11 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
                 "avg_compression_ratio": _average_or_none(compression) or 0.0,
                 "avg_budget_adherence": _average_or_none(adherence) or 0.0,
                 "avg_selection_runtime_s": _average_or_none(runtime) or 0.0,
+                "avg_selector_prompt_tokens": _average_or_none(selector_prompt_tokens),
+                "avg_selector_completion_tokens": _average_or_none(selector_completion_tokens),
+                "avg_selector_total_tokens": _average_or_none(selector_total_tokens),
+                "avg_selector_runtime_s": _average_or_none(selector_runtime),
+                "avg_selector_llm_calls": _average_or_none(selector_llm_calls),
                 "avg_answer_em": _average_or_none(answer_em),
                 "avg_answer_f1": _average_or_none(answer_f1),
             }

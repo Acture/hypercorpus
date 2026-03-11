@@ -1,21 +1,21 @@
 import pytest
 
 from webwalker.eval import (
-    AdaptiveAnchorWalk2StepSelector,
-    AdaptiveAnchorWalkSelector,
-    AdaptiveLinkContextWalk2StepSelector,
-    AdaptiveLinkContextWalkSelector,
-    AdaptiveTitleAwareWalkSelector,
     EvaluationCase,
     Evaluator,
     FullCorpusUpperBoundSelector,
     GoldSupportContextSelector,
-    OracleSeedAdaptiveLinkContextWalkSelector,
+    OracleSeedLinkContextOverlapSinglePathWalkSelector,
     RandomWalkSelector,
+    SeedAnchorOverlapSinglePathWalkSelector,
+    SeedAnchorOverlapTwoHopSinglePathWalkSelector,
     SeedPlusAnchorNeighborsSelector,
+    SeedLinkContextOverlapSinglePathWalkSelector,
+    SeedLinkContextOverlapTwoHopSinglePathWalkSelector,
     SeedPlusLinkContextNeighborsSelector,
     SeedPlusTopologyNeighborsSelector,
     SeedRerankSelector,
+    SeedTitleAwareSinglePathWalkSelector,
     SelectionBudget,
     available_selector_names,
     select_selectors,
@@ -37,31 +37,36 @@ def test_available_selector_names_split_main_and_diagnostics():
         "seed_plus_topology_neighbors",
         "seed_plus_anchor_neighbors",
         "seed_plus_link_context_neighbors",
-        "adaptive_anchor_walk",
-        "adaptive_link_context_walk",
-        "adaptive_anchor_walk_2step",
-        "adaptive_link_context_walk_2step",
+        "seed__anchor_overlap__single_path_walk",
+        "seed__link_context_overlap__single_path_walk",
+        "seed__anchor_overlap__two_hop_single_path_walk",
+        "seed__link_context_overlap__two_hop_single_path_walk",
     ]
     assert available_selector_names(include_diagnostics=True) == [
         "seed_rerank",
         "seed_plus_topology_neighbors",
         "seed_plus_anchor_neighbors",
         "seed_plus_link_context_neighbors",
-        "adaptive_anchor_walk",
-        "adaptive_link_context_walk",
-        "adaptive_anchor_walk_2step",
-        "adaptive_link_context_walk_2step",
-        "adaptive_title_aware_walk",
-        "oracle_seed_adaptive_link_context_walk",
+        "seed__anchor_overlap__single_path_walk",
+        "seed__link_context_overlap__single_path_walk",
+        "seed__anchor_overlap__two_hop_single_path_walk",
+        "seed__link_context_overlap__two_hop_single_path_walk",
+        "seed__title_aware__single_path_walk",
+        "oracle_seed__link_context_overlap__single_path_walk",
         "gold_support_context",
-        "random_walk",
+        "random__single_path_walk",
         "full_corpus_upper_bound",
+        "seed__link_context_llm__single_path_walk",
+        "seed__link_context_llm__two_hop_single_path_walk",
+        "oracle_seed__link_context_llm__single_path_walk",
     ]
 
 
 def test_select_selectors_rejects_legacy_ids():
     with pytest.raises(ValueError, match="Unknown selector: dense_topk"):
         select_selectors(["dense_topk"])
+    with pytest.raises(ValueError, match="Unknown selector: adaptive_link_context_walk"):
+        select_selectors(["adaptive_link_context_walk"])
 
 
 def test_evaluator_runs_research_facing_selector_registry(sample_graph):
@@ -77,12 +82,12 @@ def test_evaluator_runs_research_facing_selector_registry(sample_graph):
         "seed_plus_topology_neighbors",
         "seed_plus_anchor_neighbors",
         "seed_plus_link_context_neighbors",
-        "adaptive_anchor_walk",
-        "adaptive_link_context_walk",
-        "adaptive_anchor_walk_2step",
-        "adaptive_link_context_walk_2step",
-        "adaptive_title_aware_walk",
-        "oracle_seed_adaptive_link_context_walk",
+        "seed__anchor_overlap__single_path_walk",
+        "seed__link_context_overlap__single_path_walk",
+        "seed__anchor_overlap__two_hop_single_path_walk",
+        "seed__link_context_overlap__two_hop_single_path_walk",
+        "seed__title_aware__single_path_walk",
+        "oracle_seed__link_context_overlap__single_path_walk",
         "gold_support_context",
         "full_corpus_upper_bound",
     ]
@@ -94,12 +99,12 @@ def test_evaluator_runs_research_facing_selector_registry(sample_graph):
     results = {selection.selector_name: selection for selection in evaluation.selections}
 
     assert set(results) == set(selector_names)
-    assert results["adaptive_link_context_walk"].metrics.support_recall == 1.0
-    assert results["oracle_seed_adaptive_link_context_walk"].metrics.start_hit is True
+    assert results["seed__link_context_overlap__single_path_walk"].metrics.support_recall == 1.0
+    assert results["oracle_seed__link_context_overlap__single_path_walk"].metrics.start_hit is True
     assert results["gold_support_context"].metrics.support_precision == 1.0
     assert results["gold_support_context"].metrics.support_f1 == 1.0
-    assert results["adaptive_title_aware_walk"].end_to_end is not None
-    assert results["adaptive_title_aware_walk"].end_to_end.em == 1.0
+    assert results["seed__title_aware__single_path_walk"].end_to_end is not None
+    assert results["seed__title_aware__single_path_walk"].end_to_end.em == 1.0
     assert results["full_corpus_upper_bound"].metrics.compression_ratio == 1.0
 
 
@@ -214,9 +219,9 @@ def test_seed_plus_link_context_neighbors_reacts_to_sentence_context():
     assert result_beta.corpus.node_ids[1] == "beta"
 
 
-def test_adaptive_anchor_walk_ignores_sentence_context():
+def test_seed_anchor_overlap_single_path_walk_ignores_sentence_context():
     query = "Which harbor hosts the launch?"
-    selector = AdaptiveAnchorWalkSelector(
+    selector = SeedAnchorOverlapSinglePathWalkSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
     graph_anchor_alpha = _build_ablation_graph(
@@ -240,9 +245,9 @@ def test_adaptive_anchor_walk_ignores_sentence_context():
     assert result_beta.corpus.node_ids[1] == "beta"
 
 
-def test_adaptive_link_context_walk_reacts_to_sentence_context():
+def test_seed_link_context_overlap_single_path_walk_reacts_to_sentence_context():
     query = "Which harbor hosts the launch?"
-    selector = AdaptiveLinkContextWalkSelector(
+    selector = SeedLinkContextOverlapSinglePathWalkSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
     graph_sentence_alpha = _build_ablation_graph(
@@ -266,13 +271,13 @@ def test_adaptive_link_context_walk_reacts_to_sentence_context():
     assert result_beta.corpus.node_ids[1] == "beta"
 
 
-def test_adaptive_link_context_walk_2step_prefers_bridge_node_over_greedy_decoy():
+def test_seed_link_context_overlap_two_hop_single_path_walk_prefers_bridge_node_over_greedy_decoy():
     query = "harbor location"
     graph = _build_bridge_graph(anchor_only=False)
-    greedy = AdaptiveLinkContextWalkSelector(
+    greedy = SeedLinkContextOverlapSinglePathWalkSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
-    lookahead = AdaptiveLinkContextWalk2StepSelector(
+    lookahead = SeedLinkContextOverlapTwoHopSinglePathWalkSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
     case = EvaluationCase(
@@ -293,13 +298,13 @@ def test_adaptive_link_context_walk_2step_prefers_bridge_node_over_greedy_decoy(
     assert lookahead_result.metrics.path_hit is True
 
 
-def test_adaptive_anchor_walk_2step_prefers_bridge_node_over_greedy_decoy():
+def test_seed_anchor_overlap_two_hop_single_path_walk_prefers_bridge_node_over_greedy_decoy():
     query = "harbor location"
     graph = _build_bridge_graph(anchor_only=True)
-    greedy = AdaptiveAnchorWalkSelector(
+    greedy = SeedAnchorOverlapSinglePathWalkSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
-    lookahead = AdaptiveAnchorWalk2StepSelector(
+    lookahead = SeedAnchorOverlapTwoHopSinglePathWalkSelector(
         start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
     )
     case = EvaluationCase(
@@ -347,8 +352,8 @@ def test_budget_adherence_for_seed_expand_and_adaptive_walks(sample_graph):
     results = [
         SeedRerankSelector().select(sample_graph, case, tight_budget),
         SeedPlusLinkContextNeighborsSelector().select(sample_graph, case, tight_budget),
-        AdaptiveLinkContextWalkSelector().select(sample_graph, case, tight_budget),
-        AdaptiveLinkContextWalk2StepSelector().select(sample_graph, case, tight_budget),
+        SeedLinkContextOverlapSinglePathWalkSelector().select(sample_graph, case, tight_budget),
+        SeedLinkContextOverlapTwoHopSinglePathWalkSelector().select(sample_graph, case, tight_budget),
     ]
 
     for result in results:

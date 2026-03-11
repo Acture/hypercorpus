@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Literal, Protocol, Sequence
+from pathlib import Path
+from typing import Any, Callable, Literal, Protocol, Sequence
 
 from webwalker.answering import Answerer, SupportsAnswer
 from webwalker.candidate.policy import SelectByCosTopK, StartPolicy
 from webwalker.graph import LinkContext, LinkContextGraph
+from webwalker.selector_llm import LLMStepLinkScorer, SelectorLLMConfig
 from webwalker.subgraph import SubgraphExtractor
 from webwalker.text import answer_f1, approx_token_count, normalize_answer, normalized_token_overlap
-from webwalker.walker import DynamicWalker, OverlapLinkScorer, StopReason, WalkBudget, WalkResult, WalkStep
+from webwalker.walker import (
+    AnchorOverlapStepScorer,
+    DynamicWalker,
+    LinkContextOverlapStepScorer,
+    StepScorerMetadata,
+    StopReason,
+    TitleAwareOverlapStepScorer,
+    WalkBudget,
+    WalkResult,
+    WalkStep,
+    WalkStepLog,
+)
 
 DEFAULT_TOKEN_BUDGETS: tuple[int, ...] = (128, 256, 512, 1024)
 DEFAULT_BUDGET_RATIOS: tuple[float, ...] = (0.01, 0.02, 0.05, 0.10, 1.0)
@@ -88,6 +102,27 @@ class SelectionTraceStep:
 
 
 @dataclass(slots=True)
+class SelectorMetadata:
+    scorer_kind: str
+    backend: str
+    provider: str | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+    candidate_prefilter_top_n: int | None = None
+    two_hop_prefilter_top_n: int | None = None
+
+
+@dataclass(slots=True)
+class SelectorUsage:
+    runtime_s: float = 0.0
+    llm_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_hits: int = 0
+
+
+@dataclass(slots=True)
 class SelectedCorpus:
     node_ids: list[str]
     edge_contexts: list[SelectedEdgeContext]
@@ -140,6 +175,9 @@ class SelectionResult:
     end_to_end: EndToEndResult | None = None
     stop_reason: str | None = None
     graphrag_input_path: str | None = None
+    selector_metadata: SelectorMetadata | None = None
+    selector_usage: SelectorUsage | None = None
+    selector_logs: list[WalkStepLog] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -151,6 +189,8 @@ class CaseEvaluation:
 @dataclass(slots=True)
 class SelectorBudgetSummary:
     name: str
+    selector_provider: str | None
+    selector_model: str | None
     budget_mode: Literal["tokens", "ratio"]
     budget_value: int | float
     budget_label: str
@@ -167,6 +207,11 @@ class SelectorBudgetSummary:
     avg_compression_ratio: float
     avg_budget_adherence: float
     avg_selection_runtime_s: float
+    avg_selector_prompt_tokens: float | None
+    avg_selector_completion_tokens: float | None
+    avg_selector_total_tokens: float | None
+    avg_selector_runtime_s: float | None
+    avg_selector_llm_calls: float | None
     avg_answer_em: float | None
     avg_answer_f1: float | None
 
@@ -293,56 +338,8 @@ class SeedPlusLinkContextNeighborsSelector:
         )
 
 
-class _AnchorOverlapLinkScorer:
-    def __init__(self, *, novelty_bonus: float = 0.05):
-        self.novelty_bonus = novelty_bonus
-
-    def score(
-        self,
-        query: str,
-        _graph: LinkContextGraph,
-        link: LinkContext,
-        visited_nodes: set[str],
-    ) -> float:
-        score = normalized_token_overlap(query, link.anchor_text)
-        if link.target not in visited_nodes:
-            score += self.novelty_bonus
-        return score
-
-
-class _LinkContextOverlapLinkScorer:
-    def __init__(
-        self,
-        *,
-        anchor_weight: float = 0.6,
-        sentence_weight: float = 0.4,
-        novelty_bonus: float = 0.05,
-    ):
-        self.anchor_weight = anchor_weight
-        self.sentence_weight = sentence_weight
-        self.novelty_bonus = novelty_bonus
-
-    def score(
-        self,
-        query: str,
-        _graph: LinkContextGraph,
-        link: LinkContext,
-        visited_nodes: set[str],
-    ) -> float:
-        score = (
-            normalized_token_overlap(query, link.anchor_text) * self.anchor_weight
-            + normalized_token_overlap(query, link.sentence) * self.sentence_weight
-        )
-        if link.target not in visited_nodes:
-            score += self.novelty_bonus
-        return score
-
-
-class _AdaptiveWalkSelector:
-    name = "adaptive_walk"
-    signal_mode = "link_context"
-    lookahead_steps = 1
-    lookahead_gamma = 0.6
+class _SinglePathWalkSelector:
+    name = "single_path_walk"
     min_score = 0.05
 
     def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
@@ -351,24 +348,14 @@ class _AdaptiveWalkSelector:
     def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
         return self.start_policy_factory(budget.top_k).select_start(graph, case.query)
 
-    def _build_link_scorer(self):
-        if self.signal_mode == "anchor":
-            return _AnchorOverlapLinkScorer()
-        if self.signal_mode == "link_context":
-            return _LinkContextOverlapLinkScorer()
-        if self.signal_mode == "title_aware":
-            return OverlapLinkScorer()
-        raise ValueError(f"Unknown adaptive walk signal_mode: {self.signal_mode}")
+    def _build_step_scorer(self):
+        raise NotImplementedError
 
     def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
         started_at = time.perf_counter()
         start_nodes = self._select_start_nodes(graph, case, budget)
-        walk = DynamicWalker(
-            graph,
-            scorer=self._build_link_scorer(),
-            lookahead_steps=self.lookahead_steps,
-            lookahead_gamma=self.lookahead_gamma,
-        ).walk(
+        scorer = self._build_step_scorer()
+        walk = DynamicWalker(graph, scorer=scorer).walk(
             case.query,
             start_nodes,
             WalkBudget(max_steps=budget.max_steps, min_score=self.min_score),
@@ -384,36 +371,81 @@ class _AdaptiveWalkSelector:
         )
 
 
-class AdaptiveAnchorWalkSelector(_AdaptiveWalkSelector):
-    name = "adaptive_anchor_walk"
-    signal_mode = "anchor"
+class SeedAnchorOverlapSinglePathWalkSelector(_SinglePathWalkSelector):
+    name = "seed__anchor_overlap__single_path_walk"
+
+    def _build_step_scorer(self):
+        return AnchorOverlapStepScorer()
 
 
-class AdaptiveLinkContextWalkSelector(_AdaptiveWalkSelector):
-    name = "adaptive_link_context_walk"
-    signal_mode = "link_context"
+class SeedLinkContextOverlapSinglePathWalkSelector(_SinglePathWalkSelector):
+    name = "seed__link_context_overlap__single_path_walk"
+
+    def _build_step_scorer(self):
+        return LinkContextOverlapStepScorer()
 
 
-class AdaptiveAnchorWalk2StepSelector(_AdaptiveWalkSelector):
-    name = "adaptive_anchor_walk_2step"
-    signal_mode = "anchor"
-    lookahead_steps = 2
+class SeedAnchorOverlapTwoHopSinglePathWalkSelector(_SinglePathWalkSelector):
+    name = "seed__anchor_overlap__two_hop_single_path_walk"
+
+    def _build_step_scorer(self):
+        return AnchorOverlapStepScorer(lookahead_steps=2)
 
 
-class AdaptiveLinkContextWalk2StepSelector(_AdaptiveWalkSelector):
-    name = "adaptive_link_context_walk_2step"
-    signal_mode = "link_context"
-    lookahead_steps = 2
+class SeedLinkContextOverlapTwoHopSinglePathWalkSelector(_SinglePathWalkSelector):
+    name = "seed__link_context_overlap__two_hop_single_path_walk"
+
+    def _build_step_scorer(self):
+        return LinkContextOverlapStepScorer(lookahead_steps=2)
 
 
-class AdaptiveTitleAwareWalkSelector(_AdaptiveWalkSelector):
-    name = "adaptive_title_aware_walk"
-    signal_mode = "title_aware"
+class SeedTitleAwareSinglePathWalkSelector(_SinglePathWalkSelector):
+    name = "seed__title_aware__single_path_walk"
+
+    def _build_step_scorer(self):
+        return TitleAwareOverlapStepScorer()
 
 
-class OracleSeedAdaptiveLinkContextWalkSelector(_AdaptiveWalkSelector):
-    name = "oracle_seed_adaptive_link_context_walk"
-    signal_mode = "link_context"
+class _LLMSinglePathWalkSelector(_SinglePathWalkSelector):
+    llm_mode: Literal["single_hop", "two_hop"] = "single_hop"
+
+    def __init__(
+        self,
+        *,
+        llm_config: SelectorLLMConfig | None = None,
+        start_policy_factory: Callable[[int], StartPolicy[str]] | None = None,
+        backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
+    ):
+        super().__init__(start_policy_factory=start_policy_factory)
+        self.llm_config = llm_config or SelectorLLMConfig()
+        self.backend_factory = backend_factory
+
+    def _build_step_scorer(self):
+        return LLMStepLinkScorer(
+            config=self.llm_config,
+            mode=self.llm_mode,
+            prefilter_scorer=LinkContextOverlapStepScorer(),
+            fallback_scorer=(
+                LinkContextOverlapStepScorer(lookahead_steps=2)
+                if self.llm_mode == "two_hop"
+                else LinkContextOverlapStepScorer()
+            ),
+            backend_factory=self.backend_factory,
+        )
+
+
+class SeedLinkContextLLMSinglePathWalkSelector(_LLMSinglePathWalkSelector):
+    name = "seed__link_context_llm__single_path_walk"
+    llm_mode = "single_hop"
+
+
+class SeedLinkContextLLMTwoHopSinglePathWalkSelector(_LLMSinglePathWalkSelector):
+    name = "seed__link_context_llm__two_hop_single_path_walk"
+    llm_mode = "two_hop"
+
+
+class OracleSeedLinkContextOverlapSinglePathWalkSelector(_SinglePathWalkSelector):
+    name = "oracle_seed__link_context_overlap__single_path_walk"
 
     def __init__(self, *, fallback_start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
         self.fallback_start_policy_factory = fallback_start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
@@ -421,9 +453,30 @@ class OracleSeedAdaptiveLinkContextWalkSelector(_AdaptiveWalkSelector):
     def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
         return case.gold_start_nodes or self.fallback_start_policy_factory(budget.top_k).select_start(graph, case.query)
 
+    def _build_step_scorer(self):
+        return LinkContextOverlapStepScorer()
+
+
+class OracleSeedLinkContextLLMSinglePathWalkSelector(_LLMSinglePathWalkSelector):
+    name = "oracle_seed__link_context_llm__single_path_walk"
+    llm_mode = "single_hop"
+
+    def __init__(
+        self,
+        *,
+        llm_config: SelectorLLMConfig | None = None,
+        fallback_start_policy_factory: Callable[[int], StartPolicy[str]] | None = None,
+        backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
+    ):
+        super().__init__(llm_config=llm_config, start_policy_factory=None, backend_factory=backend_factory)
+        self.fallback_start_policy_factory = fallback_start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
+
+    def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
+        return case.gold_start_nodes or self.fallback_start_policy_factory(budget.top_k).select_start(graph, case.query)
+
 
 class RandomWalkSelector:
-    name = "random_walk"
+    name = "random__single_path_walk"
 
     def __init__(
         self,
@@ -523,18 +576,18 @@ def build_default_selectors(*, seed: int = 0) -> list[CorpusSelector]:
         SeedPlusTopologyNeighborsSelector(),
         SeedPlusAnchorNeighborsSelector(),
         SeedPlusLinkContextNeighborsSelector(),
-        AdaptiveAnchorWalkSelector(),
-        AdaptiveLinkContextWalkSelector(),
-        AdaptiveAnchorWalk2StepSelector(),
-        AdaptiveLinkContextWalk2StepSelector(),
+        SeedAnchorOverlapSinglePathWalkSelector(),
+        SeedLinkContextOverlapSinglePathWalkSelector(),
+        SeedAnchorOverlapTwoHopSinglePathWalkSelector(),
+        SeedLinkContextOverlapTwoHopSinglePathWalkSelector(),
     ]
 
 
 def build_diagnostic_selectors(*, seed: int = 0) -> list[CorpusSelector]:
     return [
         *build_default_selectors(seed=seed),
-        AdaptiveTitleAwareWalkSelector(),
-        OracleSeedAdaptiveLinkContextWalkSelector(),
+        SeedTitleAwareSinglePathWalkSelector(),
+        OracleSeedLinkContextOverlapSinglePathWalkSelector(),
         GoldSupportContextSelector(),
         RandomWalkSelector(seed=seed),
         FullCorpusUpperBoundSelector(),
@@ -542,8 +595,29 @@ def build_diagnostic_selectors(*, seed: int = 0) -> list[CorpusSelector]:
 
 
 def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
-    selectors = build_diagnostic_selectors() if include_diagnostics else build_default_selectors()
-    return [selector.name for selector in selectors]
+    default_names = [
+        "seed_rerank",
+        "seed_plus_topology_neighbors",
+        "seed_plus_anchor_neighbors",
+        "seed_plus_link_context_neighbors",
+        "seed__anchor_overlap__single_path_walk",
+        "seed__link_context_overlap__single_path_walk",
+        "seed__anchor_overlap__two_hop_single_path_walk",
+        "seed__link_context_overlap__two_hop_single_path_walk",
+    ]
+    if not include_diagnostics:
+        return default_names
+    return [
+        *default_names,
+        "seed__title_aware__single_path_walk",
+        "oracle_seed__link_context_overlap__single_path_walk",
+        "gold_support_context",
+        "random__single_path_walk",
+        "full_corpus_upper_bound",
+        "seed__link_context_llm__single_path_walk",
+        "seed__link_context_llm__two_hop_single_path_walk",
+        "oracle_seed__link_context_llm__single_path_walk",
+    ]
 
 
 def select_selectors(
@@ -551,24 +625,94 @@ def select_selectors(
     *,
     seed: int = 0,
     include_diagnostics: bool = True,
+    selector_provider: Literal["openai", "anthropic", "gemini"] = "openai",
+    selector_model: str | None = None,
+    selector_api_key_env: str | None = None,
+    selector_base_url: str | None = None,
+    selector_cache_path: str | None = None,
+    selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
 ) -> list[CorpusSelector]:
-    registry = {
-        selector.name: selector
-        for selector in (
-            build_diagnostic_selectors(seed=seed)
-            if include_diagnostics
-            else build_default_selectors(seed=seed)
-        )
-    }
+    llm_config = SelectorLLMConfig(
+        provider=selector_provider,
+        model=selector_model,
+        api_key_env=selector_api_key_env,
+        base_url=selector_base_url,
+        cache_path=None if selector_cache_path is None else Path(selector_cache_path),
+    )
+    registry = _selector_registry(
+        seed=seed,
+        include_diagnostics=include_diagnostics,
+        llm_config=llm_config,
+        selector_backend_factory=selector_backend_factory,
+    )
     if names is None:
-        return list(registry.values())
+        return build_diagnostic_selectors(seed=seed) if include_diagnostics else build_default_selectors(seed=seed)
 
     selected: list[CorpusSelector] = []
     for name in names:
         if name not in registry:
             raise ValueError(f"Unknown selector: {name}")
-        selected.append(registry[name])
+        if _selector_name_uses_llm(name):
+            _validate_selector_llm_config(llm_config)
+        selected.append(registry[name]())
     return selected
+
+
+def _selector_registry(
+    *,
+    seed: int,
+    include_diagnostics: bool,
+    llm_config: SelectorLLMConfig,
+    selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None,
+) -> dict[str, Callable[[], CorpusSelector]]:
+    default_builders: list[tuple[str, Callable[[], CorpusSelector]]] = [
+        ("seed_rerank", SeedRerankSelector),
+        ("seed_plus_topology_neighbors", SeedPlusTopologyNeighborsSelector),
+        ("seed_plus_anchor_neighbors", SeedPlusAnchorNeighborsSelector),
+        ("seed_plus_link_context_neighbors", SeedPlusLinkContextNeighborsSelector),
+        ("seed__anchor_overlap__single_path_walk", SeedAnchorOverlapSinglePathWalkSelector),
+        ("seed__link_context_overlap__single_path_walk", SeedLinkContextOverlapSinglePathWalkSelector),
+        ("seed__anchor_overlap__two_hop_single_path_walk", SeedAnchorOverlapTwoHopSinglePathWalkSelector),
+        ("seed__link_context_overlap__two_hop_single_path_walk", SeedLinkContextOverlapTwoHopSinglePathWalkSelector),
+    ]
+    registry = {name: builder for name, builder in default_builders}
+    if not include_diagnostics:
+        return registry
+    registry.update(
+        {
+            "seed__title_aware__single_path_walk": SeedTitleAwareSinglePathWalkSelector,
+            "oracle_seed__link_context_overlap__single_path_walk": OracleSeedLinkContextOverlapSinglePathWalkSelector,
+            "gold_support_context": GoldSupportContextSelector,
+            "random__single_path_walk": lambda: RandomWalkSelector(seed=seed),
+            "full_corpus_upper_bound": FullCorpusUpperBoundSelector,
+            "seed__link_context_llm__single_path_walk": lambda: SeedLinkContextLLMSinglePathWalkSelector(
+                llm_config=llm_config,
+                backend_factory=selector_backend_factory,
+            ),
+            "seed__link_context_llm__two_hop_single_path_walk": lambda: SeedLinkContextLLMTwoHopSinglePathWalkSelector(
+                llm_config=llm_config,
+                backend_factory=selector_backend_factory,
+            ),
+            "oracle_seed__link_context_llm__single_path_walk": lambda: OracleSeedLinkContextLLMSinglePathWalkSelector(
+                llm_config=llm_config,
+                backend_factory=selector_backend_factory,
+            ),
+        }
+    )
+    return registry
+
+
+def _validate_selector_llm_config(config: SelectorLLMConfig) -> None:
+    if not config.api_key_env:
+        raise ValueError("selector_api_key_env must be configured for LLM selectors.")
+    if not config.model:
+        raise ValueError("selector_model must be configured for LLM selectors.")
+    if not os.environ.get(config.api_key_env):
+        raise ValueError(f"Missing API key in environment variable {config.api_key_env}")
+
+
+def _selector_name_uses_llm(name: str) -> bool:
+    return "_llm__" in name
 
 
 class Evaluator:
@@ -619,25 +763,36 @@ def summarize_evaluations(
 
     ordered_keys = list(
         dict.fromkeys(
-            (selection.selector_name, selection.budget.budget_mode, selection.budget.budget_value)
+            (
+                selection.selector_name,
+                selection.budget.budget_mode,
+                selection.budget.budget_value,
+                selection.selector_metadata.provider if selection.selector_metadata is not None else None,
+                selection.selector_metadata.model if selection.selector_metadata is not None else None,
+            )
             for evaluation in evaluations
             for selection in evaluation.selections
         )
     )
 
     selector_budgets: list[SelectorBudgetSummary] = []
-    for name, budget_mode, budget_value in ordered_keys:
+    for name, budget_mode, budget_value, selector_provider, selector_model in ordered_keys:
         results = [
             selection
             for evaluation in evaluations
             for selection in evaluation.selections
             if selection.selector_name == name
             and _matches_budget(selection.budget, budget_mode=budget_mode, budget_value=budget_value)
+            and (selection.selector_metadata.provider if selection.selector_metadata is not None else None)
+            == selector_provider
+            and (selection.selector_metadata.model if selection.selector_metadata is not None else None) == selector_model
         ]
         exemplar = results[0].budget
         selector_budgets.append(
             SelectorBudgetSummary(
                 name=name,
+                selector_provider=selector_provider,
+                selector_model=selector_model,
                 budget_mode=budget_mode,
                 budget_value=budget_value,
                 budget_label=exemplar.budget_label,
@@ -667,6 +822,21 @@ def summarize_evaluations(
                 avg_compression_ratio=_average([result.metrics.compression_ratio for result in results]) or 0.0,
                 avg_budget_adherence=_average([1.0 if result.metrics.budget_adherence else 0.0 for result in results]) or 0.0,
                 avg_selection_runtime_s=_average([result.metrics.selection_runtime_s for result in results]) or 0.0,
+                avg_selector_prompt_tokens=_average(
+                    [float(result.selector_usage.prompt_tokens) for result in results if result.selector_usage is not None]
+                ),
+                avg_selector_completion_tokens=_average(
+                    [float(result.selector_usage.completion_tokens) for result in results if result.selector_usage is not None]
+                ),
+                avg_selector_total_tokens=_average(
+                    [float(result.selector_usage.total_tokens) for result in results if result.selector_usage is not None]
+                ),
+                avg_selector_runtime_s=_average(
+                    [result.selector_usage.runtime_s for result in results if result.selector_usage is not None]
+                ),
+                avg_selector_llm_calls=_average(
+                    [float(result.selector_usage.llm_calls) for result in results if result.selector_usage is not None]
+                ),
                 avg_answer_em=_average(
                     [
                         result.end_to_end.em
@@ -705,6 +875,9 @@ def _build_selection_result(
     stop_reason: str | None,
     force_full_corpus: bool = False,
     ignore_budget: bool = False,
+    selector_metadata: SelectorMetadata | None = None,
+    selector_usage: SelectorUsage | None = None,
+    selector_logs: Sequence[WalkStepLog] | None = None,
 ) -> SelectionResult:
     total_graph_tokens = _graph_token_estimate(graph)
     budget_token_limit = _budget_token_limit(graph, budget)
@@ -764,6 +937,9 @@ def _build_selection_result(
             if step.node_id in selected_node_set or step.index == 0
         ],
         stop_reason=stop_reason,
+        selector_metadata=selector_metadata,
+        selector_usage=selector_usage or SelectorUsage(),
+        selector_logs=list(selector_logs or []),
     )
 
 
@@ -885,6 +1061,9 @@ def _selection_from_walk(
         trace=trace,
         runtime_s=runtime_s,
         stop_reason=walk.stop_reason.value,
+        selector_metadata=_selector_metadata_from_walk(walk),
+        selector_usage=_selector_usage_from_logs(walk.selector_logs),
+        selector_logs=walk.selector_logs,
     )
 
 
@@ -1027,6 +1206,11 @@ def _walk_with_neighbor_selector(
         steps=steps,
         visited_nodes=visited_nodes,
         stop_reason=stop_reason,
+        scorer_metadata=StepScorerMetadata(
+            scorer_kind="overlap",
+            backend="overlap",
+        ),
+        selector_logs=[],
     )
 
 
@@ -1120,6 +1304,32 @@ def _path_hit(selected_nodes: Sequence[str], gold_path_nodes: Sequence[str] | No
     if not gold_path_nodes:
         return None
     return set(gold_path_nodes).issubset(set(selected_nodes))
+
+
+def _selector_metadata_from_walk(walk: WalkResult) -> SelectorMetadata:
+    metadata: StepScorerMetadata = walk.scorer_metadata
+    return SelectorMetadata(
+        scorer_kind=metadata.scorer_kind,
+        backend=metadata.backend,
+        provider=metadata.provider,
+        model=metadata.model,
+        prompt_version=metadata.prompt_version,
+        candidate_prefilter_top_n=metadata.candidate_prefilter_top_n,
+        two_hop_prefilter_top_n=metadata.two_hop_prefilter_top_n,
+    )
+
+
+def _selector_usage_from_logs(logs: Sequence[WalkStepLog]) -> SelectorUsage:
+    if not logs:
+        return SelectorUsage()
+    return SelectorUsage(
+        runtime_s=sum(log.latency_s for log in logs),
+        llm_calls=sum(1 for log in logs if log.provider is not None),
+        prompt_tokens=sum(log.prompt_tokens or 0 for log in logs),
+        completion_tokens=sum(log.completion_tokens or 0 for log in logs),
+        total_tokens=sum(log.total_tokens or 0 for log in logs),
+        cache_hits=sum(1 for log in logs if log.cache_hit),
+    )
 
 
 def _matches_budget(

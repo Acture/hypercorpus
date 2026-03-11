@@ -3,6 +3,7 @@ import json
 import pytest
 
 from webwalker.experiments import (
+    _summarize_result_records,
     merge_2wiki_results,
     parse_budget_ratios,
     parse_token_budgets,
@@ -17,7 +18,10 @@ from webwalker.experiments import (
 def test_parse_selector_names_handles_empty_values():
     assert parse_selector_names(None) is None
     assert parse_selector_names("") is None
-    assert parse_selector_names("adaptive_link_context_walk,seed_rerank") == ["adaptive_link_context_walk", "seed_rerank"]
+    assert parse_selector_names("seed__link_context_overlap__single_path_walk,seed_rerank") == [
+        "seed__link_context_overlap__single_path_walk",
+        "seed_rerank",
+    ]
 
 
 def test_parse_budget_ratios_handles_empty_values():
@@ -93,8 +97,8 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
         output_dir=output_dir,
         limit=1,
         selector_names=[
-            "adaptive_link_context_walk",
-            "oracle_seed_adaptive_link_context_walk",
+            "seed__link_context_overlap__single_path_walk",
+            "oracle_seed__link_context_overlap__single_path_walk",
             "gold_support_context",
             "full_corpus_upper_bound",
         ],
@@ -108,12 +112,12 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert len(evaluations) == 1
     assert summary.total_cases == 1
     assert [(row.name, row.budget_label) for row in summary.selector_budgets] == [
-        ("adaptive_link_context_walk", "tokens-128"),
-        ("oracle_seed_adaptive_link_context_walk", "tokens-128"),
+        ("seed__link_context_overlap__single_path_walk", "tokens-128"),
+        ("oracle_seed__link_context_overlap__single_path_walk", "tokens-128"),
         ("gold_support_context", "tokens-128"),
         ("full_corpus_upper_bound", "tokens-128"),
-        ("adaptive_link_context_walk", "tokens-256"),
-        ("oracle_seed_adaptive_link_context_walk", "tokens-256"),
+        ("seed__link_context_overlap__single_path_walk", "tokens-256"),
+        ("oracle_seed__link_context_overlap__single_path_walk", "tokens-256"),
         ("gold_support_context", "tokens-256"),
         ("full_corpus_upper_bound", "tokens-256"),
     ]
@@ -127,7 +131,7 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert len(lines) == 8
     first_record = json.loads(lines[0])
     assert first_record["case_id"] == "q1"
-    assert first_record["selector"] == "adaptive_link_context_walk"
+    assert first_record["selector"] == "seed__link_context_overlap__single_path_walk"
     assert first_record["budget_mode"] == "tokens"
     assert first_record["budget_value"] == 128
     assert first_record["budget_label"] == "tokens-128"
@@ -208,7 +212,7 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
         exp_name="pilot",
         chunk_size=1,
         chunk_index=0,
-        selector_names=["adaptive_link_context_walk", "gold_support_context", "full_corpus_upper_bound"],
+        selector_names=["seed__link_context_overlap__single_path_walk", "gold_support_context", "full_corpus_upper_bound"],
         token_budgets=[128, 256],
         with_e2e=False,
         export_graphrag_inputs=False,
@@ -275,6 +279,62 @@ def test_run_2wiki_store_experiment_emits_progress_logs(prepared_two_wiki_store,
     messages = [record.getMessage() for record in caplog.records]
     assert any("Running store-backed 2Wiki experiment" in message for message in messages)
     assert any("Completed store-backed 2Wiki chunk" in message for message in messages)
+
+
+def test_summarize_result_records_separates_selector_model_groups():
+    base_record = {
+        "dataset_name": "2wikimultihop",
+        "case_id": "q1",
+        "selector": "seed__link_context_llm__single_path_walk",
+        "budget_mode": "tokens",
+        "budget_value": 128,
+        "budget_label": "tokens-128",
+        "token_budget_tokens": 128,
+        "token_budget_ratio": None,
+        "selection": {
+            "metrics": {
+                "start_hit": True,
+                "support_recall": 1.0,
+                "support_precision": 1.0,
+                "support_f1": 1.0,
+                "path_hit": True,
+                "selected_nodes_count": 2,
+                "selected_token_estimate": 64,
+                "compression_ratio": 0.1,
+                "budget_adherence": True,
+                "selection_runtime_s": 0.01,
+            },
+            "selector_usage": {
+                "runtime_s": 0.3,
+                "llm_calls": 1,
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "cache_hits": 0,
+            },
+        },
+        "end_to_end": None,
+    }
+    summary = _summarize_result_records(
+        [
+            {
+                **base_record,
+                "selector_provider": "openai",
+                "selector_model": "gpt-small",
+            },
+            {
+                **base_record,
+                "case_id": "q2",
+                "selector_provider": "openai",
+                "selector_model": "gpt-large",
+            },
+        ]
+    )
+
+    assert [(row.selector_provider, row.selector_model) for row in summary.selector_budgets] == [
+        ("openai", "gpt-small"),
+        ("openai", "gpt-large"),
+    ]
 
 
 def test_run_iirc_experiment_handles_missing_path_supervision(iirc_files, tmp_path):
