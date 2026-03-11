@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from webwalker.datasets.fetch import fetch_2wiki_dataset, write_2wiki_sample_dataset
+from webwalker.datasets.fetch import (
+    fetch_hotpotqa_dataset,
+    fetch_iirc_dataset,
+    fetch_musique_dataset,
+    fetch_2wiki_dataset,
+    write_2wiki_sample_dataset,
+)
 from webwalker.datasets.twowiki_store import prepare_2wiki_store
 from webwalker.datasets.twowiki import load_2wiki_graph, load_2wiki_questions
 
@@ -74,3 +80,40 @@ def test_prepare_2wiki_store_rejects_when_min_free_space_is_too_high(two_wiki_ar
             graph_source=graph_zip.as_uri(),
             min_free_gib=10_000.0,
         )
+
+
+def test_fetch_iirc_dataset_extracts_archive_and_writes_source_manifest(iirc_raw_archive, tmp_path):
+    layout = fetch_iirc_dataset(tmp_path / "iirc-fetched", archive_url=iirc_raw_archive.as_uri())
+
+    assert layout.source_manifest_path is not None
+    assert layout.source_manifest_path.exists()
+    assert (layout.raw_dir / "iirc" / "extracted" / "dev.json").exists()
+    assert (layout.raw_dir / "iirc" / "extracted" / "context_articles.json").exists()
+
+
+def test_fetch_musique_dataset_downloads_requested_split_and_subset(musique_raw_split_files, tmp_path):
+    layout = fetch_musique_dataset(
+        tmp_path / "musique-fetched",
+        split="dev",
+        subset="full",
+        split_urls={name: path.as_uri() for name, path in musique_raw_split_files.items()},
+    )
+
+    assert set(layout.artifact_paths) == {"dev"}
+    assert layout.artifact_paths["dev"].name == "dev.jsonl"
+    assert layout.source_manifest_path is not None and layout.source_manifest_path.exists()
+
+
+def test_fetch_hotpotqa_dataset_downloads_variant_questions(hotpotqa_raw_split_files, tmp_path):
+    layout = fetch_hotpotqa_dataset(
+        tmp_path / "hotpot-fetched",
+        variant="distractor",
+        split="dev",
+        split_urls={name: path.as_uri() for name, path in hotpotqa_raw_split_files["distractor"].items()},
+    )
+
+    assert set(layout.artifact_paths) == {"dev"}
+    assert layout.artifact_paths["dev"].name == "dev.json"
+    manifest = json.loads(layout.source_manifest_path.read_text(encoding="utf-8"))
+    assert manifest["dataset_name"] == "hotpotqa"
+    assert manifest["variant"] == "distractor"

@@ -831,6 +831,21 @@ def _write_questions(output_dir: Path, questions_source_path: Path) -> dict[str,
 
 
 def _iter_normalized_records(path: Path) -> Iterator[dict[str, Any]]:
+    if path.is_dir():
+        candidates = sorted(
+            item
+            for item in path.rglob("*")
+            if item.is_file()
+            and (
+                item.suffix.lower() in {".json", ".jsonl", ".zip"}
+                or tuple(suffix.lower() for suffix in item.suffixes[-2:]) in {(".jsonl", ".gz"), (".json", ".gz")}
+            )
+        )
+        if not candidates:
+            raise ValueError(f"Unsupported graph source directory: {path}")
+        for candidate in candidates:
+            yield from _iter_normalized_records(candidate)
+        return
     suffixes = [suffix.lower() for suffix in path.suffixes]
     if suffixes[-2:] == [".jsonl", ".gz"]:
         with gzip.open(path, "rt", encoding="utf-8") as handle:
@@ -868,6 +883,10 @@ def _iter_normalized_records(path: Path) -> Iterator[dict[str, Any]]:
                     yield from _iter_loaded_payload(payload)
         return
     raise ValueError(f"Unsupported graph source: {path}")
+
+
+def iter_normalized_graph_records(path: str | Path) -> Iterator[dict[str, Any]]:
+    yield from _iter_normalized_records(Path(path))
 
 
 def _iter_loaded_payload(payload: Any) -> Iterator[dict[str, Any]]:

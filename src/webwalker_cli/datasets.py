@@ -8,11 +8,22 @@ from rich.console import Console
 from webwalker.datasets import (
     DEFAULT_CACHE_DIR,
     DEFAULT_MIN_FREE_GIB,
+    HOTPOTQA_DISTRACTOR_SPLIT_URLS,
+    HOTPOTQA_FULLWIKI_SPLIT_URLS,
+    IIRC_ARCHIVE_URL,
+    MUSIQUE_ANSWERABLE_SPLIT_URLS,
+    MUSIQUE_FULL_SPLIT_URLS,
     TWOWIKI_GRAPH_URL,
     TWOWIKI_QUESTIONS_URL,
     TWOWIKI_SPLITS,
+    convert_hotpotqa_raw_dataset,
+    convert_iirc_raw_dataset,
+    convert_musique_raw_dataset,
     ensure_min_free_space,
     estimate_prepare_bytes,
+    fetch_hotpotqa_dataset,
+    fetch_iirc_dataset,
+    fetch_musique_dataset,
     fetch_2wiki_dataset,
     inspect_2wiki_store,
     prepare_normalized_graph_store,
@@ -89,6 +100,258 @@ def write_2wiki_sample(
     console.print("sample source: synthetic smoke dataset bundled with the repo")
 
 
+@datasets_app.command("fetch-iirc")
+def fetch_iirc(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for downloaded raw artifacts"),
+    archive_url: str = typer.Option(IIRC_ARCHIVE_URL, "--archive-url", help="Override URL for the IIRC train/dev archive"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing downloaded/extracted files"),
+) -> None:
+    console = Console()
+    layout = fetch_iirc_dataset(
+        output_dir,
+        archive_url=archive_url,
+        overwrite=overwrite,
+    )
+    _print_raw_layout(console, layout)
+    console.print("next:")
+    console.print(f"uv run webwalker-cli datasets convert-iirc-raw --raw-dir {layout.raw_dir / 'iirc'} --output-dir {output_dir / 'normalized'}")
+
+
+@datasets_app.command("fetch-musique")
+def fetch_musique(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for downloaded raw artifacts"),
+    split: str = typer.Option("dev", "--split", help="Question split to fetch: train, dev, test, or all"),
+    subset: str = typer.Option("full", "--subset", help="MuSiQue subset: full or ans"),
+    train_url: str | None = typer.Option(None, "--train-url", help="Override the train questions URL"),
+    dev_url: str | None = typer.Option(None, "--dev-url", help="Override the dev questions URL"),
+    test_url: str | None = typer.Option(None, "--test-url", help="Override the test questions URL"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing downloaded files"),
+) -> None:
+    console = Console()
+    split_urls = {
+        "train": train_url,
+        "dev": dev_url,
+        "test": test_url,
+    }
+    default_urls = MUSIQUE_FULL_SPLIT_URLS if subset == "full" else MUSIQUE_ANSWERABLE_SPLIT_URLS
+    resolved_urls = {name: override or default_urls[name] for name, override in split_urls.items()}
+    layout = fetch_musique_dataset(
+        output_dir,
+        split=split,
+        subset=subset,
+        split_urls=resolved_urls,
+        overwrite=overwrite,
+    )
+    _print_raw_layout(console, layout)
+    console.print("next:")
+    console.print(f"uv run webwalker-cli datasets convert-musique-raw --raw-dir {layout.raw_dir / 'musique' / subset} --output-dir {output_dir / 'normalized'}")
+
+
+@datasets_app.command("fetch-hotpotqa")
+def fetch_hotpotqa(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for downloaded raw artifacts"),
+    variant: str = typer.Option("distractor", "--variant", help="HotpotQA variant: distractor or fullwiki"),
+    split: str = typer.Option("dev", "--split", help="Question split to fetch: train, dev, or all"),
+    train_url: str | None = typer.Option(None, "--train-url", help="Override the train questions URL"),
+    dev_url: str | None = typer.Option(None, "--dev-url", help="Override the dev questions URL"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing downloaded files"),
+) -> None:
+    console = Console()
+    defaults = HOTPOTQA_DISTRACTOR_SPLIT_URLS if variant == "distractor" else HOTPOTQA_FULLWIKI_SPLIT_URLS
+    resolved_urls = {
+        "train": train_url or defaults.get("train"),
+        "dev": dev_url or defaults.get("dev"),
+    }
+    layout = fetch_hotpotqa_dataset(
+        output_dir,
+        variant=variant,
+        split=split,
+        split_urls={name: url for name, url in resolved_urls.items() if url is not None},
+        overwrite=overwrite,
+    )
+    _print_raw_layout(console, layout)
+    console.print("next:")
+    follow_up = (
+        f"uv run webwalker-cli datasets convert-hotpotqa-raw --raw-dir {layout.raw_dir / 'hotpotqa' / variant} "
+        f"--output-dir {output_dir / 'normalized'} --variant {variant}"
+    )
+    if variant == "fullwiki":
+        follow_up += " --graph-source /path/to/fullwiki-normalized-graph"
+    console.print(follow_up)
+
+
+@datasets_app.command("convert-iirc-raw")
+def convert_iirc_raw(
+    raw_dir: Path = typer.Option(..., "--raw-dir", exists=True, file_okay=True, dir_okay=True, help="Path to fetched IIRC raw artifacts"),
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for normalized graph/questions"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing normalized outputs"),
+) -> None:
+    console = Console()
+    layout = convert_iirc_raw_dataset(
+        raw_dir,
+        output_dir,
+        overwrite=overwrite,
+        source_manifest_path=_source_manifest_for(raw_dir),
+    )
+    _print_normalized_layout(console, layout)
+
+
+@datasets_app.command("convert-musique-raw")
+def convert_musique_raw(
+    raw_dir: Path = typer.Option(..., "--raw-dir", exists=True, file_okay=True, dir_okay=True, help="Path to fetched MuSiQue raw artifacts"),
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for normalized graph/questions"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing normalized outputs"),
+) -> None:
+    console = Console()
+    layout = convert_musique_raw_dataset(
+        raw_dir,
+        output_dir,
+        overwrite=overwrite,
+        source_manifest_path=_source_manifest_for(raw_dir),
+    )
+    _print_normalized_layout(console, layout)
+
+
+@datasets_app.command("convert-hotpotqa-raw")
+def convert_hotpotqa_raw(
+    raw_dir: Path = typer.Option(..., "--raw-dir", exists=True, file_okay=True, dir_okay=True, help="Path to fetched HotpotQA raw artifacts"),
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for normalized graph/questions"),
+    variant: str = typer.Option("distractor", "--variant", help="HotpotQA variant: distractor or fullwiki"),
+    graph_source: str | None = typer.Option(None, "--graph-source", help="Required for fullwiki conversion; path or URL to a normalized graph bundle"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing normalized outputs"),
+) -> None:
+    console = Console()
+    layout = convert_hotpotqa_raw_dataset(
+        raw_dir,
+        output_dir,
+        variant=variant,
+        graph_source=graph_source,
+        overwrite=overwrite,
+        source_manifest_path=_source_manifest_for(raw_dir),
+    )
+    _print_normalized_layout(console, layout)
+
+
+@datasets_app.command("prepare-iirc-store-from-raw")
+def prepare_iirc_store_from_raw(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory containing raw/ normalized/ store/"),
+    archive_url: str = typer.Option(IIRC_ARCHIVE_URL, "--archive-url", help="Override URL for the IIRC train/dev archive"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing outputs under output-dir"),
+    min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
+) -> None:
+    console = Console()
+    raw_root = output_dir / "raw-fetch"
+    normalized_root = output_dir / "normalized"
+    store_root = output_dir / "store"
+    layout = fetch_iirc_dataset(raw_root, archive_url=archive_url, overwrite=overwrite)
+    normalized = convert_iirc_raw_dataset(
+        layout.raw_dir / "iirc",
+        normalized_root,
+        overwrite=overwrite,
+        source_manifest_path=layout.source_manifest_path,
+    )
+    _prepare_generic_store(
+        console=console,
+        dataset_name="iirc",
+        output_dir=store_root,
+        questions_source=str(normalized.output_dir / "questions"),
+        graph_source=str(normalized.graph_path),
+        keep_raw=False,
+        overwrite=overwrite,
+        min_free_gib=min_free_gib,
+    )
+
+
+@datasets_app.command("prepare-musique-store-from-raw")
+def prepare_musique_store_from_raw(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory containing raw/ normalized/ store/"),
+    split: str = typer.Option("dev", "--split", help="Question split to fetch: train, dev, test, or all"),
+    subset: str = typer.Option("full", "--subset", help="MuSiQue subset: full or ans"),
+    train_url: str | None = typer.Option(None, "--train-url", help="Override the train questions URL"),
+    dev_url: str | None = typer.Option(None, "--dev-url", help="Override the dev questions URL"),
+    test_url: str | None = typer.Option(None, "--test-url", help="Override the test questions URL"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing outputs under output-dir"),
+    min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
+) -> None:
+    console = Console()
+    raw_root = output_dir / "raw-fetch"
+    normalized_root = output_dir / "normalized"
+    store_root = output_dir / "store"
+    default_urls = MUSIQUE_FULL_SPLIT_URLS if subset == "full" else MUSIQUE_ANSWERABLE_SPLIT_URLS
+    resolved_urls = {
+        "train": train_url or default_urls["train"],
+        "dev": dev_url or default_urls["dev"],
+        "test": test_url or default_urls["test"],
+    }
+    layout = fetch_musique_dataset(raw_root, split=split, subset=subset, split_urls=resolved_urls, overwrite=overwrite)
+    normalized = convert_musique_raw_dataset(
+        layout.raw_dir / "musique" / subset,
+        normalized_root,
+        overwrite=overwrite,
+        source_manifest_path=layout.source_manifest_path,
+    )
+    _prepare_generic_store(
+        console=console,
+        dataset_name="musique",
+        output_dir=store_root,
+        questions_source=str(normalized.output_dir / "questions"),
+        graph_source=str(normalized.graph_path),
+        keep_raw=False,
+        overwrite=overwrite,
+        min_free_gib=min_free_gib,
+    )
+
+
+@datasets_app.command("prepare-hotpotqa-store-from-raw")
+def prepare_hotpotqa_store_from_raw(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory containing raw/ normalized/ store/"),
+    variant: str = typer.Option("distractor", "--variant", help="HotpotQA variant: distractor or fullwiki"),
+    split: str = typer.Option("dev", "--split", help="Question split to fetch: train, dev, or all"),
+    train_url: str | None = typer.Option(None, "--train-url", help="Override the train questions URL"),
+    dev_url: str | None = typer.Option(None, "--dev-url", help="Override the dev questions URL"),
+    graph_source: str | None = typer.Option(None, "--graph-source", help="Required for fullwiki conversion; path or URL to a normalized graph bundle"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing outputs under output-dir"),
+    min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
+) -> None:
+    console = Console()
+    if variant == "fullwiki" and graph_source is None:
+        raise typer.BadParameter("HotpotQA fullwiki store preparation requires --graph-source.")
+    raw_root = output_dir / "raw-fetch"
+    normalized_root = output_dir / "normalized"
+    store_root = output_dir / "store"
+    defaults = HOTPOTQA_DISTRACTOR_SPLIT_URLS if variant == "distractor" else HOTPOTQA_FULLWIKI_SPLIT_URLS
+    resolved_urls = {
+        "train": train_url or defaults.get("train"),
+        "dev": dev_url or defaults.get("dev"),
+    }
+    layout = fetch_hotpotqa_dataset(
+        raw_root,
+        variant=variant,
+        split=split,
+        split_urls={name: url for name, url in resolved_urls.items() if url is not None},
+        overwrite=overwrite,
+    )
+    normalized = convert_hotpotqa_raw_dataset(
+        layout.raw_dir / "hotpotqa" / variant,
+        normalized_root,
+        variant=variant,
+        graph_source=graph_source,
+        overwrite=overwrite,
+        source_manifest_path=layout.source_manifest_path,
+    )
+    dataset_name = "hotpotqa-distractor" if variant == "distractor" else "hotpotqa-fullwiki"
+    _prepare_generic_store(
+        console=console,
+        dataset_name=dataset_name,
+        output_dir=store_root,
+        questions_source=str(normalized.output_dir / "questions"),
+        graph_source=str(normalized.graph_path),
+        keep_raw=False,
+        overwrite=overwrite,
+        min_free_gib=min_free_gib,
+    )
+
+
 @datasets_app.command("prepare-2wiki-store")
 def prepare_2wiki_store_cli(
     output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for the prepared sharded store"),
@@ -160,6 +423,43 @@ def _prepare_generic_store(
     console.print(f"shards -> {prepared.manifest.shard_count}")
     for split_name, path in sorted(prepared.questions_paths.items()):
         console.print(f"questions[{split_name}] -> {path}")
+
+
+def _print_raw_layout(console: Console, layout) -> None:
+    console.print(f"raw root -> {layout.raw_dir}")
+    for name, path in sorted(layout.artifact_paths.items()):
+        console.print(f"artifact[{name}] -> {path} ({_format_path_size(path)})")
+    if layout.source_manifest_path is not None:
+        console.print(f"source-manifest.json -> {layout.source_manifest_path}")
+
+
+def _print_normalized_layout(console: Console, layout) -> None:
+    console.print(f"normalized root -> {layout.output_dir}")
+    for split_name, path in sorted(layout.question_paths.items()):
+        console.print(f"questions[{split_name}] -> {path} ({_format_path_size(path)})")
+    if layout.graph_path is not None:
+        console.print(f"graph -> {layout.graph_path} ({_format_path_size(layout.graph_path)})")
+    if layout.manifest_path is not None:
+        console.print(f"conversion-manifest.json -> {layout.manifest_path}")
+    if layout.graph_path is not None:
+        console.print("prepare store:")
+        console.print(
+            "uv run webwalker-cli datasets prepare-musique-store "
+            f"--output-dir {layout.output_dir.parent / 'store'} "
+            f"--questions-source {layout.output_dir / 'questions'} "
+            f"--graph-source {layout.graph_path}"
+        )
+
+
+def _source_manifest_for(raw_dir: Path) -> Path | None:
+    if raw_dir.is_file():
+        parent = raw_dir.parent
+    else:
+        parent = raw_dir
+    for candidate in [parent / "source-manifest.json", parent.parent / "source-manifest.json", parent.parent.parent / "source-manifest.json"]:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 @datasets_app.command("prepare-iirc-store")

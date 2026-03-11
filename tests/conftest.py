@@ -547,6 +547,88 @@ def prepared_hotpotqa_store(hotpotqa_fullwiki_files, tmp_path: Path):
 
 
 @fixture
+def iirc_raw_archive(tmp_path: Path) -> Path:
+	dev_payload = [
+		{
+			"title": "Moon Launch Program",
+			"text": "Moon Launch Program launches from Cape Canaveral.",
+			"links": [{"target": "Cape Canaveral", "indices": [33, 48]}],
+			"questions": [
+				{
+					"qid": "iirc-raw-1",
+					"question": "Which state contains the launch city?",
+					"answer": {"type": "span", "answer_spans": [{"text": "Florida", "passage": "Florida"}]},
+					"question_links": ["Cape Canaveral"],
+					"context": [{"passage": "Florida"}],
+				}
+			],
+		}
+	]
+	context_articles = {
+		"Cape Canaveral": {
+			"text": "Cape Canaveral is in Florida.",
+			"links": [{"target": "Florida", "indices": [22, 29]}],
+		},
+		"Florida": {
+			"text": "Florida is a state in the southeastern United States.",
+			"links": [],
+		},
+	}
+	archive_path = tmp_path / "iirc_train_dev.tgz"
+	with tarfile.open(archive_path, "w:gz") as archive:
+		for name, payload in {
+			"dev.json": dev_payload,
+			"train.json": dev_payload,
+			"context_articles.json": context_articles,
+		}.items():
+			data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+			info = tarfile.TarInfo(name=name)
+			info.size = len(data)
+			archive.addfile(info, io.BytesIO(data))
+	return archive_path
+
+
+@fixture
+def musique_raw_split_files(tmp_path: Path) -> dict[str, Path]:
+	record = {
+		"id": "m-raw-1",
+		"question": "Which state contains Kennedy Space Center?",
+		"answer": "Florida",
+		"paragraphs": [
+			{"title": "Apollo Program", "paragraph_text": "Apollo Program launched from Kennedy Space Center."},
+			{"title": "Kennedy Space Center", "paragraph_text": "Kennedy Space Center is in Florida."},
+			{"title": "Florida", "paragraph_text": "Florida is a state in the United States."},
+		],
+		"paragraph_support_idx": [0, 1, 2],
+		"question_decomposition": [{"paragraph_idx": 0}, {"paragraph_idx": 1}, {"paragraph_idx": 2}],
+	}
+	paths: dict[str, Path] = {}
+	for split in ("train", "dev", "test"):
+		path = tmp_path / f"musique_full_v1.0_{split}.jsonl"
+		path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+		paths[split] = path
+	return paths
+
+
+@fixture
+def hotpotqa_raw_split_files(
+	tmp_path: Path,
+	hotpotqa_distractor_questions: list[dict],
+	hotpotqa_fullwiki_questions: list[dict],
+) -> dict[str, dict[str, Path]]:
+	distractor_dev = tmp_path / "hotpot_dev_distractor_v1.json"
+	distractor_train = tmp_path / "hotpot_train_v1.1.json"
+	fullwiki_dev = tmp_path / "hotpot_dev_fullwiki_v1.json"
+	distractor_dev.write_text(json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8")
+	distractor_train.write_text(json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8")
+	fullwiki_dev.write_text(json.dumps(hotpotqa_fullwiki_questions, ensure_ascii=False), encoding="utf-8")
+	return {
+		"distractor": {"dev": distractor_dev, "train": distractor_train},
+		"fullwiki": {"dev": fullwiki_dev, "train": distractor_train},
+	}
+
+
+@fixture
 def docs_files(tmp_path: Path) -> tuple[Path, Path]:
 	docs_root = tmp_path / "python-docs"
 	docs_root.mkdir()

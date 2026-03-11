@@ -1,11 +1,20 @@
-from webwalker.datasets.common import BaseDatasetAdapter, DatasetAdapter, PreparedDataset
+from webwalker.datasets.common import BaseDatasetAdapter, DatasetAdapter, NormalizedDatasetLayout, PreparedDataset
 from webwalker.datasets.docs import DocumentationAdapter, load_docs_graph, load_docs_questions
 from webwalker.datasets.fetch import (
+    HOTPOTQA_DISTRACTOR_SPLIT_URLS,
+    HOTPOTQA_FULLWIKI_SPLIT_URLS,
+    IIRC_ARCHIVE_URL,
+    MUSIQUE_ANSWERABLE_SPLIT_URLS,
+    MUSIQUE_FULL_SPLIT_URLS,
+    RawDatasetLayout,
     TWOWIKI_GRAPH_BASENAME,
     TWOWIKI_GRAPH_URL,
     TWOWIKI_QUESTIONS_URL,
     TWOWIKI_SPLITS,
     TwoWikiDatasetLayout,
+    fetch_hotpotqa_dataset,
+    fetch_iirc_dataset,
+    fetch_musique_dataset,
     fetch_2wiki_dataset,
     write_2wiki_sample_dataset,
 )
@@ -13,11 +22,12 @@ from webwalker.datasets.hotpotqa import (
     HotpotQAAdapter,
     build_hotpotqa_distractor_graph_for_case,
     build_hotpotqa_distractor_records,
+    convert_hotpotqa_raw_dataset,
     load_hotpotqa_graph,
     load_hotpotqa_questions,
 )
-from webwalker.datasets.iirc import IIRCAdapter, load_iirc_graph, load_iirc_questions
-from webwalker.datasets.musique import MuSiQueAdapter, load_musique_graph, load_musique_questions
+from webwalker.datasets.iirc import IIRCAdapter, convert_iirc_raw_dataset, load_iirc_graph, load_iirc_questions
+from webwalker.datasets.musique import MuSiQueAdapter, convert_musique_raw_dataset, load_musique_graph, load_musique_questions
 from webwalker.datasets.store import (
     DatasetStoreInspection,
     DatasetStoreManifest,
@@ -30,6 +40,7 @@ from webwalker.datasets.store import (
     ensure_min_free_space,
     estimate_prepare_bytes,
     inspect_prepared_store,
+    iter_normalized_graph_records,
     open_object_store,
     prepare_normalized_graph_store,
     probe_source_size,
@@ -50,12 +61,19 @@ from webwalker.datasets.twowiki_store import (
 __all__ = [
     "BaseDatasetAdapter",
     "DatasetAdapter",
+    "NormalizedDatasetLayout",
     "PreparedDataset",
     "DocumentationAdapter",
     "HotpotQAAdapter",
     "IIRCAdapter",
     "MuSiQueAdapter",
     "TwoWikiAdapter",
+    "HOTPOTQA_DISTRACTOR_SPLIT_URLS",
+    "HOTPOTQA_FULLWIKI_SPLIT_URLS",
+    "IIRC_ARCHIVE_URL",
+    "MUSIQUE_ANSWERABLE_SPLIT_URLS",
+    "MUSIQUE_FULL_SPLIT_URLS",
+    "RawDatasetLayout",
     "TWOWIKI_GRAPH_BASENAME",
     "TWOWIKI_GRAPH_URL",
     "TWOWIKI_QUESTIONS_URL",
@@ -78,9 +96,16 @@ __all__ = [
     "TwoWikiStoreManifest",
     "ensure_min_free_space",
     "estimate_prepare_bytes",
+    "fetch_hotpotqa_dataset",
+    "fetch_iirc_dataset",
+    "fetch_musique_dataset",
     "fetch_2wiki_dataset",
+    "convert_hotpotqa_raw_dataset",
+    "convert_iirc_raw_dataset",
+    "convert_musique_raw_dataset",
     "inspect_prepared_store",
     "inspect_2wiki_store",
+    "iter_normalized_graph_records",
     "load_docs_graph",
     "load_docs_questions",
     "load_2wiki_graph",

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
+import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Iterable
 
 from webwalker.logging import copy_stream_with_progress
 
@@ -16,6 +18,25 @@ TWOWIKI_QUESTIONS_URL = "https://www.dropbox.com/s/ms2m13252h6xubs/data_ids_apri
 TWOWIKI_GRAPH_URL = "https://www.dropbox.com/s/wlhw26kik59wbh8/para_with_hyperlink.zip?dl=1"
 TWOWIKI_GRAPH_BASENAME = "para_with_hyperlink.jsonl"
 TWOWIKI_SPLITS = ("train", "dev", "test")
+IIRC_ARCHIVE_URL = "https://iirc-dataset.s3.us-west-2.amazonaws.com/iirc_train_dev.tgz"
+MUSIQUE_FULL_SPLIT_URLS = {
+    "train": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_full_v1.0_train.jsonl",
+    "dev": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_full_v1.0_dev.jsonl",
+    "test": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_full_v1.0_test.jsonl",
+}
+MUSIQUE_ANSWERABLE_SPLIT_URLS = {
+    "train": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_ans_v1.0_train.jsonl",
+    "dev": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_ans_v1.0_dev.jsonl",
+    "test": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_ans_v1.0_test.jsonl",
+}
+HOTPOTQA_DISTRACTOR_SPLIT_URLS = {
+    "train": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_train_v1.1.json",
+    "dev": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json",
+}
+HOTPOTQA_FULLWIKI_SPLIT_URLS = {
+    "train": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_train_v1.1.json",
+    "dev": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_fullwiki_v1.json",
+}
 
 DownloadFn = Callable[[str, Path], None]
 
@@ -29,6 +50,16 @@ class TwoWikiDatasetLayout:
     graph_path: Path | None = None
     archive_paths: dict[str, Path] = field(default_factory=dict)
     source: str = "remote"
+
+
+@dataclass(slots=True)
+class RawDatasetLayout:
+    output_dir: Path
+    raw_dir: Path
+    dataset_name: str
+    variant: str | None = None
+    artifact_paths: dict[str, Path] = field(default_factory=dict)
+    source_manifest_path: Path | None = None
 
 
 def fetch_2wiki_dataset(
@@ -120,6 +151,142 @@ def fetch_2wiki_dataset(
         resolved_output,
         len(layout.question_paths),
         layout.graph_path is not None,
+    )
+    return layout
+
+
+def fetch_iirc_dataset(
+    output_dir: str | Path,
+    *,
+    archive_url: str | None = None,
+    overwrite: bool = False,
+    downloader: DownloadFn = None,
+) -> RawDatasetLayout:
+    resolved_output = Path(output_dir)
+    raw_dir = resolved_output / "raw"
+    dataset_dir = raw_dir / "iirc"
+    archives_dir = dataset_dir / "archives"
+    extracted_dir = dataset_dir / "extracted"
+    archives_dir.mkdir(parents=True, exist_ok=True)
+    extracted_dir.mkdir(parents=True, exist_ok=True)
+    download_impl = downloader or _download_url
+    source_url = archive_url or IIRC_ARCHIVE_URL
+    archive_path = archives_dir / Path(urllib.parse.urlparse(source_url).path).name
+    if overwrite or not archive_path.exists():
+        logger.info("Fetching IIRC archive from %s into %s", source_url, archive_path)
+        download_impl(source_url, archive_path)
+    if overwrite:
+        for path in extracted_dir.rglob("*"):
+            if path.is_file():
+                path.unlink()
+    _extract_tgz_json_members(archive_path, destination_root=extracted_dir, overwrite=overwrite)
+    artifacts = _collect_relative_files(extracted_dir)
+    layout = RawDatasetLayout(
+        output_dir=resolved_output,
+        raw_dir=raw_dir,
+        dataset_name="iirc",
+        artifact_paths={path.stem: path for path in artifacts},
+    )
+    layout.source_manifest_path = _write_source_manifest(
+        raw_dir,
+        dataset_name="iirc",
+        variant=None,
+        artifacts=_manifest_artifacts(
+            {"archive": archive_path, **{path.name: path for path in artifacts}},
+            source_urls={"archive": source_url},
+        ),
+    )
+    return layout
+
+
+def fetch_musique_dataset(
+    output_dir: str | Path,
+    *,
+    split: str = "dev",
+    subset: str = "full",
+    split_urls: dict[str, str] | None = None,
+    overwrite: bool = False,
+    downloader: DownloadFn = None,
+) -> RawDatasetLayout:
+    resolved_output = Path(output_dir)
+    raw_dir = resolved_output / "raw"
+    dataset_dir = raw_dir / "musique" / subset
+    questions_dir = dataset_dir / "questions"
+    questions_dir.mkdir(parents=True, exist_ok=True)
+    selected_splits = _resolve_standard_splits(split)
+    source_urls = split_urls or _resolve_musique_split_urls(subset)
+    download_impl = downloader or _download_url
+    artifact_paths: dict[str, Path] = {}
+    artifact_sources: dict[str, str] = {}
+    for split_name in selected_splits:
+        try:
+            source_url = source_urls[split_name]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported MuSiQue split '{split_name}' for subset '{subset}'") from exc
+        destination = questions_dir / f"{split_name}.jsonl"
+        if overwrite or not destination.exists():
+            logger.info("Fetching MuSiQue %s/%s questions from %s", subset, split_name, source_url)
+            download_impl(source_url, destination)
+        artifact_paths[split_name] = destination
+        artifact_sources[split_name] = source_url
+    layout = RawDatasetLayout(
+        output_dir=resolved_output,
+        raw_dir=raw_dir,
+        dataset_name="musique",
+        variant=subset,
+        artifact_paths=artifact_paths,
+    )
+    layout.source_manifest_path = _write_source_manifest(
+        raw_dir,
+        dataset_name="musique",
+        variant=subset,
+        artifacts=_manifest_artifacts(artifact_paths, source_urls=artifact_sources),
+    )
+    return layout
+
+
+def fetch_hotpotqa_dataset(
+    output_dir: str | Path,
+    *,
+    variant: str = "distractor",
+    split: str = "dev",
+    split_urls: dict[str, str] | None = None,
+    overwrite: bool = False,
+    downloader: DownloadFn = None,
+) -> RawDatasetLayout:
+    resolved_output = Path(output_dir)
+    raw_dir = resolved_output / "raw"
+    dataset_dir = raw_dir / "hotpotqa" / variant
+    questions_dir = dataset_dir / "questions"
+    questions_dir.mkdir(parents=True, exist_ok=True)
+    selected_splits = _resolve_standard_splits(split)
+    source_urls = split_urls or _resolve_hotpotqa_split_urls(variant)
+    download_impl = downloader or _download_url
+    artifact_paths: dict[str, Path] = {}
+    artifact_sources: dict[str, str] = {}
+    for split_name in selected_splits:
+        try:
+            source_url = source_urls[split_name]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported HotpotQA split '{split_name}' for variant '{variant}'") from exc
+        destination = questions_dir / f"{split_name}.json"
+        if overwrite or not destination.exists():
+            logger.info("Fetching HotpotQA %s/%s questions from %s", variant, split_name, source_url)
+            download_impl(source_url, destination)
+        artifact_paths[split_name] = destination
+        artifact_sources[split_name] = source_url
+    layout = RawDatasetLayout(
+        output_dir=resolved_output,
+        raw_dir=raw_dir,
+        dataset_name="hotpotqa",
+        variant=variant,
+        artifact_paths=artifact_paths,
+    )
+    layout.source_manifest_path = _write_source_manifest(
+        raw_dir,
+        dataset_name="hotpotqa",
+        variant=variant,
+        artifacts=_manifest_artifacts(artifact_paths, source_urls=artifact_sources),
     )
     return layout
 
@@ -216,6 +383,30 @@ def _extract_zip_member(
             )
 
 
+def _extract_tgz_json_members(archive_path: Path, *, destination_root: Path, overwrite: bool) -> None:
+    with tarfile.open(archive_path, "r:*") as archive:
+        for member in archive.getmembers():
+            if not member.isfile():
+                continue
+            suffixes = [suffix.lower() for suffix in Path(member.name).suffixes]
+            if not suffixes or suffixes[-1] not in {".json", ".jsonl"}:
+                continue
+            destination = destination_root / Path(member.name).name
+            if destination.exists() and not overwrite:
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            with extracted as src, destination.open("wb") as dst:
+                copy_stream_with_progress(
+                    src,
+                    dst,
+                    description=f"extract {Path(member.name).name}",
+                    total=member.size,
+                )
+
+
 def _find_member_by_basename(names: list[str], basename: str) -> str | None:
     for name in names:
         if Path(name).name == basename:
@@ -233,12 +424,42 @@ def _resolve_splits(split: str) -> tuple[str, ...]:
     return (normalized,)
 
 
+def _resolve_standard_splits(split: str) -> tuple[str, ...]:
+    normalized = split.strip().lower()
+    if normalized == "all":
+        return ("train", "dev", "test")
+    if normalized not in {"train", "dev", "test"}:
+        raise ValueError(f"Unsupported split '{split}'. Expected one of: train, dev, test, all")
+    return (normalized,)
+
+
+def _resolve_musique_split_urls(subset: str) -> dict[str, str]:
+    normalized = subset.strip().lower()
+    if normalized == "full":
+        return MUSIQUE_FULL_SPLIT_URLS
+    if normalized in {"ans", "answerable"}:
+        return MUSIQUE_ANSWERABLE_SPLIT_URLS
+    raise ValueError("MuSiQue subset must be one of: full, ans")
+
+
+def _resolve_hotpotqa_split_urls(variant: str) -> dict[str, str]:
+    normalized = variant.strip().lower()
+    if normalized == "distractor":
+        return HOTPOTQA_DISTRACTOR_SPLIT_URLS
+    if normalized == "fullwiki":
+        return HOTPOTQA_FULLWIKI_SPLIT_URLS
+    raise ValueError("HotpotQA variant must be one of: distractor, fullwiki")
+
+
 def _download_url(source_url: str, destination: Path) -> None:
     normalized_url = _normalize_dropbox_url(source_url)
     destination.parent.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(normalized_url)
     request_or_url: str | urllib.request.Request
     expected_bytes: int | None = None
+    if "drive.google.com" in parsed.netloc:
+        _download_google_drive(normalized_url, destination)
+        return
     if parsed.scheme == "file":
         request_or_url = normalized_url
         file_path = Path(parsed.path)
@@ -262,6 +483,39 @@ def _download_url(source_url: str, destination: Path) -> None:
         )
 
 
+def _download_google_drive(source_url: str, destination: Path) -> None:
+    import http.cookiejar
+    import re
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    request = urllib.request.Request(source_url, headers={"User-Agent": "webwalker/0.1"})
+    with opener.open(request) as response:
+        body = response.read()
+        content_type = response.headers.get("Content-Type", "")
+        if "text/html" in content_type:
+            text = body.decode("utf-8", errors="ignore")
+            confirm_match = re.search(r"confirm=([0-9A-Za-z_]+)", text)
+            if confirm_match:
+                parsed = urllib.parse.urlparse(source_url)
+                query = urllib.parse.parse_qs(parsed.query)
+                query["confirm"] = [confirm_match.group(1)]
+                confirmed_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+                request = urllib.request.Request(confirmed_url, headers={"User-Agent": "webwalker/0.1"})
+                with opener.open(request) as confirmed_response, destination.open("wb") as handle:
+                    content_length = confirmed_response.headers.get("Content-Length")
+                    total = int(content_length) if content_length else None
+                    copy_stream_with_progress(
+                        confirmed_response,
+                        handle,
+                        description=f"download {destination.name}",
+                        total=total,
+                    )
+                return
+        with destination.open("wb") as handle:
+            handle.write(body)
+
+
 def _normalize_dropbox_url(source_url: str) -> str:
     parsed = urllib.parse.urlparse(source_url)
     if "dropbox.com" not in parsed.netloc:
@@ -270,6 +524,54 @@ def _normalize_dropbox_url(source_url: str) -> str:
     query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
     query["dl"] = ["1"]
     return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+
+
+def _write_source_manifest(
+    raw_dir: Path,
+    *,
+    dataset_name: str,
+    variant: str | None,
+    artifacts: Iterable[dict[str, Any]],
+) -> Path:
+    manifest_path = raw_dir / "source-manifest.json"
+    payload = {
+        "dataset_name": dataset_name,
+        "variant": variant,
+        "artifacts": list(artifacts),
+    }
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest_path
+
+
+def _manifest_artifacts(
+    artifact_paths: dict[str, Path],
+    *,
+    source_urls: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for name, path in sorted(artifact_paths.items()):
+        artifacts.append(
+            {
+                "name": name,
+                "source_url": source_urls.get(name) if source_urls is not None else None,
+                "path": str(path),
+                "size_bytes": path.stat().st_size if path.exists() else None,
+                "sha256": _sha256_path(path) if path.exists() else None,
+            }
+        )
+    return artifacts
+
+
+def _collect_relative_files(root: Path) -> list[Path]:
+    return sorted(path for path in root.rglob("*") if path.is_file())
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _sample_graph_records() -> list[dict[str, object]]:

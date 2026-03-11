@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import json
 from pathlib import Path
 from typing import Any, Literal
 
-from webwalker.datasets.common import BaseDatasetAdapter, dedupe_strings, load_json_records, pick_first
+from webwalker.datasets.common import (
+    BaseDatasetAdapter,
+    NormalizedDatasetLayout,
+    dedupe_strings,
+    load_json_records,
+    pick_first,
+    write_normalized_dataset,
+)
 from webwalker.eval import EvaluationCase
 from webwalker.graph import LinkContextGraph
+from webwalker.datasets.store import iter_normalized_graph_records
 
 HotpotVariant = Literal["distractor", "fullwiki"]
 
@@ -73,6 +82,41 @@ class HotpotQAAdapter(BaseDatasetAdapter):
         return load_hotpotqa_questions(questions_source, limit=limit, variant=self.variant)
 
 
+def convert_hotpotqa_raw_dataset(
+    raw_source: str | Path,
+    output_dir: str | Path,
+    *,
+    variant: HotpotVariant = "distractor",
+    graph_source: str | Path | None = None,
+    overwrite: bool = False,
+    source_manifest_path: str | Path | None = None,
+) -> NormalizedDatasetLayout:
+    raw_questions = _resolve_question_files(raw_source, variant=variant)
+    question_splits: dict[str, list[EvaluationCase]] = {}
+    distractor_graph_records: list[dict[str, Any]] = []
+    for split_name, questions_path in raw_questions.items():
+        records = load_json_records(questions_path)
+        question_splits[split_name] = load_hotpotqa_questions(questions_path, variant=variant)
+        if variant == "distractor":
+            distractor_graph_records.extend(build_hotpotqa_distractor_records(records))
+
+    if variant == "fullwiki":
+        if graph_source is None:
+            raise ValueError("HotpotQA fullwiki conversion requires --graph-source")
+        graph_records = list(iter_normalized_graph_records(graph_source))
+    else:
+        graph_records = distractor_graph_records
+    return write_normalized_dataset(
+        output_dir,
+        dataset_name="hotpotqa-distractor" if variant == "distractor" else "hotpotqa-fullwiki",
+        variant=variant,
+        question_splits=question_splits,
+        graph_records=graph_records,
+        source_manifest_path=source_manifest_path,
+        overwrite=overwrite,
+    )
+
+
 def build_hotpotqa_distractor_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for record in records:
@@ -110,6 +154,8 @@ def _support_nodes_from_record(
     explicit = _coerce_node_refs(pick_first(record, "gold_support_nodes", "supporting_pages", "supporting_docs"))
     if explicit:
         if variant == "distractor":
+            if all("::" in node_id for node_id in explicit):
+                return explicit
             return [_case_node_id(case_id, node_id) for node_id in explicit]
         return explicit
 
@@ -215,3 +261,29 @@ def _string_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _resolve_question_files(raw_source: str | Path, *, variant: HotpotVariant) -> dict[str, Path]:
+    resolved = Path(raw_source)
+    if resolved.is_file():
+        return {_infer_split_name(resolved): resolved}
+    candidates = sorted(
+        path
+        for path in resolved.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".json", ".jsonl"}
+    )
+    variant_token = "distractor" if variant == "distractor" else "fullwiki"
+    filtered = [path for path in candidates if variant_token in path.stem.lower() or "train_v1.1" in path.stem.lower()]
+    if filtered:
+        candidates = filtered
+    if not candidates:
+        raise ValueError(f"No HotpotQA raw question files found under {resolved}")
+    return {_infer_split_name(path): path for path in candidates}
+
+
+def _infer_split_name(path: Path) -> str:
+    stem = path.stem.lower()
+    for split_name in ("train", "dev", "test"):
+        if split_name in stem:
+            return split_name
+    return "dev"
