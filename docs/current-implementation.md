@@ -31,6 +31,7 @@ The current repo is an offline research sandbox for pre-RAG corpus selection. It
 - Dense and lexical seed selection are both supported.
 - The current experiment runner supports fixed selector matrices plus extra diagnostic selectors outside the default study set.
 - Selector-side LLM scoring is optional and records provider, model, token usage, runtime, cache state, and fallback behavior.
+- Step-scorer composition is currently implemented as fixed profiles rather than an exposed hyperparameter surface. That includes overlap-weight mixes, sentence-transformer direct-vs-future weighting, and LLM subscore aggregation.
 
 ### Budgeted Evaluation
 
@@ -70,6 +71,18 @@ The current repo is an offline research sandbox for pre-RAG corpus selection. It
   - `summary.json`
   - optional GraphRAG-compatible CSV slices
 
+### Additional Benchmark Adapters and Raw Preparation
+
+- `run_iirc`, `run_musique`, and `run_hotpotqa` support direct benchmark evaluation from normalized questions/graph inputs.
+- `run_iirc_store`, `run_musique_store`, and `run_hotpotqa_store` run the same benchmarks against prepared stores.
+- The dataset CLI supports built-in raw fetch and conversion for `IIRC`, `MuSiQue`, and `HotpotQA`.
+- Raw benchmark flows now follow:
+  - `fetch-*` -> `<output>/raw/source-manifest.json`
+  - `convert-*-raw` -> normalized `questions/`, `graph/normalized.jsonl`, and `conversion-manifest.json`
+  - `prepare-*-store-from-raw` -> final prepared store under `store/`
+- `HotpotQA distractor` can be converted directly from case-local `context`.
+- `HotpotQA fullwiki` still expects a supplied normalized graph bundle; this pass does not ingest a raw Wikipedia dump.
+
 ### Lazy Extraction and Secondary Answering
 
 - `SubgraphExtractor.extract(...)` only reads from selected nodes.
@@ -92,7 +105,9 @@ The current repo is an offline research sandbox for pre-RAG corpus selection. It
 ### Broad Search Variants
 
 - `beam` and `astar` families explore wider and deeper graph frontiers.
-- They are currently best treated as search-space diagnostics rather than the main claimed contribution.
+- `ucs` and `beam_ppr` are also available in the canonical selector space.
+- In the current paper story they are still search-space diagnostics rather than the main claimed contribution.
+- The current `2Wiki` phase result should not be read as a universal negative result for broad search. These variants are still candidates for harder datasets and for scorer-calibration studies.
 
 ### Diagnostic Upper Bounds
 
@@ -109,9 +124,16 @@ This run supports three narrow conclusions:
 
 - Sentence-transformer seeds outperform lexical seeds in the tested families.
 - `top_1` is a better operating point than `top_3` at this budget.
-- Broad `hop_3` search with `beam` or `astar` is not a good direction under a fixed `256`-token budget.
+- Broad `hop_3` search with `beam` or `astar` is not a good direction on this `2Wiki` phase sample under a fixed `256`-token budget.
 
 Those conclusions should be read together with [phase-decisions.md](phase-decisions.md), which separates supported findings from claims that still need ablation or direct baseline comparisons.
+
+## Current Exploration Priorities
+
+- Add direct `MDR` and stronger dense baselines before broadening the paper claim.
+- Re-test broad search on harder datasets already supported in this repo, especially `IIRC` and `HotpotQA fullwiki`.
+- Expose scorer-composition profiles for branchy search before treating `beam` or `astar` as settled.
+- Keep `single_path_walk` as the current default operating point until a broader search family wins on a harder setting.
 
 ## What Is Still Not Implemented
 
@@ -119,7 +141,8 @@ Those conclusions should be read together with [phase-decisions.md](phase-decisi
 - A production answer backend
 - Training or RL-based selector policies
 - Direct MDR, GraphRetriever, or HippoRAG reproductions
-- Real benchmark runners over HotpotQA or MuSiQue
+- Automatic raw Wikipedia dump ingestion for fullwiki-style corpora
+- Large-scale comparative studies over `IIRC`, `HotpotQA`, or `MuSiQue`
 - Open-web crawling or online serving
 
 ## Concrete Test Design
@@ -146,7 +169,7 @@ The repo uses fast synthetic tests instead of requiring the real corpora for bas
 ### Dataset and Storage Tests
 
 - `test_twowiki.py`, `test_twowiki_store.py`, `test_dataset_fetch.py`, and `test_cli_datasets.py` cover 2Wiki loading, store preparation, lazy shard access, and sample dataset workflows.
-- `test_store.py` verifies streaming import and `SQLiteKVStore.get(...)`.
+- `test_store.py`, `test_raw_converters.py`, `test_cli_raw_datasets.py`, `test_musique.py`, `test_hotpotqa.py`, and `test_iirc.py` cover benchmark raw fetch/conversion, generic store preparation, and adapter behavior.
 
 ## Default Assumptions In Code
 

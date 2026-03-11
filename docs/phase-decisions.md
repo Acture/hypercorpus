@@ -81,7 +81,7 @@ These findings are `supported on phase-decision-30`.
 - The best tested operating point in this phase is `top_1 + sentence_transformer seed + hop_2 + single_path_walk + link_context_llm + budget_fill_relative_drop`.
 - Sentence-transformer seeds are consistently stronger than lexical seeds in the tested families.
 - `top_1` is a better operating point than `top_3` under the current `256`-token budget.
-- Broad `hop_3` search with `beam` or `astar` is not a good direction under this budget because precision collapses while utilization is already high.
+- Broad `hop_3` search with `beam` or `astar` is not a good direction in this specific phase setting because precision collapses while utilization is already high.
 - `budget_fill_relative_drop` is an effective component for reducing empty selections and improving all-case support F1.
 - `gold_support_context` reaches `avg_budget_adherence = 0.6` and `avg_budget_utilization = 1.0324`, which means the current oracle evidence often does not fit cleanly into `256` tokens.
 
@@ -92,6 +92,8 @@ These points are suggested by current results but are not isolated enough to cla
 - Whether the hop-2 winner is strong because of walk structure, because of the LLM edge scorer, or because of stronger seeds plus budget fill.
 - Whether `link_context_llm` is better than overlap or sentence-transformer edge scoring within the same `top_1 + sentence_transformer + hop_2 + single_path` family.
 - Whether the current gains persist at larger token budgets or different sample slices.
+- Whether broad `beam` and `astar` search are genuinely weak, or only weak on `2Wiki` under a `256`-token budget with the current scorer calibration.
+- Whether the current fixed scorer compositions are well calibrated for branchy search, especially for `beam`, `astar`, `ucs`, and `beam_ppr`.
 
 ### Not Yet Compared
 
@@ -108,4 +110,21 @@ These systems should not be described as beaten or matched by the current phase.
 - Add a clean edge-scorer ablation for `top_1 + sentence_transformer + hop_2 + single_path`.
 - Add direct `dense top-k` and `MDR` style baselines under the same token-budget accounting.
 - Repeat the current selector family on a larger phase sample before elevating claims beyond the present operating-point story.
-- Treat further `beam` and `astar` expansion as low priority unless a new budget or pruning idea changes the precision tradeoff.
+- Expand broad-search evaluation to harder datasets that already exist in this repo, with `IIRC` first and `HotpotQA fullwiki` next.
+- Re-test `beam`, `astar`, `ucs`, and `beam_ppr` under looser budgets such as `384` and `512` before declaring the family unpromising.
+- Explore scorer-composition profiles before adding more search depth:
+  - overlap profiles that vary anchor-vs-sentence-vs-title weighting
+  - sentence-transformer profiles that vary direct-vs-future-vs-novelty weighting
+  - only after that, limited LLM scorer profile experiments
+- Treat further `beam` and `astar` work as conditional on one of two outcomes:
+  - a harder dataset shows a real gain over single-path
+  - scorer-profile tuning fixes the current precision collapse
+
+### Exploration Directions
+
+The current repo should treat broad-search follow-up as a targeted exploration track, not as an already failed idea.
+
+- The `2Wiki` result only shows that broad search is a poor operating point under the current budget and scorer setup.
+- `IIRC` is the best next place to test broad search because the task itself rewards natural hyperlink expansion over incomplete information.
+- `HotpotQA fullwiki` is the next-best stress test because start retrieval is harder and broad search has more room to recover missing support pages.
+- Scorer composition is currently a fixed profile, not a tuned component. Search-heavy selectors should not be judged final until scorer calibration is tested explicitly.
