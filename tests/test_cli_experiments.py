@@ -17,6 +17,11 @@ def _make_selector_budget_summary(
     selector_provider: str | None = None,
     selector_model: str | None = None,
     budget_label: str = "tokens-128",
+    avg_support_precision: float | None = 0.6,
+    avg_support_f1: float | None = 0.545,
+    avg_support_f1_zero_on_empty: float | None = 0.5,
+    avg_budget_utilization: float = 0.55,
+    avg_empty_selection_rate: float = 0.1,
     avg_selector_total_tokens: float | None = None,
     avg_selector_runtime_s: float | None = None,
     avg_selector_llm_calls: float | None = None,
@@ -35,14 +40,17 @@ def _make_selector_budget_summary(
         num_cases=1,
         avg_start_hit=None,
         avg_support_recall=0.5,
-        avg_support_precision=0.6,
-        avg_support_f1=0.545,
+        avg_support_precision=avg_support_precision,
+        avg_support_f1=avg_support_f1,
         avg_path_hit=None,
         avg_selected_nodes=2.0,
         avg_selected_token_estimate=70.0,
         avg_compression_ratio=0.1,
         avg_budget_adherence=1.0,
+        avg_budget_utilization=avg_budget_utilization,
+        avg_empty_selection_rate=avg_empty_selection_rate,
         avg_selection_runtime_s=0.01,
+        avg_support_f1_zero_on_empty=avg_support_f1_zero_on_empty,
         avg_selector_prompt_tokens=None,
         avg_selector_completion_tokens=None,
         avg_selector_total_tokens=avg_selector_total_tokens,
@@ -337,7 +345,11 @@ def test_print_summary_renders_main_table_only_for_non_llm_rows():
     output = console.export_text()
     assert "2wikimultihop summary" in output
     assert "support_recall" in output
-    assert "support_precision" in output
+    assert "support_precision_nonempty" in output
+    assert "support_f1_nonempty" in output
+    assert "support_f1_all" in output
+    assert "utilization" in output
+    assert "empty_rate" in output
     assert "answer_em" in output
     assert "selector legend" not in output
     assert "selector health" not in output
@@ -374,7 +386,8 @@ def test_print_summary_renders_selector_health_table_for_llm_rows():
     assert "selector_fallback" in output
     assert "selector_parse_fail" in output
     assert f"{CANONICAL_LLM}@anthropic" in output
-    assert "claude-haiku-4-5-202" in output
+    assert "claude-haik" in output
+    assert "20251001" in output
     assert "columns:" not in output
 
 

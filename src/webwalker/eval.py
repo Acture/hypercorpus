@@ -97,10 +97,13 @@ class SelectionMetrics:
     selected_token_estimate: int
     compression_ratio: float
     budget_adherence: bool
+    budget_utilization: float
+    empty_selection: bool
     start_hit: bool | None = None
     support_recall: float | None = None
     support_precision: float | None = None
     support_f1: float | None = None
+    support_f1_zero_on_empty: float | None = None
     path_hit: bool | None = None
 
 
@@ -160,7 +163,10 @@ class SelectorBudgetSummary:
     avg_selected_token_estimate: float
     avg_compression_ratio: float
     avg_budget_adherence: float
+    avg_budget_utilization: float
+    avg_empty_selection_rate: float
     avg_selection_runtime_s: float
+    avg_support_f1_zero_on_empty: float | None
     avg_selector_prompt_tokens: float | None
     avg_selector_completion_tokens: float | None
     avg_selector_total_tokens: float | None
@@ -216,7 +222,10 @@ class _SelectorBudgetAccumulator:
     avg_selected_token_estimate: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_compression_ratio: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_budget_adherence: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_budget_utilization: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_empty_selection_rate: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selection_runtime_s: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_support_f1_zero_on_empty: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selector_prompt_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selector_completion_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selector_total_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
@@ -240,7 +249,10 @@ class _SelectorBudgetAccumulator:
         self.avg_selected_token_estimate.add(float(metrics.selected_token_estimate))
         self.avg_compression_ratio.add(metrics.compression_ratio)
         self.avg_budget_adherence.add(1.0 if metrics.budget_adherence else 0.0)
+        self.avg_budget_utilization.add(metrics.budget_utilization)
+        self.avg_empty_selection_rate.add(1.0 if metrics.empty_selection else 0.0)
         self.avg_selection_runtime_s.add(metrics.selection_runtime_s)
+        self.avg_support_f1_zero_on_empty.add(metrics.support_f1_zero_on_empty)
         if usage is not None:
             self.avg_selector_prompt_tokens.add(float(usage.prompt_tokens))
             self.avg_selector_completion_tokens.add(float(usage.completion_tokens))
@@ -274,7 +286,10 @@ class _SelectorBudgetAccumulator:
             avg_selected_token_estimate=self.avg_selected_token_estimate.average_or_zero(),
             avg_compression_ratio=self.avg_compression_ratio.average_or_zero(),
             avg_budget_adherence=self.avg_budget_adherence.average_or_zero(),
+            avg_budget_utilization=self.avg_budget_utilization.average_or_zero(),
+            avg_empty_selection_rate=self.avg_empty_selection_rate.average_or_zero(),
             avg_selection_runtime_s=self.avg_selection_runtime_s.average_or_zero(),
+            avg_support_f1_zero_on_empty=self.avg_support_f1_zero_on_empty.average(),
             avg_selector_prompt_tokens=self.avg_selector_prompt_tokens.average(),
             avg_selector_completion_tokens=self.avg_selector_completion_tokens.average(),
             avg_selector_total_tokens=self.avg_selector_total_tokens.average(),
@@ -415,10 +430,13 @@ def _selection_result_from_raw(
         selected_token_estimate=corpus.token_estimate,
         compression_ratio=_compression_ratio(corpus.token_estimate, total_graph_tokens),
         budget_adherence=corpus.token_estimate <= budget_token_limit,
+        budget_utilization=_budget_utilization(corpus.token_estimate, budget_token_limit),
+        empty_selection=not corpus.node_ids,
         start_hit=_start_hit(corpus.root_node_ids, case.gold_start_nodes),
         support_recall=_recall(corpus.node_ids, case.gold_support_nodes),
         support_precision=_precision(corpus.node_ids, case.gold_support_nodes),
         support_f1=_support_f1(corpus.node_ids, case.gold_support_nodes),
+        support_f1_zero_on_empty=_support_f1_zero_on_empty(corpus.node_ids, case.gold_support_nodes),
         path_hit=_path_hit(corpus.node_ids, case.gold_path_nodes),
     )
     return SelectionResult(
@@ -503,6 +521,12 @@ def _compression_ratio(selected_tokens: int, total_tokens: int) -> float:
     return selected_tokens / total_tokens
 
 
+def _budget_utilization(selected_tokens: int, budget_token_limit: int) -> float:
+    if budget_token_limit <= 0:
+        return 0.0
+    return selected_tokens / budget_token_limit
+
+
 def _dedupe(items: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
@@ -551,6 +575,17 @@ def _support_f1(selected_nodes: Sequence[str], gold_nodes: Sequence[str]) -> flo
     if precision == 0.0 and recall == 0.0:
         return 0.0
     return 2 * precision * recall / (precision + recall)
+
+
+def _support_f1_zero_on_empty(selected_nodes: Sequence[str], gold_nodes: Sequence[str]) -> float | None:
+    support_f1 = _support_f1(selected_nodes, gold_nodes)
+    if support_f1 is not None:
+        return support_f1
+    if not gold_nodes:
+        return None
+    if not selected_nodes:
+        return 0.0
+    return None
 
 
 def _path_hit(selected_nodes: Sequence[str], gold_path_nodes: Sequence[str] | None) -> bool | None:

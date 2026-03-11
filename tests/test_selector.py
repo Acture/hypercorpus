@@ -41,6 +41,22 @@ def test_parse_selector_spec_handles_canonical_forms():
     assert beam.lookahead_depth == 2
 
 
+def test_parse_selector_spec_accepts_budget_fill_suffixes_and_rejects_diagnostics():
+    filled = parse_selector_spec("top_1_seed__lexical_overlap__hop_0__dense__budget_fill_always")
+
+    assert filled.canonical_name == "top_1_seed__lexical_overlap__hop_0__dense__budget_fill_always"
+    assert filled.base_canonical_name == "top_1_seed__lexical_overlap__hop_0__dense"
+    assert filled.budget_fill_mode == "always"
+    assert filled.budget_fill_pool_k == 64
+
+    try:
+        parse_selector_spec("gold_support_context__budget_fill_always")
+    except ValueError as exc:
+        assert str(exc) == "Unknown selector: gold_support_context__budget_fill_always"
+    else:
+        raise AssertionError("expected diagnostic fill suffix to be rejected")
+
+
 def test_semantic_beam_returns_weighted_subgraph_contract(sample_graph):
     selection = SemanticBeamSelector().select(
         sample_graph,
@@ -260,3 +276,54 @@ def test_sentence_transformer_edge_scorer_records_future_edge_ids():
         for log in result.selector_logs
         for candidate in log.candidates
     )
+
+
+def test_budget_fill_variants_recover_small_nodes_and_stop_differently():
+    graph = LinkContextGraph(
+        documents=[
+            DocumentNode(
+                "giant",
+                "Launch City Harbor",
+                ("launch city harbor " + "filler " * 40,),
+            ),
+            DocumentNode(
+                "compact",
+                "Launch City",
+                ("launch city",),
+            ),
+            DocumentNode(
+                "weak",
+                "Launch",
+                ("launch",),
+            ),
+            DocumentNode(
+                "tiny",
+                "Remote",
+                ("remote",),
+            ),
+        ]
+    )
+    case = EvaluationCase(case_id="budget-fill", query="launch city harbor")
+    budget = EvaluationBudget(token_budget_tokens=6)
+
+    canonical = build_selector("top_1_seed__lexical_overlap__hop_0__dense")
+    always = build_selector("top_1_seed__lexical_overlap__hop_0__dense__budget_fill_always")
+    score_floor = build_selector("top_1_seed__lexical_overlap__hop_0__dense__budget_fill_score_floor")
+    relative_drop = build_selector("top_1_seed__lexical_overlap__hop_0__dense__budget_fill_relative_drop")
+
+    canonical_result = canonical.select(graph, case, budget)
+    always_result = always.select(graph, case, budget)
+    score_floor_result = score_floor.select(graph, case, budget)
+    relative_drop_result = relative_drop.select(graph, case, budget)
+
+    assert canonical_result.selected_node_ids == []
+    assert always_result.selected_node_ids == ["compact", "weak", "tiny"]
+    assert score_floor_result.selected_node_ids == ["compact", "weak"]
+    assert relative_drop_result.selected_node_ids == ["compact"]
+    assert always_result.selector_metadata is not None
+    assert always_result.selector_metadata.budget_fill_mode == "always"
+    assert always_result.selector_metadata.budget_fill_pool_k == 64
+    assert score_floor_result.selector_metadata is not None
+    assert score_floor_result.selector_metadata.budget_fill_score_floor == 0.05
+    assert relative_drop_result.selector_metadata is not None
+    assert relative_drop_result.selector_metadata.budget_fill_relative_drop_ratio == 0.5

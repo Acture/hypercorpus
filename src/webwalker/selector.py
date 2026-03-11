@@ -38,6 +38,7 @@ from webwalker.walker import (
 )
 
 SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
+BudgetFillMode = Literal["score_floor", "always", "relative_drop"]
 BaselineName = Literal[
     "dense",
     "topology_neighbors",
@@ -59,6 +60,11 @@ _BASELINES: set[str] = {
 _SEARCH_STRUCTURES: set[str] = {"single_path_walk", "beam", "astar", "ucs", "beam_ppr"}
 _EDGE_SCORERS: set[str] = {"link_context_overlap", "link_context_llm", "anchor_overlap", "link_context_sentence_transformer"}
 _LOOKAHEADS: set[str] = {"lookahead_1", "lookahead_2"}
+_BUDGET_FILL_SUFFIXES: dict[str, BudgetFillMode] = {
+    "budget_fill_score_floor": "score_floor",
+    "budget_fill_always": "always",
+    "budget_fill_relative_drop": "relative_drop",
+}
 _SELECTOR_PATTERN = re.compile(
     r"^top_(?P<seed_top_k>\d+)_seed__(?P<seed_strategy>sentence_transformer|lexical_overlap)__hop_(?P<hop_budget>\d+)__(?P<rest>.+)$"
 )
@@ -104,6 +110,10 @@ class SelectorMetadata:
     search_structure: str | None = None
     edge_scorer: str | None = None
     lookahead_depth: int | None = None
+    budget_fill_mode: str | None = None
+    budget_fill_pool_k: int | None = None
+    budget_fill_score_floor: float | None = None
+    budget_fill_relative_drop_ratio: float | None = None
 
 
 @dataclass(slots=True)
@@ -211,6 +221,7 @@ class CorpusSelectionResult:
 class SelectorSpec:
     canonical_name: str
     family: SelectorFamily
+    base_canonical_name: str | None = None
     seed_strategy: SeedStrategyName | None = None
     seed_top_k: int | None = None
     hop_budget: int | None = None
@@ -218,6 +229,10 @@ class SelectorSpec:
     search_structure: SearchStructure | None = None
     edge_scorer: EdgeScorerName | None = None
     lookahead_depth: int | None = None
+    budget_fill_mode: BudgetFillMode | None = None
+    budget_fill_pool_k: int | None = None
+    budget_fill_score_floor: float | None = None
+    budget_fill_relative_drop_ratio: float | None = None
 
 
 @dataclass(slots=True)
@@ -1187,6 +1202,96 @@ class CanonicalSearchSelector(_SentenceTransformerSupport):
         return _apply_selector_metadata(result, self.spec, seed_backend=seed_backend, seed_model=seed_model)
 
 
+class BudgetFillSelector(_SentenceTransformerSupport):
+    def __init__(
+        self,
+        base_selector: CorpusSelector,
+        spec: SelectorSpec,
+        *,
+        embedder_config: SentenceTransformerSelectorConfig | None = None,
+        embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder] | None = None,
+    ):
+        super().__init__(embedder_config=embedder_config, embedder_factory=embedder_factory)
+        self.base_selector = base_selector
+        self.spec = spec
+        self.name = spec.canonical_name
+
+    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+        result = self.base_selector.select(graph, case, budget)
+        budget_token_limit = _runtime_budget_token_limit(graph, budget)
+        seed_candidates = _select_seed_candidates(
+            graph,
+            case.query,
+            self.spec.budget_fill_pool_k or 64,
+            seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+            embedder=_seed_embedder(self.spec, self._get_embedder),
+        )
+        selected_node_ids = list(result.selected_node_ids)
+        selected_node_set = set(selected_node_ids)
+        ranked_nodes = list(result.ranked_nodes)
+        trace = list(result.trace)
+        debug_trace = list(result.debug_trace)
+        token_cost_estimate = result.token_cost_estimate
+        first_backfill_score: float | None = None
+
+        for node_id, score in seed_candidates:
+            if node_id in selected_node_set:
+                continue
+            if first_backfill_score is None:
+                first_backfill_score = score
+            if not _should_continue_budget_fill(
+                self.spec,
+                score=score,
+                first_backfill_candidate_score=first_backfill_score,
+            ):
+                debug_trace.append(
+                    f"fill_stop:{self.spec.budget_fill_mode}:{node_id}:{score:.4f}"
+                )
+                break
+            node_tokens = _node_token_cost(graph, node_id)
+            if budget_token_limit > 0 and token_cost_estimate + node_tokens > budget_token_limit:
+                debug_trace.append(
+                    f"fill_skip_budget:{self.spec.budget_fill_mode}:{node_id}:{score:.4f}"
+                )
+                continue
+            ranked_nodes.append(
+                ScoredNode(
+                    node_id=node_id,
+                    score=score,
+                    source_strategy=self.name,
+                    selected_reason=f"budget_fill_{self.spec.budget_fill_mode}",
+                )
+            )
+            selected_node_ids.append(node_id)
+            selected_node_set.add(node_id)
+            token_cost_estimate += node_tokens
+            trace.append(
+                SelectionTraceStep(
+                    index=len(trace),
+                    node_id=node_id,
+                    score=score,
+                )
+            )
+            debug_trace.append(f"fill_add:{self.spec.budget_fill_mode}:{node_id}:{score:.4f}")
+
+        selector_metadata = _apply_budget_fill_metadata(result.selector_metadata, self.spec)
+        selected_links = [
+            link for link in result.ranked_links if link.source in selected_node_set and link.target in selected_node_set
+        ]
+        return replace(
+            result,
+            selector_name=self.name,
+            ranked_nodes=ranked_nodes,
+            selected_node_ids=selected_node_ids,
+            selected_links=selected_links,
+            token_cost_estimate=token_cost_estimate,
+            debug_trace=debug_trace,
+            coverage_ratio=_selection_coverage_ratio(_query_tokens(case.query), selected_links),
+            trace=trace,
+            selector_metadata=selector_metadata,
+        )
+
+
 class GoldSupportContextSelector:
     name = "gold_support_context"
     spec = SelectorSpec(canonical_name="gold_support_context", family="diagnostic")
@@ -1241,12 +1346,25 @@ class FullCorpusUpperBoundSelector:
         )
 
 
+def _split_budget_fill_suffix(name: str) -> tuple[str, BudgetFillMode | None]:
+    for suffix, mode in _BUDGET_FILL_SUFFIXES.items():
+        marker = f"__{suffix}"
+        if name.endswith(marker):
+            return name.removesuffix(marker), mode
+    return name, None
+
+
 def parse_selector_spec(name: str) -> SelectorSpec:
-    if name == "gold_support_context":
+    base_name, budget_fill_mode = _split_budget_fill_suffix(name)
+    if base_name == "gold_support_context":
+        if budget_fill_mode is not None:
+            raise ValueError(f"Unknown selector: {name}")
         return GoldSupportContextSelector.spec
-    if name == "full_corpus_upper_bound":
+    if base_name == "full_corpus_upper_bound":
+        if budget_fill_mode is not None:
+            raise ValueError(f"Unknown selector: {name}")
         return FullCorpusUpperBoundSelector.spec
-    match = _SELECTOR_PATTERN.fullmatch(name)
+    match = _SELECTOR_PATTERN.fullmatch(base_name)
     if match is None:
         raise ValueError(f"Unknown selector: {name}")
     seed_top_k = int(match.group("seed_top_k"))
@@ -1264,11 +1382,16 @@ def parse_selector_spec(name: str) -> SelectorSpec:
             raise ValueError(f"Unknown selector: {name}")
         return SelectorSpec(
             canonical_name=name,
+            base_canonical_name=base_name,
             family="baseline",
             seed_strategy=seed_strategy,  # type: ignore[arg-type]
             seed_top_k=seed_top_k,
             hop_budget=hop_budget,
             baseline=baseline,  # type: ignore[arg-type]
+            budget_fill_mode=budget_fill_mode,
+            budget_fill_pool_k=64 if budget_fill_mode is not None else None,
+            budget_fill_score_floor=0.05 if budget_fill_mode == "score_floor" else None,
+            budget_fill_relative_drop_ratio=0.5 if budget_fill_mode == "relative_drop" else None,
         )
     if len(parts) != 3:
         raise ValueError(f"Unknown selector: {name}")
@@ -1277,6 +1400,7 @@ def parse_selector_spec(name: str) -> SelectorSpec:
         raise ValueError(f"Unknown selector: {name}")
     return SelectorSpec(
         canonical_name=name,
+        base_canonical_name=base_name,
         family="path_search",
         seed_strategy=seed_strategy,  # type: ignore[arg-type]
         seed_top_k=seed_top_k,
@@ -1284,6 +1408,10 @@ def parse_selector_spec(name: str) -> SelectorSpec:
         search_structure=search_structure,  # type: ignore[arg-type]
         edge_scorer=edge_scorer,  # type: ignore[arg-type]
         lookahead_depth=int(lookahead.removeprefix("lookahead_")),
+        budget_fill_mode=budget_fill_mode,
+        budget_fill_pool_k=64 if budget_fill_mode is not None else None,
+        budget_fill_score_floor=0.05 if budget_fill_mode == "score_floor" else None,
+        budget_fill_relative_drop_ratio=0.5 if budget_fill_mode == "relative_drop" else None,
     )
 
 
@@ -1356,6 +1484,31 @@ def build_selector(
         return FullCorpusUpperBoundSelector()
     if spec.edge_scorer == "link_context_llm":
         _validate_selector_llm_config(llm_config)
+    selector = _build_canonical_selector(
+        spec,
+        llm_config=llm_config,
+        backend_factory=selector_backend_factory,
+        sentence_transformer_config=sentence_transformer_config,
+        sentence_transformer_embedder_factory=sentence_transformer_embedder_factory,
+    )
+    if spec.budget_fill_mode is None:
+        return selector
+    return BudgetFillSelector(
+        selector,
+        spec,
+        embedder_config=sentence_transformer_config,
+        embedder_factory=sentence_transformer_embedder_factory,
+    )
+
+
+def _build_canonical_selector(
+    spec: SelectorSpec,
+    *,
+    llm_config: SelectorLLMConfig,
+    backend_factory: Callable[[SelectorLLMConfig], Any] | None,
+    sentence_transformer_config: SentenceTransformerSelectorConfig,
+    sentence_transformer_embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder] | None,
+) -> CorpusSelector:
     if spec.family == "baseline":
         if spec.baseline == "dense":
             return CanonicalDenseSelector(
@@ -1373,14 +1526,14 @@ def build_selector(
         return CanonicalSinglePathSelector(
             spec,
             llm_config=llm_config,
-            backend_factory=selector_backend_factory,
+            backend_factory=backend_factory,
             embedder_config=sentence_transformer_config,
             embedder_factory=sentence_transformer_embedder_factory,
         )
     return CanonicalSearchSelector(
         spec,
         llm_config=llm_config,
-        backend_factory=selector_backend_factory,
+        backend_factory=backend_factory,
         embedder_config=sentence_transformer_config,
         embedder_factory=sentence_transformer_embedder_factory,
     )
@@ -1529,6 +1682,22 @@ def _select_seed_candidates(
     raise ValueError(f"Unsupported seed strategy: {seed_strategy}")
 
 
+def _should_continue_budget_fill(
+    spec: SelectorSpec,
+    *,
+    score: float,
+    first_backfill_candidate_score: float,
+) -> bool:
+    if spec.budget_fill_mode == "always":
+        return True
+    if spec.budget_fill_mode == "score_floor":
+        return score >= (spec.budget_fill_score_floor or 0.05)
+    if spec.budget_fill_mode == "relative_drop":
+        threshold = first_backfill_candidate_score * (spec.budget_fill_relative_drop_ratio or 0.5)
+        return score >= threshold
+    return True
+
+
 def _lexical_seed_candidates(
     graph: LinkContextGraph,
     query: str,
@@ -1586,6 +1755,10 @@ def _baseline_selector_metadata(
         search_structure=spec.search_structure,
         edge_scorer=spec.edge_scorer,
         lookahead_depth=spec.lookahead_depth,
+        budget_fill_mode=spec.budget_fill_mode,
+        budget_fill_pool_k=spec.budget_fill_pool_k,
+        budget_fill_score_floor=spec.budget_fill_score_floor,
+        budget_fill_relative_drop_ratio=spec.budget_fill_relative_drop_ratio,
     )
 
 
@@ -1610,9 +1783,39 @@ def _apply_selector_metadata(
             search_structure=spec.search_structure or metadata.search_structure,
             edge_scorer=spec.edge_scorer or metadata.edge_scorer,
             lookahead_depth=spec.lookahead_depth if spec.lookahead_depth is not None else metadata.lookahead_depth,
+            budget_fill_mode=spec.budget_fill_mode or metadata.budget_fill_mode,
+            budget_fill_pool_k=spec.budget_fill_pool_k if spec.budget_fill_pool_k is not None else metadata.budget_fill_pool_k,
+            budget_fill_score_floor=(
+                spec.budget_fill_score_floor
+                if spec.budget_fill_score_floor is not None
+                else metadata.budget_fill_score_floor
+            ),
+            budget_fill_relative_drop_ratio=(
+                spec.budget_fill_relative_drop_ratio
+                if spec.budget_fill_relative_drop_ratio is not None
+                else metadata.budget_fill_relative_drop_ratio
+            ),
         )
     result.selector_metadata = metadata
     return result
+
+
+def _apply_budget_fill_metadata(
+    metadata: SelectorMetadata | None,
+    spec: SelectorSpec,
+) -> SelectorMetadata:
+    if metadata is None:
+        metadata = SelectorMetadata(
+            scorer_kind="budget_fill",
+            backend="budget_fill",
+        )
+    return replace(
+        metadata,
+        budget_fill_mode=spec.budget_fill_mode,
+        budget_fill_pool_k=spec.budget_fill_pool_k,
+        budget_fill_score_floor=spec.budget_fill_score_floor,
+        budget_fill_relative_drop_ratio=spec.budget_fill_relative_drop_ratio,
+    )
 
 
 def _validate_selector_llm_config(config: SelectorLLMConfig) -> None:

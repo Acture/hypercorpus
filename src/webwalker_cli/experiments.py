@@ -524,9 +524,12 @@ def _build_main_summary_table(summary, *, title: str | None = None) -> Table:
     main_table.add_column("selector", overflow="fold")
     main_table.add_column("budget", justify="right", no_wrap=True)
     main_table.add_column("support_recall", justify="right", no_wrap=True)
-    main_table.add_column("support_precision", justify="right", no_wrap=True)
-    main_table.add_column("support_f1", justify="right", no_wrap=True)
+    main_table.add_column("support_precision_nonempty", justify="right", no_wrap=True)
+    main_table.add_column("support_f1_nonempty", justify="right", no_wrap=True)
+    main_table.add_column("support_f1_all", justify="right", no_wrap=True)
     main_table.add_column("selected_tokens", justify="right", no_wrap=True)
+    main_table.add_column("utilization", justify="right", no_wrap=True)
+    main_table.add_column("empty_rate", justify="right", no_wrap=True)
     main_table.add_column("budget_adherence", justify="right", no_wrap=True)
     main_table.add_column("runtime_s", justify="right", no_wrap=True)
     main_table.add_column("answer_em", justify="right", no_wrap=True)
@@ -539,7 +542,10 @@ def _build_main_summary_table(summary, *, title: str | None = None) -> Table:
             _format_metric(row.avg_support_recall),
             _format_metric(row.avg_support_precision),
             _format_metric(row.avg_support_f1),
+            _format_metric(row.avg_support_f1_zero_on_empty),
             _format_metric(row.avg_selected_token_estimate),
+            _format_metric(row.avg_budget_utilization),
+            _format_metric(row.avg_empty_selection_rate),
             _format_metric(row.avg_budget_adherence),
             _format_metric(row.avg_selection_runtime_s),
             _format_metric(row.avg_answer_em),

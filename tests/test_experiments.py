@@ -141,6 +141,9 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
         if row["name"] == "full_corpus_upper_bound" and row["budget_label"] == "tokens-256"
     ][0]
     assert eager_full["avg_compression_ratio"] == 1.0
+    assert "avg_budget_utilization" in eager_full
+    assert "avg_empty_selection_rate" in eager_full
+    assert "avg_support_f1_zero_on_empty" in eager_full
 
 
 def test_run_2wiki_experiment_exports_graphrag_csv(two_wiki_files, tmp_path):
@@ -227,6 +230,9 @@ def test_run_2wiki_experiment_writes_partial_results_and_progress_updates(two_wi
     assert partial_summary is not None
     assert partial_summary["total_cases"] == 1
     assert partial_summary["selector_budgets"][0]["num_cases"] == 1
+    assert "avg_budget_utilization" in partial_summary["selector_budgets"][0]
+    assert "avg_empty_selection_rate" in partial_summary["selector_budgets"][0]
+    assert "avg_support_f1_zero_on_empty" in partial_summary["selector_budgets"][0]
     assert "loading" in observed_phases
     assert "evaluating" in observed_phases
     assert "finalizing" in observed_phases
@@ -424,6 +430,101 @@ def test_summarize_result_records_includes_selector_health_metrics():
     assert row.avg_selector_total_tokens == pytest.approx(16.5)
     assert row.avg_selector_fallback_rate == pytest.approx(0.25)
     assert row.avg_selector_parse_failure_rate == pytest.approx(0.25)
+
+
+def test_summarize_result_records_tracks_empty_rate_and_f1_all():
+    summary = _summarize_result_records(
+        [
+            {
+                "dataset_name": "2wikimultihop",
+                "case_id": "q1",
+                "selector": CANONICAL_DENSE,
+                "budget_mode": "tokens",
+                "budget_value": 128,
+                "budget_label": "tokens-128",
+                "token_budget_tokens": 128,
+                "token_budget_ratio": None,
+                "selector_provider": None,
+                "selector_model": None,
+                "selection": {
+                    "metrics": {
+                        "start_hit": False,
+                        "support_recall": 0.0,
+                        "support_precision": None,
+                        "support_f1": None,
+                        "support_f1_zero_on_empty": 0.0,
+                        "path_hit": False,
+                        "selected_nodes_count": 0,
+                        "selected_token_estimate": 0,
+                        "compression_ratio": 0.0,
+                        "budget_adherence": True,
+                        "budget_utilization": 0.0,
+                        "empty_selection": True,
+                        "selection_runtime_s": 0.01,
+                    },
+                    "selector_usage": {
+                        "runtime_s": 0.0,
+                        "llm_calls": 0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "cache_hits": 0,
+                        "step_count": 0,
+                        "fallback_steps": 0,
+                        "parse_failure_steps": 0,
+                    },
+                },
+                "end_to_end": None,
+            },
+            {
+                "dataset_name": "2wikimultihop",
+                "case_id": "q2",
+                "selector": CANONICAL_DENSE,
+                "budget_mode": "tokens",
+                "budget_value": 128,
+                "budget_label": "tokens-128",
+                "token_budget_tokens": 128,
+                "token_budget_ratio": None,
+                "selector_provider": None,
+                "selector_model": None,
+                "selection": {
+                    "metrics": {
+                        "start_hit": True,
+                        "support_recall": 1.0,
+                        "support_precision": 1.0,
+                        "support_f1": 1.0,
+                        "support_f1_zero_on_empty": 1.0,
+                        "path_hit": True,
+                        "selected_nodes_count": 1,
+                        "selected_token_estimate": 64,
+                        "compression_ratio": 0.5,
+                        "budget_adherence": True,
+                        "budget_utilization": 0.5,
+                        "empty_selection": False,
+                        "selection_runtime_s": 0.01,
+                    },
+                    "selector_usage": {
+                        "runtime_s": 0.0,
+                        "llm_calls": 0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "cache_hits": 0,
+                        "step_count": 0,
+                        "fallback_steps": 0,
+                        "parse_failure_steps": 0,
+                    },
+                },
+                "end_to_end": None,
+            },
+        ]
+    )
+
+    row = summary.selector_budgets[0]
+    assert row.avg_support_f1 == 1.0
+    assert row.avg_support_f1_zero_on_empty == 0.5
+    assert row.avg_empty_selection_rate == 0.5
+    assert row.avg_budget_utilization == 0.25
 
 
 def test_run_iirc_experiment_handles_missing_path_supervision(iirc_files, tmp_path):

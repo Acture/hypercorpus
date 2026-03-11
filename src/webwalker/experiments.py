@@ -1113,6 +1113,11 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
             for row in rows
             if row["selection"]["metrics"]["support_f1"] is not None
         ]
+        support_f1_zero_on_empty = [
+            float(row["selection"]["metrics"]["support_f1_zero_on_empty"])
+            for row in rows
+            if row["selection"]["metrics"].get("support_f1_zero_on_empty") is not None
+        ]
         path_hits = [
             1.0 if row["selection"]["metrics"]["path_hit"] else 0.0
             for row in rows
@@ -1122,6 +1127,14 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
         selected_tokens = [float(row["selection"]["metrics"]["selected_token_estimate"]) for row in rows]
         compression = [float(row["selection"]["metrics"]["compression_ratio"]) for row in rows]
         adherence = [1.0 if row["selection"]["metrics"]["budget_adherence"] else 0.0 for row in rows]
+        utilization = [
+            float(row["selection"]["metrics"].get("budget_utilization", 0.0))
+            for row in rows
+        ]
+        empty_rate = [
+            1.0 if row["selection"]["metrics"].get("empty_selection", False) else 0.0
+            for row in rows
+        ]
         runtime = [float(row["selection"]["metrics"]["selection_runtime_s"]) for row in rows]
         selector_prompt_tokens = [
             float(row["selection"]["selector_usage"]["prompt_tokens"])
@@ -1187,11 +1200,14 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
                 "avg_support_recall": _average_or_none(support_recall),
                 "avg_support_precision": _average_or_none(support_precision),
                 "avg_support_f1": _average_or_none(support_f1),
+                "avg_support_f1_zero_on_empty": _average_or_none(support_f1_zero_on_empty),
                 "avg_path_hit": _average_or_none(path_hits),
                 "avg_selected_nodes": _average_or_none(selected_nodes) or 0.0,
                 "avg_selected_token_estimate": _average_or_none(selected_tokens) or 0.0,
                 "avg_compression_ratio": _average_or_none(compression) or 0.0,
                 "avg_budget_adherence": _average_or_none(adherence) or 0.0,
+                "avg_budget_utilization": _average_or_none(utilization) or 0.0,
+                "avg_empty_selection_rate": _average_or_none(empty_rate) or 0.0,
                 "avg_selection_runtime_s": _average_or_none(runtime) or 0.0,
                 "avg_selector_prompt_tokens": _average_or_none(selector_prompt_tokens),
                 "avg_selector_completion_tokens": _average_or_none(selector_completion_tokens),

@@ -125,6 +125,8 @@ The command writes:
 - `summary.json`: aggregated selector metrics grouped by `selector x budget x selector_provider x selector_model`
 - `graphrag_inputs/`: GraphRAG-compatible CSV slices with fixed `id,title,text,url` columns
 
+`summary.json` keeps the historical nonempty-only `support_precision` / `support_f1` fields and adds all-case metrics such as `avg_support_f1_zero_on_empty`, `avg_budget_utilization`, and `avg_empty_selection_rate` so empty selections remain visible in reports.
+
 To run the fixed reader evaluation with an LLM-scored selector, enable e2e explicitly and pin both selector and reader configuration:
 
 ```bash

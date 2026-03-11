@@ -76,12 +76,21 @@ The implementation is local-first, selector-first, and still centered on "select
   - `support_recall`
   - `support_precision`
   - `support_f1`
+  - `support_f1_zero_on_empty`
   - `path_hit` when available
   - `selected_nodes_count`
   - `selected_token_estimate`
   - `compression_ratio`
   - `selection_runtime_s`
   - `budget_adherence`
+  - `budget_utilization`
+  - `empty_selection`
+- Summary/CLI interpretation:
+  - `support_precision` and `support_f1` remain nonempty-only metrics for historical comparisons
+  - `support_f1_zero_on_empty` is the all-case headline metric and counts empty selections as `0.0`
+  - `budget_adherence` is a hard ceiling metric
+  - `budget_utilization` is a soft efficiency metric
+  - `empty_selection` is surfaced in `empty_rate`, not hidden behind `None`
 - Selector-side LLM accounting is recorded when applicable:
   - `selector_provider`
   - `selector_model`

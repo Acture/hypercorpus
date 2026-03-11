@@ -115,10 +115,13 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
             selected_token_estimate=32,
             compression_ratio=0.1,
             budget_adherence=True,
+            budget_utilization=0.25,
+            empty_selection=False,
             start_hit=None,
             support_recall=0.5,
             support_precision=0.75,
             support_f1=0.6,
+            support_f1_zero_on_empty=0.6,
             path_hit=None,
         ),
         trace=[],
@@ -150,10 +153,13 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
             selected_token_estimate=24,
             compression_ratio=0.08,
             budget_adherence=True,
+            budget_utilization=24 / 128,
+            empty_selection=False,
             start_hit=True,
             support_recall=0.25,
             support_precision=1.0,
             support_f1=0.4,
+            support_f1_zero_on_empty=0.4,
             path_hit=False,
         ),
         trace=[],
@@ -176,10 +182,13 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
             selected_token_estimate=48,
             compression_ratio=0.15,
             budget_adherence=False,
+            budget_utilization=48 / 128,
+            empty_selection=False,
             start_hit=True,
             support_recall=1.0,
             support_precision=0.5,
             support_f1=2 / 3,
+            support_f1_zero_on_empty=2 / 3,
             path_hit=True,
         ),
         trace=[],
@@ -228,3 +237,102 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
     assert llm_row.avg_answer_em == 1.0
     assert llm_row.avg_answer_f1 == 1.0
     assert llm_row.avg_start_hit == 1.0
+    assert llm_row.avg_budget_utilization == pytest.approx((0.25 + (48 / 128)) / 2)
+    assert llm_row.avg_empty_selection_rate == 0.0
+    assert llm_row.avg_support_f1_zero_on_empty == pytest.approx((0.6 + (2 / 3)) / 2)
+
+
+def test_empty_selection_metrics_are_visible_without_changing_raw_f1():
+    budget = EvaluationBudget(token_budget_tokens=128)
+    case = EvaluationCase(
+        case_id="empty",
+        query="launch site",
+        dataset_name="2wikimultihop",
+        gold_support_nodes=["mission"],
+    )
+    empty_result = SelectionResult(
+        selector_name="top_1_seed__lexical_overlap__hop_0__dense",
+        budget=budget,
+        corpus=SelectedCorpus(node_ids=[], edge_contexts=[], token_estimate=0),
+        metrics=SelectionMetrics(
+            budget_mode=budget.budget_mode,
+            budget_value=budget.budget_value,
+            budget_label=budget.budget_label,
+            token_budget_ratio=budget.token_budget_ratio,
+            token_budget_tokens=budget.token_budget_tokens,
+            budget_token_limit=128,
+            selection_runtime_s=0.01,
+            selected_nodes_count=0,
+            selected_token_estimate=0,
+            compression_ratio=0.0,
+            budget_adherence=True,
+            budget_utilization=0.0,
+            empty_selection=True,
+            start_hit=False,
+            support_recall=0.0,
+            support_precision=None,
+            support_f1=None,
+            support_f1_zero_on_empty=0.0,
+            path_hit=False,
+        ),
+        trace=[],
+        selector_metadata=SelectorMetadata(scorer_kind="baseline", backend="dense"),
+        selector_usage=SelectorUsage(),
+    )
+    nonempty_result = SelectionResult(
+        selector_name=empty_result.selector_name,
+        budget=budget,
+        corpus=SelectedCorpus(node_ids=["mission"], edge_contexts=[], token_estimate=64),
+        metrics=SelectionMetrics(
+            budget_mode=budget.budget_mode,
+            budget_value=budget.budget_value,
+            budget_label=budget.budget_label,
+            token_budget_ratio=budget.token_budget_ratio,
+            token_budget_tokens=budget.token_budget_tokens,
+            budget_token_limit=128,
+            selection_runtime_s=0.02,
+            selected_nodes_count=1,
+            selected_token_estimate=64,
+            compression_ratio=0.1,
+            budget_adherence=True,
+            budget_utilization=0.5,
+            empty_selection=False,
+            start_hit=True,
+            support_recall=1.0,
+            support_precision=1.0,
+            support_f1=1.0,
+            support_f1_zero_on_empty=1.0,
+            path_hit=True,
+        ),
+        trace=[],
+        selector_metadata=SelectorMetadata(scorer_kind="baseline", backend="dense"),
+        selector_usage=SelectorUsage(),
+    )
+
+    summary = summarize_evaluations(
+        [
+            CaseEvaluation(case=case, selections=[empty_result]),
+            CaseEvaluation(
+                case=EvaluationCase(
+                    case_id="nonempty",
+                    query="launch site",
+                    dataset_name="2wikimultihop",
+                    gold_support_nodes=["mission"],
+                ),
+                selections=[nonempty_result],
+            ),
+        ],
+        dataset_name="2wikimultihop",
+    )
+
+    row = summary.selector_budgets[0]
+    assert empty_result.metrics.support_precision is None
+    assert empty_result.metrics.support_f1 is None
+    assert empty_result.metrics.support_f1_zero_on_empty == 0.0
+    assert empty_result.metrics.empty_selection is True
+    assert empty_result.metrics.budget_utilization == 0.0
+    assert row.avg_support_precision == 1.0
+    assert row.avg_support_f1 == 1.0
+    assert row.avg_support_f1_zero_on_empty == 0.5
+    assert row.avg_empty_selection_rate == 0.5
+    assert row.avg_budget_utilization == 0.25
