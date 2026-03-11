@@ -380,34 +380,37 @@ def _format_metric(value: float | None) -> str:
     return f"{value:.3f}"
 
 
-def _print_summary(console: Console, summary) -> None:
-    has_selector_costs = any(
+def _selector_label(row) -> str:
+    if row.selector_provider and row.selector_model:
+        return f"{row.name}@{row.selector_provider}:{row.selector_model}"
+    return row.name
+
+
+def _has_selector_health(summary) -> bool:
+    return any(
         (row.avg_selector_total_tokens or 0) > 0
         or (row.avg_selector_llm_calls or 0) > 0
         or (row.avg_selector_fallback_rate or 0) > 0
+        or (row.avg_selector_parse_failure_rate or 0) > 0
         for row in summary.selector_budgets
     )
-    table = Table(title=f"{summary.dataset_name} summary")
-    table.add_column("selector")
-    table.add_column("budget", justify="right")
-    table.add_column("support_recall", justify="right")
-    table.add_column("support_precision", justify="right")
-    table.add_column("support_f1", justify="right")
-    table.add_column("selected_tokens", justify="right")
-    table.add_column("budget_adherence", justify="right")
-    table.add_column("runtime_s", justify="right")
-    table.add_column("answer_em", justify="right")
-    table.add_column("answer_f1", justify="right")
-    if has_selector_costs:
-        table.add_column("selector_tokens", justify="right")
-        table.add_column("selector_calls", justify="right")
-        table.add_column("selector_fallback", justify="right")
-        table.add_column("selector_parse_fail", justify="right")
+
+
+def _print_summary(console: Console, summary) -> None:
+    main_table = Table(title=f"{summary.dataset_name} summary")
+    main_table.add_column("selector", no_wrap=True, overflow="ellipsis", max_width=72)
+    main_table.add_column("budget", justify="right", no_wrap=True)
+    main_table.add_column("support_recall", justify="right", no_wrap=True)
+    main_table.add_column("support_precision", justify="right", no_wrap=True)
+    main_table.add_column("support_f1", justify="right", no_wrap=True)
+    main_table.add_column("selected_tokens", justify="right", no_wrap=True)
+    main_table.add_column("budget_adherence", justify="right", no_wrap=True)
+    main_table.add_column("runtime_s", justify="right", no_wrap=True)
+    main_table.add_column("answer_em", justify="right", no_wrap=True)
+    main_table.add_column("answer_f1", justify="right", no_wrap=True)
 
     for row in summary.selector_budgets:
-        selector_label = row.name
-        if row.selector_provider and row.selector_model:
-            selector_label = f"{row.name}@{row.selector_provider}:{row.selector_model}"
+        selector_label = _selector_label(row)
         cells = [
             selector_label,
             row.budget_label,
@@ -420,30 +423,31 @@ def _print_summary(console: Console, summary) -> None:
             _format_metric(row.avg_answer_em),
             _format_metric(row.avg_answer_f1),
         ]
-        if has_selector_costs:
-            cells.extend(
-                [
-                    _format_metric(row.avg_selector_total_tokens),
-                    _format_metric(row.avg_selector_llm_calls),
-                    _format_metric(row.avg_selector_fallback_rate),
-                    _format_metric(row.avg_selector_parse_failure_rate),
-                ]
-            )
-        table.add_row(*cells)
+        main_table.add_row(*cells)
 
-    console.print(table)
-    columns = [
-        "selector",
-        "budget",
-        "support_recall",
-        "support_precision",
-        "support_f1",
-        "selected_tokens",
-        "budget_adherence",
-        "runtime_s",
-        "answer_em",
-        "answer_f1",
-    ]
-    if has_selector_costs:
-        columns.extend(["selector_tokens", "selector_calls", "selector_fallback", "selector_parse_fail"])
-    console.print(f"columns: {', '.join(columns)}")
+    console.print(main_table)
+
+    if not _has_selector_health(summary):
+        return
+
+    health_table = Table(title=f"{summary.dataset_name} selector health")
+    health_table.add_column("selector", no_wrap=True, overflow="ellipsis", max_width=72)
+    health_table.add_column("budget", justify="right", no_wrap=True)
+    health_table.add_column("selector_tokens", justify="right", no_wrap=True)
+    health_table.add_column("selector_calls", justify="right", no_wrap=True)
+    health_table.add_column("selector_runtime_s", justify="right", no_wrap=True)
+    health_table.add_column("selector_fallback", justify="right", no_wrap=True)
+    health_table.add_column("selector_parse_fail", justify="right", no_wrap=True)
+
+    for row in summary.selector_budgets:
+        health_table.add_row(
+            _selector_label(row),
+            row.budget_label,
+            _format_metric(row.avg_selector_total_tokens),
+            _format_metric(row.avg_selector_llm_calls),
+            _format_metric(row.avg_selector_runtime_s),
+            _format_metric(row.avg_selector_fallback_rate),
+            _format_metric(row.avg_selector_parse_failure_rate),
+        )
+
+    console.print(health_table)

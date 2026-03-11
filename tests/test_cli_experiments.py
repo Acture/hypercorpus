@@ -1,6 +1,53 @@
+from rich.console import Console
 from typer.testing import CliRunner
 
+from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
 from webwalker_cli import app
+from webwalker_cli.experiments import _print_summary
+
+
+def _make_selector_budget_summary(
+    *,
+    name: str,
+    selector_provider: str | None = None,
+    selector_model: str | None = None,
+    budget_label: str = "tokens-128",
+    avg_selector_total_tokens: float | None = None,
+    avg_selector_runtime_s: float | None = None,
+    avg_selector_llm_calls: float | None = None,
+    avg_selector_fallback_rate: float | None = None,
+    avg_selector_parse_failure_rate: float | None = None,
+) -> SelectorBudgetSummary:
+    return SelectorBudgetSummary(
+        name=name,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        budget_mode="tokens",
+        budget_value=128,
+        budget_label=budget_label,
+        token_budget_ratio=None,
+        token_budget_tokens=128,
+        num_cases=1,
+        avg_start_hit=None,
+        avg_support_recall=0.5,
+        avg_support_precision=0.6,
+        avg_support_f1=0.545,
+        avg_path_hit=None,
+        avg_selected_nodes=2.0,
+        avg_selected_token_estimate=70.0,
+        avg_compression_ratio=0.1,
+        avg_budget_adherence=1.0,
+        avg_selection_runtime_s=0.01,
+        avg_selector_prompt_tokens=None,
+        avg_selector_completion_tokens=None,
+        avg_selector_total_tokens=avg_selector_total_tokens,
+        avg_selector_runtime_s=avg_selector_runtime_s,
+        avg_selector_llm_calls=avg_selector_llm_calls,
+        avg_selector_fallback_rate=avg_selector_fallback_rate,
+        avg_selector_parse_failure_rate=avg_selector_parse_failure_rate,
+        avg_answer_em=None,
+        avg_answer_f1=None,
+    )
 
 
 def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
@@ -35,7 +82,6 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
     assert "2wikimultihop summary" in result.stdout
     assert "selector" in result.stdout
     assert "budget" in result.stdout
-    assert "answer_em" in result.stdout
     assert (output_dir / "results.jsonl").exists()
     assert (output_dir / "selector_logs.jsonl").exists()
     assert (output_dir / "summary.json").exists()
@@ -70,7 +116,7 @@ def test_run_2wiki_cli_supports_no_e2e_and_no_export(two_wiki_files, tmp_path):
     )
 
     assert result.exit_code == 0, result.stdout
-    assert "answer_em" in result.stdout
+    assert "2wikimultihop summary" in result.stdout
     assert not (output_dir / "graphrag_inputs").exists()
 
 
@@ -276,3 +322,58 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
 
     assert merge_result.exit_code == 0, merge_result.stdout
     assert "missing_chunks -> [1]" in merge_result.stdout
+
+
+def test_print_summary_renders_main_table_only_for_non_llm_rows():
+    summary = ExperimentSummary(
+        dataset_name="2wikimultihop",
+        total_cases=1,
+        selector_budgets=[
+            _make_selector_budget_summary(name="seed_rerank"),
+        ],
+    )
+    console = Console(record=True, width=160)
+
+    _print_summary(console, summary)
+
+    output = console.export_text()
+    assert "2wikimultihop summary" in output
+    assert "support_recall" in output
+    assert "support_precision" in output
+    assert "answer_em" in output
+    assert "selector health" not in output
+    assert "selector_tokens" not in output
+    assert "columns:" not in output
+
+
+def test_print_summary_renders_selector_health_table_for_llm_rows():
+    summary = ExperimentSummary(
+        dataset_name="2wikimultihop",
+        total_cases=1,
+        selector_budgets=[
+            _make_selector_budget_summary(
+                name="seed__link_context_llm__single_path_walk",
+                selector_provider="anthropic",
+                selector_model="claude-haiku-4-5-20251001",
+                avg_selector_total_tokens=1736.75,
+                avg_selector_runtime_s=5.173,
+                avg_selector_llm_calls=1.45,
+                avg_selector_fallback_rate=0.0,
+                avg_selector_parse_failure_rate=0.0,
+            ),
+        ],
+    )
+    console = Console(record=True, width=220)
+
+    _print_summary(console, summary)
+
+    output = console.export_text()
+    assert "2wikimultihop summary" in output
+    assert "2wikimultihop selector health" in output
+    assert "selector_tokens" in output
+    assert "selector_calls" in output
+    assert "selector_fallback" in output
+    assert "selector_parse_fail" in output
+    assert "seed__link_context_llm__single_path_walk@anthropic" in output
+    assert "claude-haiku-4-5-202" in output
+    assert "columns:" not in output
