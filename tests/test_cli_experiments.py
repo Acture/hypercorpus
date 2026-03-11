@@ -23,10 +23,11 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
             "1",
             "--selectors",
             "adaptive_link_context_walk,full_corpus_upper_bound",
-            "--budget-ratios",
-            "0.10,1.0",
+            "--token-budgets",
+            "128,256",
             "--seed",
             "7",
+            "--no-e2e",
         ],
     )
 
@@ -34,7 +35,7 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
     assert "2wikimultihop summary" in result.stdout
     assert "selector" in result.stdout
     assert "budget" in result.stdout
-    assert "e2e_em" in result.stdout
+    assert "answer_em" in result.stdout
     assert (output_dir / "results.jsonl").exists()
     assert (output_dir / "summary.json").exists()
     assert (output_dir / "graphrag_inputs").exists()
@@ -60,15 +61,15 @@ def test_run_2wiki_cli_supports_no_e2e_and_no_export(two_wiki_files, tmp_path):
             "1",
             "--selectors",
             "seed_rerank",
-            "--budget-ratios",
-            "0.10",
+            "--token-budgets",
+            "128",
             "--no-e2e",
             "--no-export-graphrag-inputs",
         ],
     )
 
     assert result.exit_code == 0, result.stdout
-    assert "e2e_em" in result.stdout
+    assert "answer_em" in result.stdout
     assert not (output_dir / "graphrag_inputs").exists()
 
 
@@ -92,6 +93,40 @@ def test_run_2wiki_cli_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
             "1",
             "--selectors",
             "dense_topk",
+            "--token-budgets",
+            "128",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert str(result.exception) == "Unknown selector: dense_topk"
+
+
+def test_run_2wiki_cli_rejects_conflicting_budget_flags(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "cli-conflicting-budgets"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-2wiki",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--limit",
+            "1",
+            "--selectors",
+            "seed_rerank",
+            "--token-budgets",
+            "128",
             "--budget-ratios",
             "0.10",
             "--no-e2e",
@@ -101,7 +136,7 @@ def test_run_2wiki_cli_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
 
     assert result.exit_code != 0
     assert isinstance(result.exception, ValueError)
-    assert str(result.exception) == "Unknown selector: dense_topk"
+    assert str(result.exception) == "Specify either --token-budgets or --budget-ratios, not both."
 
 
 def test_run_2wiki_store_cli_smoke(prepared_two_wiki_store, tmp_path):
@@ -124,8 +159,8 @@ def test_run_2wiki_store_cli_smoke(prepared_two_wiki_store, tmp_path):
             "0",
             "--selectors",
             "adaptive_link_context_walk,full_corpus_upper_bound",
-            "--budget-ratios",
-            "0.10,1.0",
+            "--token-budgets",
+            "128,256",
             "--no-e2e",
             "--no-export-graphrag-inputs",
         ],
@@ -154,8 +189,8 @@ def test_run_iirc_cli_smoke(iirc_files, tmp_path):
             str(output_dir),
             "--selectors",
             "seed_rerank",
-            "--budget-ratios",
-            "0.10",
+            "--token-budgets",
+            "128",
             "--no-e2e",
             "--no-export-graphrag-inputs",
         ],
@@ -186,8 +221,8 @@ def test_run_docs_cli_smoke(docs_files, tmp_path):
             "python_docs",
             "--selectors",
             "seed_rerank",
-            "--budget-ratios",
-            "0.10",
+            "--token-budgets",
+            "128",
             "--no-e2e",
             "--no-export-graphrag-inputs",
         ],
@@ -220,8 +255,8 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
             "0",
             "--selectors",
             "seed_rerank",
-            "--budget-ratios",
-            "0.10",
+            "--token-budgets",
+            "128",
             "--no-e2e",
             "--no-export-graphrag-inputs",
         ],

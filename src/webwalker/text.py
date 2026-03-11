@@ -82,3 +82,26 @@ def normalize_answer(text: str) -> str:
 	text = text.lower().strip()
 	text = text.translate(str.maketrans("", "", string.punctuation))
 	return " ".join(text.split())
+
+
+def normalized_answer_tokens(text: str) -> list[str]:
+	return normalize_answer(text).split()
+
+
+def answer_f1(answer: str, expected_answer: str | None) -> float | None:
+	if expected_answer is None:
+		return None
+	answer_tokens = normalized_answer_tokens(answer)
+	expected_tokens = normalized_answer_tokens(expected_answer)
+	if not answer_tokens and not expected_tokens:
+		return 1.0
+	if not answer_tokens or not expected_tokens:
+		return 0.0
+	answer_counts = Counter(answer_tokens)
+	expected_counts = Counter(expected_tokens)
+	shared = sum(min(answer_counts[token], expected_counts[token]) for token in answer_counts)
+	if shared == 0:
+		return 0.0
+	precision = shared / len(answer_tokens)
+	recall = shared / len(expected_tokens)
+	return 2 * precision * recall / (precision + recall)

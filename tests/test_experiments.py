@@ -5,6 +5,7 @@ import pytest
 from webwalker.experiments import (
     merge_2wiki_results,
     parse_budget_ratios,
+    parse_token_budgets,
     parse_selector_names,
     run_docs_experiment,
     run_iirc_experiment,
@@ -23,6 +24,47 @@ def test_parse_budget_ratios_handles_empty_values():
     assert parse_budget_ratios(None) is None
     assert parse_budget_ratios("") is None
     assert parse_budget_ratios("0.05,1.0") == [0.05, 1.0]
+
+
+def test_parse_token_budgets_handles_empty_values():
+    assert parse_token_budgets(None) is None
+    assert parse_token_budgets("") is None
+    assert parse_token_budgets("128,256") == [128, 256]
+
+
+def test_run_2wiki_experiment_rejects_conflicting_budget_inputs(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+
+    with pytest.raises(ValueError, match="either token_budgets or budget_ratios"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=tmp_path / "conflicting-budgets",
+            limit=1,
+            selector_names=["seed_rerank"],
+            token_budgets=[128],
+            budget_ratios=[0.1],
+            with_e2e=False,
+            export_graphrag_inputs=False,
+        )
+
+
+def test_run_2wiki_experiment_fails_fast_for_missing_llm_key(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=tmp_path / "missing-key",
+            limit=1,
+            selector_names=["seed_rerank"],
+            token_budgets=[128],
+            with_e2e=True,
+            answerer_mode="llm_fixed",
+            export_graphrag_inputs=False,
+        )
 
 
 def test_run_2wiki_experiment_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
@@ -53,23 +95,27 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
         selector_names=[
             "adaptive_link_context_walk",
             "oracle_seed_adaptive_link_context_walk",
+            "gold_support_context",
             "full_corpus_upper_bound",
         ],
-        budget_ratios=[0.10, 1.0],
+        token_budgets=[128, 256],
         seed=11,
         max_steps=3,
         top_k=2,
+        with_e2e=False,
     )
 
     assert len(evaluations) == 1
     assert summary.total_cases == 1
-    assert [(row.name, row.token_budget_ratio) for row in summary.selector_budgets] == [
-        ("adaptive_link_context_walk", 0.10),
-        ("oracle_seed_adaptive_link_context_walk", 0.10),
-        ("full_corpus_upper_bound", 0.10),
-        ("adaptive_link_context_walk", 1.0),
-        ("oracle_seed_adaptive_link_context_walk", 1.0),
-        ("full_corpus_upper_bound", 1.0),
+    assert [(row.name, row.budget_label) for row in summary.selector_budgets] == [
+        ("adaptive_link_context_walk", "tokens-128"),
+        ("oracle_seed_adaptive_link_context_walk", "tokens-128"),
+        ("gold_support_context", "tokens-128"),
+        ("full_corpus_upper_bound", "tokens-128"),
+        ("adaptive_link_context_walk", "tokens-256"),
+        ("oracle_seed_adaptive_link_context_walk", "tokens-256"),
+        ("gold_support_context", "tokens-256"),
+        ("full_corpus_upper_bound", "tokens-256"),
     ]
 
     results_path = output_dir / "results.jsonl"
@@ -78,11 +124,13 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert summary_path.exists()
 
     lines = results_path.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 6
+    assert len(lines) == 8
     first_record = json.loads(lines[0])
     assert first_record["case_id"] == "q1"
     assert first_record["selector"] == "adaptive_link_context_walk"
-    assert first_record["token_budget_ratio"] == 0.10
+    assert first_record["budget_mode"] == "tokens"
+    assert first_record["budget_value"] == 128
+    assert first_record["budget_label"] == "tokens-128"
     assert "selection" in first_record
     assert "budget" in first_record["selection"]
     assert first_record["selection"]["graphrag_input_path"] is not None
@@ -92,7 +140,7 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     eager_full = [
         row
         for row in summary_record["selector_budgets"]
-        if row["name"] == "full_corpus_upper_bound" and row["token_budget_ratio"] == 1.0
+        if row["name"] == "full_corpus_upper_bound" and row["budget_label"] == "tokens-256"
     ][0]
     assert eager_full["avg_compression_ratio"] == 1.0
 
@@ -137,7 +185,7 @@ def test_run_2wiki_experiment_can_disable_e2e_and_export(two_wiki_files, tmp_pat
         output_dir=output_dir,
         limit=1,
         selector_names=["seed_rerank"],
-        budget_ratios=[0.10],
+        token_budgets=[128],
         with_e2e=False,
         export_graphrag_inputs=False,
     )
@@ -145,7 +193,7 @@ def test_run_2wiki_experiment_can_disable_e2e_and_export(two_wiki_files, tmp_pat
     assert len(evaluations[0].selections) == 1
     assert evaluations[0].selections[0].end_to_end is None
     assert evaluations[0].selections[0].graphrag_input_path is None
-    assert summary.selector_budgets[0].avg_e2e_em is None
+    assert summary.selector_budgets[0].avg_answer_em is None
     assert not (output_dir / "graphrag_inputs").exists()
 
     first_record = json.loads((output_dir / "results.jsonl").read_text(encoding="utf-8").strip())
@@ -160,8 +208,8 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
         exp_name="pilot",
         chunk_size=1,
         chunk_index=0,
-        selector_names=["adaptive_link_context_walk", "full_corpus_upper_bound"],
-        budget_ratios=[0.10, 1.0],
+        selector_names=["adaptive_link_context_walk", "gold_support_context", "full_corpus_upper_bound"],
+        token_budgets=[128, 256],
         with_e2e=False,
         export_graphrag_inputs=False,
     )
@@ -172,6 +220,9 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
     assert (chunk_dir / "results.jsonl").exists()
     assert (chunk_dir / "summary.json").exists()
     assert (chunk_dir / "chunk.json").exists()
+    chunk_meta = json.loads((chunk_dir / "chunk.json").read_text(encoding="utf-8"))
+    assert chunk_meta["token_budgets"] == [128, 256]
+    assert chunk_meta["budget_ratios"] is None
 
 
 def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared_two_wiki_store, tmp_path):

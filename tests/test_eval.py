@@ -9,6 +9,7 @@ from webwalker.eval import (
     EvaluationCase,
     Evaluator,
     FullCorpusUpperBoundSelector,
+    GoldSupportContextSelector,
     OracleSeedAdaptiveLinkContextWalkSelector,
     RandomWalkSelector,
     SeedPlusAnchorNeighborsSelector,
@@ -52,6 +53,7 @@ def test_available_selector_names_split_main_and_diagnostics():
         "adaptive_link_context_walk_2step",
         "adaptive_title_aware_walk",
         "oracle_seed_adaptive_link_context_walk",
+        "gold_support_context",
         "random_walk",
         "full_corpus_upper_bound",
     ]
@@ -81,20 +83,55 @@ def test_evaluator_runs_research_facing_selector_registry(sample_graph):
         "adaptive_link_context_walk_2step",
         "adaptive_title_aware_walk",
         "oracle_seed_adaptive_link_context_walk",
+        "gold_support_context",
         "full_corpus_upper_bound",
     ]
     evaluation = Evaluator(
         select_selectors(selector_names),
         budget=SelectionBudget(max_steps=3, top_k=2, token_budget_ratio=1.0),
+        with_e2e=True,
     ).evaluate_case(sample_graph, case)
     results = {selection.selector_name: selection for selection in evaluation.selections}
 
     assert set(results) == set(selector_names)
     assert results["adaptive_link_context_walk"].metrics.support_recall == 1.0
     assert results["oracle_seed_adaptive_link_context_walk"].metrics.start_hit is True
+    assert results["gold_support_context"].metrics.support_precision == 1.0
+    assert results["gold_support_context"].metrics.support_f1 == 1.0
     assert results["adaptive_title_aware_walk"].end_to_end is not None
     assert results["adaptive_title_aware_walk"].end_to_end.em == 1.0
     assert results["full_corpus_upper_bound"].metrics.compression_ratio == 1.0
+
+
+def test_selection_budget_supports_absolute_tokens():
+    budget = SelectionBudget(max_steps=3, top_k=2, token_budget_tokens=256, token_budget_ratio=None)
+
+    assert budget.budget_mode == "tokens"
+    assert budget.budget_value == 256
+    assert budget.budget_label == "tokens-256"
+
+
+def test_selection_budget_rejects_ambiguous_budget_sources():
+    with pytest.raises(ValueError, match="exactly one"):
+        SelectionBudget(max_steps=3, top_k=2, token_budget_tokens=256, token_budget_ratio=0.1)
+
+
+def test_gold_support_context_selector_uses_gold_nodes(sample_graph):
+    case = EvaluationCase(
+        case_id="launch-site",
+        query="Which city hosts the launch site?",
+        gold_support_nodes=["mission", "cape"],
+        gold_start_nodes=["mission"],
+    )
+    result = GoldSupportContextSelector().select(
+        sample_graph,
+        case,
+        SelectionBudget(max_steps=3, top_k=2, token_budget_ratio=1.0),
+    )
+
+    assert result.corpus.node_ids == ["mission", "cape"]
+    assert result.metrics.support_recall == 1.0
+    assert result.metrics.support_precision == 1.0
 
 
 def test_seed_plus_topology_neighbors_ignores_anchor_and_sentence_text():

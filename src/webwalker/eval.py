@@ -4,15 +4,16 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Protocol, Sequence
+from typing import Callable, Literal, Protocol, Sequence
 
-from webwalker.answering import Answerer
+from webwalker.answering import Answerer, SupportsAnswer
 from webwalker.candidate.policy import SelectByCosTopK, StartPolicy
 from webwalker.graph import LinkContext, LinkContextGraph
 from webwalker.subgraph import SubgraphExtractor
-from webwalker.text import approx_token_count, normalize_answer, normalized_token_overlap
+from webwalker.text import answer_f1, approx_token_count, normalize_answer, normalized_token_overlap
 from webwalker.walker import DynamicWalker, OverlapLinkScorer, StopReason, WalkBudget, WalkResult, WalkStep
 
+DEFAULT_TOKEN_BUDGETS: tuple[int, ...] = (128, 256, 512, 1024)
 DEFAULT_BUDGET_RATIOS: tuple[float, ...] = (0.01, 0.02, 0.05, 0.10, 1.0)
 
 
@@ -37,15 +38,34 @@ class EvaluationCase:
 class SelectionBudget:
     max_steps: int = 3
     top_k: int = 2
-    token_budget_ratio: float = 0.05
+    token_budget_tokens: int | None = None
+    token_budget_ratio: float | None = None
+    budget_mode: Literal["tokens", "ratio"] = field(init=False)
+    budget_value: int | float = field(init=False)
+    budget_label: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.max_steps <= 0:
             raise ValueError("SelectionBudget.max_steps must be positive.")
         if self.top_k <= 0:
             raise ValueError("SelectionBudget.top_k must be positive.")
+        if self.token_budget_tokens is None and self.token_budget_ratio is None:
+            self.token_budget_tokens = DEFAULT_TOKEN_BUDGETS[0]
+        if (self.token_budget_tokens is None) == (self.token_budget_ratio is None):
+            raise ValueError("SelectionBudget requires exactly one of token_budget_tokens or token_budget_ratio.")
+        if self.token_budget_tokens is not None:
+            if self.token_budget_tokens <= 0:
+                raise ValueError("SelectionBudget.token_budget_tokens must be positive.")
+            self.budget_mode = "tokens"
+            self.budget_value = int(self.token_budget_tokens)
+            self.budget_label = f"tokens-{self.token_budget_tokens}"
+            return
+        assert self.token_budget_ratio is not None
         if self.token_budget_ratio <= 0 or self.token_budget_ratio > 1:
             raise ValueError("SelectionBudget.token_budget_ratio must be in (0, 1].")
+        self.budget_mode = "ratio"
+        self.budget_value = float(self.token_budget_ratio)
+        self.budget_label = f"ratio-{self.token_budget_ratio:.4f}"
 
 
 @dataclass(slots=True)
@@ -77,7 +97,11 @@ class SelectedCorpus:
 
 @dataclass(slots=True)
 class SelectionMetrics:
-    token_budget_ratio: float
+    budget_mode: Literal["tokens", "ratio"]
+    budget_value: int | float
+    budget_label: str
+    token_budget_ratio: float | None
+    token_budget_tokens: int | None
     budget_token_limit: int
     selection_runtime_s: float
     selected_nodes_count: int
@@ -87,15 +111,23 @@ class SelectionMetrics:
     start_hit: bool | None = None
     support_recall: float | None = None
     support_precision: float | None = None
+    support_f1: float | None = None
     path_hit: bool | None = None
 
 
 @dataclass(slots=True)
 class EndToEndResult:
+    mode: str
+    model: str | None
     answer: str
     confidence: float
     evidence_count: int
     em: float | None
+    f1: float | None
+    runtime_s: float
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
 
 
 @dataclass(slots=True)
@@ -119,18 +151,24 @@ class CaseEvaluation:
 @dataclass(slots=True)
 class SelectorBudgetSummary:
     name: str
-    token_budget_ratio: float
+    budget_mode: Literal["tokens", "ratio"]
+    budget_value: int | float
+    budget_label: str
+    token_budget_ratio: float | None
+    token_budget_tokens: int | None
     num_cases: int
     avg_start_hit: float | None
     avg_support_recall: float | None
     avg_support_precision: float | None
+    avg_support_f1: float | None
     avg_path_hit: float | None
     avg_selected_nodes: float
     avg_selected_token_estimate: float
     avg_compression_ratio: float
     avg_budget_adherence: float
     avg_selection_runtime_s: float
-    avg_e2e_em: float | None
+    avg_answer_em: float | None
+    avg_answer_f1: float | None
 
 
 @dataclass(slots=True)
@@ -447,6 +485,37 @@ class FullCorpusUpperBoundSelector:
         )
 
 
+class GoldSupportContextSelector:
+    name = "gold_support_context"
+
+    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
+        started_at = time.perf_counter()
+        ordered_nodes = list(case.gold_support_nodes)
+        root_candidates = list(case.gold_start_nodes or case.gold_support_nodes)
+        trace = [
+            SelectionTraceStep(
+                index=index,
+                node_id=node_id,
+                score=1.0 if node_id in set(case.gold_support_nodes) else _node_score(graph, case.query, node_id),
+            )
+            for index, node_id in enumerate(ordered_nodes)
+        ]
+        runtime_s = time.perf_counter() - started_at
+        return _build_selection_result(
+            selector_name=self.name,
+            graph=graph,
+            case=case,
+            budget=budget,
+            ordered_node_ids=ordered_nodes,
+            root_candidates=root_candidates,
+            edge_contexts=[],
+            trace=trace,
+            runtime_s=runtime_s,
+            stop_reason="gold_support_context",
+            ignore_budget=True,
+        )
+
+
 def build_default_selectors(*, seed: int = 0) -> list[CorpusSelector]:
     del seed
     return [
@@ -466,6 +535,7 @@ def build_diagnostic_selectors(*, seed: int = 0) -> list[CorpusSelector]:
         *build_default_selectors(seed=seed),
         AdaptiveTitleAwareWalkSelector(),
         OracleSeedAdaptiveLinkContextWalkSelector(),
+        GoldSupportContextSelector(),
         RandomWalkSelector(seed=seed),
         FullCorpusUpperBoundSelector(),
     ]
@@ -507,9 +577,9 @@ class Evaluator:
         selectors: list[CorpusSelector] | None = None,
         *,
         budget: SelectionBudget | None = None,
-        with_e2e: bool = True,
+        with_e2e: bool = False,
         extractor: SubgraphExtractor | None = None,
-        answerer: Answerer | None = None,
+        answerer: SupportsAnswer | None = None,
     ):
         self.selectors = selectors or build_default_selectors()
         self.budget = budget or SelectionBudget()
@@ -549,25 +619,30 @@ def summarize_evaluations(
 
     ordered_keys = list(
         dict.fromkeys(
-            (selection.selector_name, selection.budget.token_budget_ratio)
+            (selection.selector_name, selection.budget.budget_mode, selection.budget.budget_value)
             for evaluation in evaluations
             for selection in evaluation.selections
         )
     )
 
     selector_budgets: list[SelectorBudgetSummary] = []
-    for name, token_budget_ratio in ordered_keys:
+    for name, budget_mode, budget_value in ordered_keys:
         results = [
             selection
             for evaluation in evaluations
             for selection in evaluation.selections
             if selection.selector_name == name
-            and math.isclose(selection.budget.token_budget_ratio, token_budget_ratio)
+            and _matches_budget(selection.budget, budget_mode=budget_mode, budget_value=budget_value)
         ]
+        exemplar = results[0].budget
         selector_budgets.append(
             SelectorBudgetSummary(
                 name=name,
-                token_budget_ratio=token_budget_ratio,
+                budget_mode=budget_mode,
+                budget_value=budget_value,
+                budget_label=exemplar.budget_label,
+                token_budget_ratio=exemplar.token_budget_ratio,
+                token_budget_tokens=exemplar.token_budget_tokens,
                 num_cases=len(results),
                 avg_start_hit=_average(
                     [1.0 if result.metrics.start_hit else 0.0 for result in results if result.metrics.start_hit is not None]
@@ -577,6 +652,9 @@ def summarize_evaluations(
                 ),
                 avg_support_precision=_average(
                     [result.metrics.support_precision for result in results if result.metrics.support_precision is not None]
+                ),
+                avg_support_f1=_average(
+                    [result.metrics.support_f1 for result in results if result.metrics.support_f1 is not None]
                 ),
                 avg_path_hit=_average(
                     [1.0 if result.metrics.path_hit else 0.0 for result in results if result.metrics.path_hit is not None]
@@ -589,11 +667,18 @@ def summarize_evaluations(
                 avg_compression_ratio=_average([result.metrics.compression_ratio for result in results]) or 0.0,
                 avg_budget_adherence=_average([1.0 if result.metrics.budget_adherence else 0.0 for result in results]) or 0.0,
                 avg_selection_runtime_s=_average([result.metrics.selection_runtime_s for result in results]) or 0.0,
-                avg_e2e_em=_average(
+                avg_answer_em=_average(
                     [
                         result.end_to_end.em
                         for result in results
                         if result.end_to_end is not None and result.end_to_end.em is not None
+                    ]
+                ),
+                avg_answer_f1=_average(
+                    [
+                        result.end_to_end.f1
+                        for result in results
+                        if result.end_to_end is not None and result.end_to_end.f1 is not None
                     ]
                 ),
             )
@@ -619,12 +704,17 @@ def _build_selection_result(
     runtime_s: float,
     stop_reason: str | None,
     force_full_corpus: bool = False,
+    ignore_budget: bool = False,
 ) -> SelectionResult:
     total_graph_tokens = _graph_token_estimate(graph)
     budget_token_limit = _budget_token_limit(graph, budget)
     if force_full_corpus:
         selected_node_ids = list(dict.fromkeys(ordered_node_ids))
         selected_token_estimate = total_graph_tokens
+        selected_root_ids = [node_id for node_id in root_candidates if node_id in set(selected_node_ids)]
+    elif ignore_budget:
+        selected_node_ids = list(dict.fromkeys(ordered_node_ids))
+        selected_token_estimate = sum(_node_token_cost(graph, node_id) for node_id in selected_node_ids)
         selected_root_ids = [node_id for node_id in root_candidates if node_id in set(selected_node_ids)]
     else:
         selected_node_ids, selected_token_estimate = _fit_nodes_in_order(
@@ -646,7 +736,11 @@ def _build_selection_result(
         root_node_ids=selected_root_ids,
     )
     metrics = SelectionMetrics(
+        budget_mode=budget.budget_mode,
+        budget_value=budget.budget_value,
+        budget_label=budget.budget_label,
         token_budget_ratio=budget.token_budget_ratio,
+        token_budget_tokens=budget.token_budget_tokens,
         budget_token_limit=budget_token_limit,
         selection_runtime_s=runtime_s,
         selected_nodes_count=len(corpus.node_ids),
@@ -656,6 +750,7 @@ def _build_selection_result(
         start_hit=_start_hit(corpus.root_node_ids, case.gold_start_nodes),
         support_recall=_recall(corpus.node_ids, case.gold_support_nodes),
         support_precision=_precision(corpus.node_ids, case.gold_support_nodes),
+        support_f1=_support_f1(corpus.node_ids, case.gold_support_nodes),
         path_hit=_path_hit(corpus.node_ids, case.gold_path_nodes),
     )
     return SelectionResult(
@@ -799,15 +894,22 @@ def _run_end_to_end(
     case: EvaluationCase,
     node_ids: Sequence[str],
     extractor: SubgraphExtractor,
-    answerer: Answerer,
+    answerer: SupportsAnswer,
 ) -> EndToEndResult:
     subgraph = extractor.extract(case.query, graph, list(node_ids))
     answer = answerer.answer(case.query, subgraph)
     return EndToEndResult(
+        mode=answer.mode,
+        model=answer.model,
         answer=answer.answer,
         confidence=answer.confidence,
         evidence_count=len(answer.evidence),
         em=_em(answer.answer, case.expected_answer),
+        f1=answer_f1(answer.answer, case.expected_answer),
+        runtime_s=answer.runtime_s,
+        prompt_tokens=answer.prompt_tokens,
+        completion_tokens=answer.completion_tokens,
+        total_tokens=answer.total_tokens,
     )
 
 
@@ -835,7 +937,10 @@ def _budget_token_limit(graph: LinkContextGraph, budget: SelectionBudget) -> int
     total_tokens = _graph_token_estimate(graph)
     if total_tokens <= 0:
         return 0
+    if budget.token_budget_tokens is not None:
+        return min(total_tokens, budget.token_budget_tokens)
     minimum_doc = _minimum_document_tokens(graph)
+    assert budget.token_budget_ratio is not None
     scaled = math.ceil(total_tokens * budget.token_budget_ratio)
     return min(total_tokens, max(minimum_doc, scaled))
 
@@ -1001,10 +1106,34 @@ def _precision(selected_nodes: Sequence[str], gold_nodes: Sequence[str]) -> floa
     return len(selected & gold) / len(selected)
 
 
+def _support_f1(selected_nodes: Sequence[str], gold_nodes: Sequence[str]) -> float | None:
+    precision = _precision(selected_nodes, gold_nodes)
+    recall = _recall(selected_nodes, gold_nodes)
+    if precision is None or recall is None:
+        return None
+    if precision == 0.0 and recall == 0.0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
 def _path_hit(selected_nodes: Sequence[str], gold_path_nodes: Sequence[str] | None) -> bool | None:
     if not gold_path_nodes:
         return None
     return set(gold_path_nodes).issubset(set(selected_nodes))
+
+
+def _matches_budget(
+    budget: SelectionBudget,
+    *,
+    budget_mode: Literal["tokens", "ratio"],
+    budget_value: int | float,
+) -> bool:
+    if budget.budget_mode != budget_mode:
+        return False
+    if budget_mode == "tokens":
+        return budget.token_budget_tokens == int(budget_value)
+    assert budget.token_budget_ratio is not None
+    return math.isclose(budget.token_budget_ratio, float(budget_value))
 
 
 def _em(answer: str, expected_answer: str | None) -> float | None:

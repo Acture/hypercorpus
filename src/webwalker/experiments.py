@@ -3,10 +3,12 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
+from webwalker.answering import Answerer, LLMAnswerer, LLMAnswererConfig, SupportsAnswer
 from webwalker.datasets.common import DatasetAdapter
 from webwalker.datasets.docs import DocumentationAdapter
 from webwalker.datasets.iirc import IIRCAdapter
@@ -14,6 +16,7 @@ from webwalker.datasets.twowiki import TwoWikiAdapter
 from webwalker.datasets.twowiki_store import ShardedLinkContextStore
 from webwalker.eval import (
     DEFAULT_BUDGET_RATIOS,
+    DEFAULT_TOKEN_BUDGETS,
     CaseEvaluation,
     Evaluator,
     ExperimentSummary,
@@ -36,11 +39,17 @@ def run_dataset_experiment(
     output_dir: str | Path,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
-    with_e2e: bool = True,
+    with_e2e: bool = False,
+    answerer_mode: str = "heuristic",
+    answer_model: str = "gpt-4.1-mini",
+    answer_api_key_env: str = "OPENAI_API_KEY",
+    answer_base_url: str | None = None,
+    answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     dataset_label = getattr(adapter, "dataset_name", "dataset")
@@ -53,21 +62,30 @@ def run_dataset_experiment(
         seed=seed,
         include_diagnostics=selector_names is not None,
     )
-    ratios = list(budget_ratios or DEFAULT_BUDGET_RATIOS)
-    evaluators = _build_evaluators(
-        selectors=selectors,
-        budget_ratios=ratios,
+    budgets = _resolve_budgets(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
         max_steps=max_steps,
         top_k=top_k,
+    )
+    evaluators = _build_evaluators(
+        selectors=selectors,
+        budgets=budgets,
         with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
     )
     logger.info(
-        "Running %s experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, export_graphrag_inputs=%s)",
+        "Running %s experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         dataset_label,
         len(cases),
         [selector.name for selector in selectors],
-        ratios,
+        [budget.budget_label for budget in budgets],
         with_e2e,
+        answerer_mode,
         export_graphrag_inputs,
     )
 
@@ -106,11 +124,17 @@ def run_2wiki_experiment(
     output_dir: str | Path,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
-    with_e2e: bool = True,
+    with_e2e: bool = False,
+    answerer_mode: str = "heuristic",
+    answer_model: str = "gpt-4.1-mini",
+    answer_api_key_env: str = "OPENAI_API_KEY",
+    answer_base_url: str | None = None,
+    answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
@@ -120,11 +144,17 @@ def run_2wiki_experiment(
         output_dir=output_dir,
         limit=limit,
         selector_names=selector_names,
+        token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
         with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
     )
 
@@ -136,11 +166,17 @@ def run_iirc_experiment(
     output_dir: str | Path,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
     with_e2e: bool = False,
+    answerer_mode: str = "heuristic",
+    answer_model: str = "gpt-4.1-mini",
+    answer_api_key_env: str = "OPENAI_API_KEY",
+    answer_base_url: str | None = None,
+    answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
@@ -150,11 +186,17 @@ def run_iirc_experiment(
         output_dir=output_dir,
         limit=limit,
         selector_names=selector_names,
+        token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
         with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
     )
 
@@ -167,11 +209,17 @@ def run_docs_experiment(
     dataset_name: str = "docs",
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
     with_e2e: bool = False,
+    answerer_mode: str = "heuristic",
+    answer_model: str = "gpt-4.1-mini",
+    answer_api_key_env: str = "OPENAI_API_KEY",
+    answer_base_url: str | None = None,
+    answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
@@ -181,11 +229,17 @@ def run_docs_experiment(
         output_dir=output_dir,
         limit=limit,
         selector_names=selector_names,
+        token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
         with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
     )
 
@@ -203,11 +257,17 @@ def run_2wiki_store_experiment(
     chunk_size: int | None = None,
     chunk_index: int | None = None,
     selector_names: Sequence[str] | None = None,
+    token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     seed: int = 0,
     max_steps: int = 3,
     top_k: int = 2,
-    with_e2e: bool = True,
+    with_e2e: bool = False,
+    answerer_mode: str = "heuristic",
+    answer_model: str = "gpt-4.1-mini",
+    answer_api_key_env: str = "OPENAI_API_KEY",
+    answer_base_url: str | None = None,
+    answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
     store = ShardedLinkContextStore(store_uri, cache_dir=cache_dir)
@@ -227,21 +287,30 @@ def run_2wiki_store_experiment(
         seed=seed,
         include_diagnostics=selector_names is not None,
     )
-    ratios = list(budget_ratios or DEFAULT_BUDGET_RATIOS)
-    evaluators = _build_evaluators(
-        selectors=selectors,
-        budget_ratios=ratios,
+    budgets = _resolve_budgets(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
         max_steps=max_steps,
         top_k=top_k,
+    )
+    evaluators = _build_evaluators(
+        selectors=selectors,
+        budgets=budgets,
         with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
     )
     logger.info(
-        "Running store-backed 2Wiki experiment (split=%s, selected_cases=%s, selectors=%s, budgets=%s, with_e2e=%s, export_graphrag_inputs=%s)",
+        "Running store-backed 2Wiki experiment (split=%s, selected_cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         split,
         len(selected_cases),
         [selector.name for selector in selectors],
-        ratios,
+        [budget.budget_label for budget in budgets],
         with_e2e,
+        answerer_mode,
         export_graphrag_inputs,
     )
 
@@ -271,8 +340,14 @@ def run_2wiki_store_experiment(
                 **chunk_meta,
                 "store_uri": str(store_uri),
                 "selectors": list(selector_names or []),
-                "budget_ratios": ratios,
+                "token_budgets": list(token_budgets) if token_budgets is not None else None,
+                "budget_ratios": list(budget_ratios) if budget_ratios is not None else None,
                 "with_e2e": with_e2e,
+                "answerer_mode": answerer_mode,
+                "answer_model": answer_model if with_e2e and answerer_mode == "llm_fixed" else None,
+                "answer_api_key_env": answer_api_key_env if with_e2e and answerer_mode == "llm_fixed" else None,
+                "answer_base_url": answer_base_url if with_e2e and answerer_mode == "llm_fixed" else None,
+                "answer_cache_path": str(answer_cache_path) if answer_cache_path is not None else None,
                 "export_graphrag_inputs": export_graphrag_inputs,
             },
             ensure_ascii=False,
@@ -360,6 +435,18 @@ def parse_budget_ratios(value: str | None) -> list[float] | None:
     return ratios
 
 
+def parse_token_budgets(value: str | None) -> list[int] | None:
+    if value is None:
+        return None
+    budgets = [int(part.strip()) for part in value.split(",") if part.strip()]
+    if not budgets:
+        return None
+    for budget in budgets:
+        if budget <= 0:
+            raise ValueError(f"Token budget must be positive, got {budget}")
+    return budgets
+
+
 def selector_choices_help(*, include_diagnostics: bool = True) -> str:
     return ",".join(available_selector_names(include_diagnostics=include_diagnostics))
 
@@ -368,30 +455,113 @@ def budget_ratio_choices_help() -> str:
     return ",".join(f"{ratio:.2f}" for ratio in DEFAULT_BUDGET_RATIOS)
 
 
+def token_budget_choices_help() -> str:
+    return ",".join(str(budget) for budget in DEFAULT_TOKEN_BUDGETS)
+
+
 def store_budget_ratio_choices_help() -> str:
     return budget_ratio_choices_help()
+
+
+def store_token_budget_choices_help() -> str:
+    return token_budget_choices_help()
 
 
 def _build_evaluators(
     *,
     selectors,
-    budget_ratios: Sequence[float],
-    max_steps: int,
-    top_k: int,
+    budgets: Sequence[SelectionBudget],
     with_e2e: bool,
+    answerer_mode: str,
+    answer_model: str,
+    answer_api_key_env: str,
+    answer_base_url: str | None,
+    answer_cache_path: str | Path | None,
 ) -> list[Evaluator]:
+    answerer = _build_answerer(
+        with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
+    )
     return [
         Evaluator(
             selectors,
-            budget=SelectionBudget(
+            budget=budget,
+            with_e2e=with_e2e,
+            answerer=answerer,
+        )
+        for budget in budgets
+    ]
+
+
+def _resolve_budgets(
+    *,
+    token_budgets: Sequence[int] | None,
+    budget_ratios: Sequence[float] | None,
+    max_steps: int,
+    top_k: int,
+) -> list[SelectionBudget]:
+    if token_budgets is not None and budget_ratios is not None:
+        raise ValueError("Specify either token_budgets or budget_ratios, not both.")
+    if token_budgets is not None:
+        return [
+            SelectionBudget(
                 max_steps=max_steps,
                 top_k=top_k,
+                token_budget_tokens=budget,
+                token_budget_ratio=None,
+            )
+            for budget in token_budgets
+        ]
+    if budget_ratios is not None:
+        return [
+            SelectionBudget(
+                max_steps=max_steps,
+                top_k=top_k,
+                token_budget_tokens=None,
                 token_budget_ratio=ratio,
-            ),
-            with_e2e=with_e2e,
+            )
+            for ratio in budget_ratios
+        ]
+    return [
+        SelectionBudget(
+            max_steps=max_steps,
+            top_k=top_k,
+            token_budget_tokens=budget,
+            token_budget_ratio=None,
         )
-        for ratio in budget_ratios
+        for budget in DEFAULT_TOKEN_BUDGETS
     ]
+
+
+def _build_answerer(
+    *,
+    with_e2e: bool,
+    answerer_mode: str,
+    answer_model: str,
+    answer_api_key_env: str,
+    answer_base_url: str | None,
+    answer_cache_path: str | Path | None,
+) -> SupportsAnswer | None:
+    if not with_e2e:
+        return None
+    if answerer_mode == "heuristic":
+        return Answerer()
+    if answerer_mode != "llm_fixed":
+        raise ValueError(f"Unknown answerer_mode: {answerer_mode}")
+    if not os.environ.get(answer_api_key_env):
+        raise ValueError(f"Missing API key in environment variable {answer_api_key_env}")
+    return LLMAnswerer(
+        config=LLMAnswererConfig(
+            model=answer_model,
+            api_key_env=answer_api_key_env,
+            base_url=answer_base_url,
+            cache_path=Path(answer_cache_path) if answer_cache_path is not None else None,
+        )
+    )
 
 
 def _evaluate_cases(
@@ -471,12 +641,12 @@ def _write_graphrag_input(
     selection,
     output_dir: Path,
 ) -> str:
-    ratio_slug = _budget_ratio_slug(selection.budget.token_budget_ratio)
+    budget_slug = _budget_label_slug(selection.budget.budget_label)
     export_path = (
         output_dir
         / "graphrag_inputs"
         / selection.selector_name
-        / f"budget-{ratio_slug}"
+        / f"budget-{budget_slug}"
         / f"{case_id}.csv"
     )
     export_path.parent.mkdir(parents=True, exist_ok=True)
@@ -501,8 +671,8 @@ def _write_graphrag_input(
     return str(export_path.relative_to(output_dir))
 
 
-def _budget_ratio_slug(value: float) -> str:
-    return f"{value:.2f}".replace(".", "_")
+def _budget_label_slug(value: str) -> str:
+    return value.replace(".", "_")
 
 
 def _write_result_files(
@@ -534,7 +704,13 @@ def _selection_record(evaluation: CaseEvaluation, selection) -> dict[str, Any]:
         "gold_start_nodes": evaluation.case.gold_start_nodes,
         "gold_path_nodes": evaluation.case.gold_path_nodes,
         "selector": selection.selector_name,
+        "budget_mode": selection.budget.budget_mode,
+        "budget_value": selection.budget.budget_value,
+        "budget_label": selection.budget.budget_label,
+        "token_budget_tokens": selection.budget.token_budget_tokens,
         "token_budget_ratio": selection.budget.token_budget_ratio,
+        "answerer_mode": selection.end_to_end.mode if selection.end_to_end is not None else None,
+        "answer_model": selection.end_to_end.model if selection.end_to_end is not None else None,
         "selection": {
             "budget": asdict(selection.budget),
             "corpus": asdict(selection.corpus),
@@ -592,20 +768,29 @@ def _chunk_output_dir(*, output_root: Path, exp_name: str, chunk_meta: dict[str,
 def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSummary:
     if not records:
         raise ValueError("Cannot summarize empty result records.")
-    groups: dict[str, list[dict[str, Any]]] = {}
-    ordered_keys: list[str] = []
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    ordered_keys: list[tuple[str, str, str]] = []
     for record in records:
-        key = f"{record['selector']}::{record['token_budget_ratio']}"
+        key = (
+            str(record["selector"]),
+            str(record["budget_mode"]),
+            str(record["budget_value"]),
+        )
         if key not in groups:
             groups[key] = []
             ordered_keys.append(key)
         groups[key].append(record)
 
-    selector_budgets = []
+    selector_budgets: list[dict[str, Any]] = []
     for key in ordered_keys:
         rows = groups[key]
         name = str(rows[0]["selector"])
-        ratio = float(rows[0]["token_budget_ratio"])
+        budget_mode = str(rows[0]["budget_mode"])
+        budget_value_raw = rows[0]["budget_value"]
+        budget_value: int | float = int(budget_value_raw) if budget_mode == "tokens" else float(budget_value_raw)
+        budget_label = str(rows[0]["budget_label"])
+        token_budget_tokens = rows[0].get("token_budget_tokens")
+        token_budget_ratio = rows[0].get("token_budget_ratio")
         start_hits = [
             1.0 if row["selection"]["metrics"]["start_hit"] else 0.0
             for row in rows
@@ -621,6 +806,11 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
             for row in rows
             if row["selection"]["metrics"]["support_precision"] is not None
         ]
+        support_f1 = [
+            float(row["selection"]["metrics"]["support_f1"])
+            for row in rows
+            if row["selection"]["metrics"]["support_f1"] is not None
+        ]
         path_hits = [
             1.0 if row["selection"]["metrics"]["path_hit"] else 0.0
             for row in rows
@@ -631,26 +821,37 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
         compression = [float(row["selection"]["metrics"]["compression_ratio"]) for row in rows]
         adherence = [1.0 if row["selection"]["metrics"]["budget_adherence"] else 0.0 for row in rows]
         runtime = [float(row["selection"]["metrics"]["selection_runtime_s"]) for row in rows]
-        e2e = [
+        answer_em = [
             float(row["end_to_end"]["em"])
             for row in rows
             if row["end_to_end"] is not None and row["end_to_end"]["em"] is not None
         ]
+        answer_f1 = [
+            float(row["end_to_end"]["f1"])
+            for row in rows
+            if row["end_to_end"] is not None and row["end_to_end"]["f1"] is not None
+        ]
         selector_budgets.append(
             {
                 "name": name,
-                "token_budget_ratio": ratio,
+                "budget_mode": budget_mode,
+                "budget_value": budget_value,
+                "budget_label": budget_label,
+                "token_budget_ratio": float(token_budget_ratio) if token_budget_ratio is not None else None,
+                "token_budget_tokens": int(token_budget_tokens) if token_budget_tokens is not None else None,
                 "num_cases": len(rows),
                 "avg_start_hit": _average_or_none(start_hits),
                 "avg_support_recall": _average_or_none(support_recall),
                 "avg_support_precision": _average_or_none(support_precision),
+                "avg_support_f1": _average_or_none(support_f1),
                 "avg_path_hit": _average_or_none(path_hits),
                 "avg_selected_nodes": _average_or_none(selected_nodes) or 0.0,
                 "avg_selected_token_estimate": _average_or_none(selected_tokens) or 0.0,
                 "avg_compression_ratio": _average_or_none(compression) or 0.0,
                 "avg_budget_adherence": _average_or_none(adherence) or 0.0,
                 "avg_selection_runtime_s": _average_or_none(runtime) or 0.0,
-                "avg_e2e_em": _average_or_none(e2e),
+                "avg_answer_em": _average_or_none(answer_em),
+                "avg_answer_f1": _average_or_none(answer_f1),
             }
         )
     return ExperimentSummary(

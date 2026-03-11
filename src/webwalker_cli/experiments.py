@@ -10,12 +10,14 @@ from webwalker.experiments import (
     budget_ratio_choices_help,
     merge_2wiki_results,
     parse_budget_ratios,
+    parse_token_budgets,
     parse_selector_names,
     run_docs_experiment,
     run_iirc_experiment,
     run_2wiki_experiment,
     run_2wiki_store_experiment,
     selector_choices_help,
+    token_budget_choices_help,
 )
 
 experiments_app = typer.Typer(
@@ -23,6 +25,12 @@ experiments_app = typer.Typer(
     help="webwalker experiment runners",
     add_completion=False,
 )
+
+
+def _resolve_budget_options(*, token_budgets: str | None, budget_ratios: str | None) -> tuple[list[int] | None, list[float] | None]:
+    if token_budgets is not None and budget_ratios is not None:
+        raise ValueError("Specify either --token-budgets or --budget-ratios, not both.")
+    return parse_token_budgets(token_budgets), parse_budget_ratios(budget_ratios)
 
 
 @experiments_app.command("run-2wiki")
@@ -36,6 +44,11 @@ def run_2wiki(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    token_budgets: str | None = typer.Option(
+        None,
+        "--token-budgets",
+        help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}",
+    ),
     budget_ratios: str | None = typer.Option(
         None,
         "--budget-ratios",
@@ -44,7 +57,12 @@ def run_2wiki(
     seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
-    with_e2e: bool = typer.Option(True, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
     export_graphrag_inputs: bool = typer.Option(
         True,
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
@@ -52,17 +70,27 @@ def run_2wiki(
     ),
 ) -> None:
     console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+    )
     _, summary = run_2wiki_experiment(
         questions_path=questions,
         graph_records_path=graph_records,
         output_dir=output,
         limit=limit,
         selector_names=parse_selector_names(selectors),
-        budget_ratios=parse_budget_ratios(budget_ratios),
+        token_budgets=resolved_token_budgets,
+        budget_ratios=resolved_budget_ratios,
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
         with_e2e=with_e2e,
+        answerer_mode=answerer,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
     )
     _print_summary(console, summary)
@@ -83,6 +111,11 @@ def run_iirc(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    token_budgets: str | None = typer.Option(
+        None,
+        "--token-budgets",
+        help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}",
+    ),
     budget_ratios: str | None = typer.Option(
         None,
         "--budget-ratios",
@@ -92,6 +125,11 @@ def run_iirc(
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
     export_graphrag_inputs: bool = typer.Option(
         True,
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
@@ -99,17 +137,27 @@ def run_iirc(
     ),
 ) -> None:
     console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+    )
     _, summary = run_iirc_experiment(
         questions_path=questions,
         graph_records_path=graph_records,
         output_dir=output,
         limit=limit,
         selector_names=parse_selector_names(selectors),
-        budget_ratios=parse_budget_ratios(budget_ratios),
+        token_budgets=resolved_token_budgets,
+        budget_ratios=resolved_budget_ratios,
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
         with_e2e=with_e2e,
+        answerer_mode=answerer,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
     )
     _print_summary(console, summary)
@@ -131,6 +179,11 @@ def run_docs(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    token_budgets: str | None = typer.Option(
+        None,
+        "--token-budgets",
+        help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}",
+    ),
     budget_ratios: str | None = typer.Option(
         None,
         "--budget-ratios",
@@ -140,6 +193,11 @@ def run_docs(
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
     export_graphrag_inputs: bool = typer.Option(
         True,
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
@@ -147,6 +205,10 @@ def run_docs(
     ),
 ) -> None:
     console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+    )
     _, summary = run_docs_experiment(
         questions_path=questions,
         docs_source=docs_source,
@@ -154,11 +216,17 @@ def run_docs(
         dataset_name=dataset_name,
         limit=limit,
         selector_names=parse_selector_names(selectors),
-        budget_ratios=parse_budget_ratios(budget_ratios),
+        token_budgets=resolved_token_budgets,
+        budget_ratios=resolved_budget_ratios,
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
         with_e2e=with_e2e,
+        answerer_mode=answerer,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
     )
     _print_summary(console, summary)
@@ -185,6 +253,11 @@ def run_2wiki_store(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    token_budgets: str | None = typer.Option(
+        None,
+        "--token-budgets",
+        help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}",
+    ),
     budget_ratios: str | None = typer.Option(
         None,
         "--budget-ratios",
@@ -193,7 +266,12 @@ def run_2wiki_store(
     seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
     max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
     top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
-    with_e2e: bool = typer.Option(True, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
     export_graphrag_inputs: bool = typer.Option(
         True,
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
@@ -201,6 +279,10 @@ def run_2wiki_store(
     ),
 ) -> None:
     console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+    )
     _evaluations, summary, chunk_dir = run_2wiki_store_experiment(
         store_uri=store,
         output_root=output_root,
@@ -213,11 +295,17 @@ def run_2wiki_store(
         chunk_size=chunk_size,
         chunk_index=chunk_index,
         selector_names=parse_selector_names(selectors),
-        budget_ratios=parse_budget_ratios(budget_ratios),
+        token_budgets=resolved_token_budgets,
+        budget_ratios=resolved_budget_ratios,
         seed=seed,
         max_steps=max_steps,
         top_k=top_k,
         with_e2e=with_e2e,
+        answerer_mode=answerer,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
     )
     _print_summary(console, summary)
@@ -254,27 +342,29 @@ def _print_summary(console: Console, summary) -> None:
     table.add_column("budget", justify="right")
     table.add_column("support_recall", justify="right")
     table.add_column("support_precision", justify="right")
+    table.add_column("support_f1", justify="right")
     table.add_column("selected_tokens", justify="right")
-    table.add_column("compression_ratio", justify="right")
     table.add_column("budget_adherence", justify="right")
     table.add_column("runtime_s", justify="right")
-    table.add_column("e2e_em", justify="right")
+    table.add_column("answer_em", justify="right")
+    table.add_column("answer_f1", justify="right")
 
     for row in summary.selector_budgets:
         table.add_row(
             row.name,
-            _format_metric(row.token_budget_ratio),
+            row.budget_label,
             _format_metric(row.avg_support_recall),
             _format_metric(row.avg_support_precision),
+            _format_metric(row.avg_support_f1),
             _format_metric(row.avg_selected_token_estimate),
-            _format_metric(row.avg_compression_ratio),
             _format_metric(row.avg_budget_adherence),
             _format_metric(row.avg_selection_runtime_s),
-            _format_metric(row.avg_e2e_em),
+            _format_metric(row.avg_answer_em),
+            _format_metric(row.avg_answer_f1),
         )
 
     console.print(table)
     console.print(
-        "columns: selector, budget, support_recall, support_precision, selected_tokens, "
-        "compression_ratio, budget_adherence, runtime_s, e2e_em"
+        "columns: selector, budget, support_recall, support_precision, support_f1, "
+        "selected_tokens, budget_adherence, runtime_s, answer_em, answer_f1"
     )

@@ -12,9 +12,9 @@ The current repo contains a local experimentation pipeline for that claim:
 - link-context document graph construction
 - anchor selection policies
 - query-time corpus selection over hyperlink semantics
-- budget-swept corpus reduction before downstream reasoning
+- token-budgeted corpus reduction before downstream reasoning
 - lazy subgraph extraction over selected documents
-- heuristic answer synthesis as a secondary sanity check
+- heuristic or fixed-reader answer synthesis as a secondary sanity check
 - lightweight evaluation against `seed_rerank`, `seed_plus_topology_neighbors`, `seed_plus_anchor_neighbors`, `seed_plus_link_context_neighbors`, `adaptive_anchor_walk`, `adaptive_link_context_walk`, `adaptive_anchor_walk_2step`, and `adaptive_link_context_walk_2step`
 
 This is still an offline experimentation repo, not a production service.
@@ -109,20 +109,36 @@ uv run webwalker-cli experiments run-2wiki \
   --graph-records /path/to/para_with_hyperlink.jsonl \
   --output /tmp/webwalker-2wiki \
   --limit 100 \
-  --selectors seed_rerank,seed_plus_topology_neighbors,seed_plus_anchor_neighbors,seed_plus_link_context_neighbors,adaptive_anchor_walk,adaptive_link_context_walk,adaptive_anchor_walk_2step,adaptive_link_context_walk_2step \
-  --budget-ratios 0.01,0.02,0.05,0.10,1.00 \
+  --selectors seed_rerank,seed_plus_topology_neighbors,seed_plus_anchor_neighbors,seed_plus_link_context_neighbors,adaptive_link_context_walk,oracle_seed_adaptive_link_context_walk,gold_support_context,full_corpus_upper_bound \
+  --token-budgets 128,256,512,1024 \
   --seed 7 \
   --max-steps 3 \
   --top-k 2 \
-  --with-e2e \
+  --no-e2e \
   --export-graphrag-inputs
 ```
 
 The command writes:
 
-- `results.jsonl`: one record per case, selector, and budget ratio with nested `selection` and optional `end_to_end`
+- `results.jsonl`: one record per case, selector, and budget with nested `selection` and optional `end_to_end`
 - `summary.json`: aggregated selector metrics grouped by `selector x budget`
 - `graphrag_inputs/`: GraphRAG-compatible CSV slices with fixed `id,title,text,url` columns
+
+To run the fixed reader evaluation, enable e2e explicitly and pin the reader configuration:
+
+```bash
+uv run webwalker-cli experiments run-2wiki \
+  --questions /path/to/dev.json \
+  --graph-records /path/to/para_with_hyperlink.jsonl \
+  --output /tmp/webwalker-2wiki-e2e \
+  --limit 100 \
+  --selectors adaptive_link_context_walk,oracle_seed_adaptive_link_context_walk,gold_support_context,full_corpus_upper_bound \
+  --token-budgets 128,256,512,1024 \
+  --with-e2e \
+  --answerer llm_fixed \
+  --answer-model gpt-4.1-mini \
+  --answer-cache-path /tmp/webwalker-answer-cache.jsonl
+```
 
 ## Run Store-Backed Chunked Experiments
 
@@ -133,8 +149,8 @@ uv run webwalker-cli experiments run-2wiki-store \
   --split dev \
   --chunk-size 100 \
   --chunk-index 0 \
-  --selectors seed_rerank,seed_plus_topology_neighbors,seed_plus_anchor_neighbors,seed_plus_link_context_neighbors,adaptive_anchor_walk,adaptive_link_context_walk,adaptive_anchor_walk_2step,adaptive_link_context_walk_2step \
-  --budget-ratios 0.02,0.05,0.10,1.00 \
+  --selectors seed_rerank,seed_plus_topology_neighbors,seed_plus_anchor_neighbors,seed_plus_link_context_neighbors,adaptive_link_context_walk,oracle_seed_adaptive_link_context_walk,gold_support_context,full_corpus_upper_bound \
+  --token-budgets 64,128,256,512,1024 \
   --no-e2e \
   --no-export-graphrag-inputs
 ```
