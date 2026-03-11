@@ -948,6 +948,20 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
             for row in rows
             if row["selection"].get("selector_usage") is not None
         ]
+        selector_fallback_rates = [
+            float(row["selection"]["selector_usage"].get("fallback_steps", 0))
+            / float(row["selection"]["selector_usage"].get("step_count", 0))
+            for row in rows
+            if row["selection"].get("selector_usage") is not None
+            and float(row["selection"]["selector_usage"].get("step_count", 0)) > 0
+        ]
+        selector_parse_failure_rates = [
+            float(row["selection"]["selector_usage"].get("parse_failure_steps", 0))
+            / float(row["selection"]["selector_usage"].get("step_count", 0))
+            for row in rows
+            if row["selection"].get("selector_usage") is not None
+            and float(row["selection"]["selector_usage"].get("step_count", 0)) > 0
+        ]
         answer_em = [
             float(row["end_to_end"]["em"])
             for row in rows
@@ -984,6 +998,8 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
                 "avg_selector_total_tokens": _average_or_none(selector_total_tokens),
                 "avg_selector_runtime_s": _average_or_none(selector_runtime),
                 "avg_selector_llm_calls": _average_or_none(selector_llm_calls),
+                "avg_selector_fallback_rate": _average_or_none(selector_fallback_rates),
+                "avg_selector_parse_failure_rate": _average_or_none(selector_parse_failure_rates),
                 "avg_answer_em": _average_or_none(answer_em),
                 "avg_answer_f1": _average_or_none(answer_f1),
             }

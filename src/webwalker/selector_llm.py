@@ -58,10 +58,24 @@ class SelectorLLMConfig:
 @dataclass(slots=True)
 class BackendCompletion:
     text: str
+    payload: dict[str, Any] | None
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
     raw_response: str | None
+
+
+class SelectorLLMResponseError(ValueError):
+    def __init__(self, kind: str, detail: str | None = None):
+        self.kind = kind
+        self.detail = _compact_error_detail(detail)
+        super().__init__(self.fallback_reason)
+
+    @property
+    def fallback_reason(self) -> str:
+        if self.detail:
+            return f"{self.kind}:{self.detail}"
+        return self.kind
 
 
 class BackendAdapter(Protocol):
@@ -72,6 +86,7 @@ class BackendAdapter(Protocol):
         system_prompt: str,
         user_prompt: str,
         temperature: float,
+        response_schema: dict[str, Any] | None = None,
     ) -> BackendCompletion:
         ...
 
@@ -128,7 +143,9 @@ class OpenAIBackendAdapter:
         system_prompt: str,
         user_prompt: str,
         temperature: float,
+        response_schema: dict[str, Any] | None = None,
     ) -> BackendCompletion:
+        del response_schema
         client = self._get_client()
         response = client.chat.completions.create(
             model=model,
@@ -144,6 +161,7 @@ class OpenAIBackendAdapter:
         raw_response = _raw_response_payload(response)
         return BackendCompletion(
             text=_openai_message_content(message.content),
+            payload=None,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -185,14 +203,28 @@ class AnthropicBackendAdapter:
         system_prompt: str,
         user_prompt: str,
         temperature: float,
+        response_schema: dict[str, Any] | None = None,
     ) -> BackendCompletion:
         client = self._get_client()
+        tools = None
+        tool_choice = None
+        if response_schema is not None:
+            tools = [
+                {
+                    "name": "score_candidates",
+                    "description": "Return structured candidate scores for selector edge ranking.",
+                    "input_schema": response_schema,
+                }
+            ]
+            tool_choice = {"type": "tool", "name": "score_candidates"}
         response = client.messages.create(
             model=model,
             max_tokens=1024,
             temperature=temperature,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
+            tools=tools,
+            tool_choice=tool_choice,
         )
         usage = getattr(response, "usage", None)
         prompt_tokens = _maybe_int(getattr(usage, "input_tokens", None))
@@ -201,13 +233,20 @@ class AnthropicBackendAdapter:
             prompt_tokens + completion_tokens
             if prompt_tokens is not None and completion_tokens is not None
             else None
-        )
+        )       
         text_fragments: list[str] = []
+        payload: dict[str, Any] | None = None
         for item in getattr(response, "content", []):
+            if getattr(item, "type", None) == "tool_use" and getattr(item, "name", None) == "score_candidates":
+                tool_input = getattr(item, "input", None)
+                if isinstance(tool_input, dict):
+                    payload = tool_input
+                continue
             if getattr(item, "type", None) == "text" and getattr(item, "text", None):
                 text_fragments.append(str(item.text))
         return BackendCompletion(
             text="".join(text_fragments),
+            payload=payload,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -246,7 +285,9 @@ class GeminiBackendAdapter:
         system_prompt: str,
         user_prompt: str,
         temperature: float,
+        response_schema: dict[str, Any] | None = None,
     ) -> BackendCompletion:
+        del response_schema
         client = self._get_client()
         response = client.models.generate_content(
             model=model,
@@ -269,6 +310,7 @@ class GeminiBackendAdapter:
             text = _gemini_text(response)
         return BackendCompletion(
             text=str(text or ""),
+            payload=None,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -387,8 +429,11 @@ class LLMStepLinkScorer:
         cached = self._cache.get(cache_key) if self._cache is not None else None
         if cached is not None:
             try:
+                cached_text = _maybe_text(cached.get("response_text"))
+                cached_payload = _cached_payload(cached)
                 return self._cards_from_payload(
-                    payload=json.loads(str(cached["response_text"])),
+                    payload=cached_payload if cached_payload is not None else _parse_completion_payload(cached_text or ""),
+                    text=cached_text,
                     raw_response=str(cached.get("raw_response", "")) or None,
                     prompt_tokens=_maybe_int(cached.get("prompt_tokens")),
                     completion_tokens=_maybe_int(cached.get("completion_tokens")),
@@ -404,9 +449,16 @@ class LLMStepLinkScorer:
                     provider=self.config.provider,
                     model=self.config.model,
                     fallback_reason=f"cache_parse_error:{exc}",
+                    text=str(cached.get("response_text", "")) or None,
+                    raw_response=str(cached.get("raw_response", "")) or None,
+                    prompt_tokens=_maybe_int(cached.get("prompt_tokens")),
+                    completion_tokens=_maybe_int(cached.get("completion_tokens")),
+                    total_tokens=_maybe_int(cached.get("total_tokens")),
+                    cache_hit=True,
                 )
 
         started_at = time.perf_counter()
+        response: BackendCompletion | None = None
         try:
             self.validate_environment()
             response = self._get_backend().complete_json(
@@ -414,11 +466,30 @@ class LLMStepLinkScorer:
                 system_prompt=_system_prompt(self.mode),
                 user_prompt=_user_prompt(query=query, bundle=bundle),
                 temperature=self.config.temperature,
+                response_schema=_response_schema(self.mode),
             )
+        except Exception as exc:
             latency_s = time.perf_counter() - started_at
-            payload = json.loads(response.text or "{}")
+            return _cards_with_fallback(
+                fallback_cards,
+                provider=self.config.provider,
+                model=self.config.model,
+                fallback_reason=f"provider_error:{_compact_error_detail(str(exc))}",
+                latency_s=latency_s,
+                text=response.text if response is not None else None,
+                raw_response=response.raw_response if response is not None else None,
+                prompt_tokens=response.prompt_tokens if response is not None else None,
+                completion_tokens=response.completion_tokens if response is not None else None,
+                total_tokens=response.total_tokens if response is not None else None,
+            )
+
+        latency_s = time.perf_counter() - started_at
+        assert response is not None
+        try:
+            payload = response.payload if response.payload is not None else _parse_completion_payload(response.text)
             cards = self._cards_from_payload(
                 payload=payload,
+                text=response.text,
                 raw_response=response.raw_response,
                 prompt_tokens=response.prompt_tokens,
                 completion_tokens=response.completion_tokens,
@@ -428,29 +499,35 @@ class LLMStepLinkScorer:
                 candidate_links=candidate_links,
                 prefiltered_indices=prefiltered_indices,
             )
-            if self._cache is not None:
-                self._cache.put(
-                    cache_key,
-                    {
-                        "provider": self.config.provider,
-                        "model": self.config.model,
-                        "response_text": json.dumps(payload, ensure_ascii=False),
-                        "raw_response": response.raw_response,
-                        "prompt_tokens": response.prompt_tokens,
-                        "completion_tokens": response.completion_tokens,
-                        "total_tokens": response.total_tokens,
-                    },
-                )
-            return cards
-        except Exception as exc:
-            latency_s = time.perf_counter() - started_at
+        except SelectorLLMResponseError as exc:
             return _cards_with_fallback(
                 fallback_cards,
                 provider=self.config.provider,
                 model=self.config.model,
-                fallback_reason=f"llm_error:{exc}",
+                fallback_reason=exc.fallback_reason,
                 latency_s=latency_s,
+                text=response.text,
+                raw_response=response.raw_response,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                total_tokens=response.total_tokens,
             )
+
+        if self._cache is not None:
+            self._cache.put(
+                cache_key,
+                {
+                    "provider": self.config.provider,
+                    "model": self.config.model,
+                    "response_payload": payload,
+                    "response_text": json.dumps(payload, ensure_ascii=False),
+                    "raw_response": response.raw_response,
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "total_tokens": response.total_tokens,
+                },
+            )
+        return cards
 
     def _get_backend(self) -> BackendAdapter:
         if self._backend is not None:
@@ -462,6 +539,7 @@ class LLMStepLinkScorer:
         self,
         *,
         payload: dict[str, Any],
+        text: str | None,
         raw_response: str | None,
         prompt_tokens: int | None,
         completion_tokens: int | None,
@@ -473,7 +551,7 @@ class LLMStepLinkScorer:
     ) -> list[StepScoreCard]:
         entries = payload.get("scores")
         if not isinstance(entries, list):
-            raise ValueError("Selector LLM response must contain a scores list.")
+            raise SelectorLLMResponseError("schema_error", "missing_scores_list")
         parsed: dict[str, dict[str, Any]] = {}
         for entry in entries:
             if not isinstance(entry, dict):
@@ -493,6 +571,7 @@ class LLMStepLinkScorer:
                         total_score=0.0,
                         subscores={"prefilter_score": 0.0},
                         rationale=None,
+                        text=text,
                         backend=self.config.provider,
                         provider=self.config.provider,
                         model=self.config.model,
@@ -543,6 +622,7 @@ class LLMStepLinkScorer:
                     total_score=total_score,
                     subscores=subscores,
                     rationale=_maybe_text(record.get("rationale")),
+                    text=text,
                     backend=self.config.provider,
                     provider=self.config.provider,
                     model=self.config.model,
@@ -669,16 +749,49 @@ def _candidate_bundle(
     }
 
 
+def _response_schema(mode: str) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "edge_id": {"type": "string"},
+        "direct_support": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "bridge_potential": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "novelty": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rationale": {"type": "string"},
+    }
+    required = ["edge_id", "direct_support", "bridge_potential", "novelty", "rationale"]
+    if mode == "two_hop":
+        properties["future_potential"] = {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        properties["best_next_edge_id"] = {"type": "string"}
+        required.append("future_potential")
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "scores": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": properties,
+                    "required": required,
+                },
+            }
+        },
+        "required": ["scores"],
+    }
+
+
 def _system_prompt(mode: str) -> str:
     if mode == "single_hop":
         return (
             "You are scoring hyperlink choices for a single-path multi-hop retriever. "
-            "Return JSON only. Each candidate needs direct_support, bridge_potential, novelty, and rationale. "
+            "Use the provided structured output channel exactly once. "
+            "Each candidate needs direct_support, bridge_potential, novelty, and rationale. "
             "All subscores must be floats in [0,1]."
         )
     return (
         "You are scoring hyperlink choices for a two-hop-aware single-path multi-hop retriever. "
-        "Return JSON only. Each candidate needs direct_support, bridge_potential, future_potential, novelty, rationale, "
+        "Use the provided structured output channel exactly once. "
+        "Each candidate needs direct_support, bridge_potential, future_potential, novelty, rationale, "
         "and optional best_next_edge_id. All subscores must be floats in [0,1]."
     )
 
@@ -704,6 +817,12 @@ def _cards_with_fallback(
     model: str | None,
     fallback_reason: str,
     latency_s: float = 0.0,
+    text: str | None = None,
+    raw_response: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    cache_hit: bool | None = None,
 ) -> list[StepScoreCard]:
     return [
         StepScoreCard(
@@ -711,19 +830,109 @@ def _cards_with_fallback(
             total_score=card.total_score,
             subscores=dict(card.subscores),
             rationale=card.rationale,
+            text=text,
             backend="overlap",
             provider=provider,
             model=model,
             latency_s=latency_s,
-            prompt_tokens=card.prompt_tokens,
-            completion_tokens=card.completion_tokens,
-            total_tokens=card.total_tokens,
-            cache_hit=card.cache_hit,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cache_hit=cache_hit,
             fallback_reason=fallback_reason,
             best_next_edge_id=card.best_next_edge_id,
+            raw_response=raw_response,
         )
         for card in cards
     ]
+
+
+def _parse_completion_payload(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if not stripped:
+        raise SelectorLLMResponseError("empty_response")
+
+    candidates: list[str] = [stripped]
+    fenced = _strip_json_fence(stripped)
+    if fenced is not None and fenced not in candidates:
+        candidates.append(fenced)
+    extracted = _extract_first_json_object(stripped)
+    if extracted is not None and extracted not in candidates:
+        candidates.append(extracted)
+
+    parse_errors: list[str] = []
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            parse_errors.append(str(exc))
+            continue
+        if not isinstance(payload, dict):
+            raise SelectorLLMResponseError("schema_error", "top_level_not_object")
+        return payload
+
+    detail = parse_errors[0] if parse_errors else "unable_to_extract_json"
+    raise SelectorLLMResponseError("json_parse_error", detail)
+
+
+def _cached_payload(record: dict[str, Any]) -> dict[str, Any] | None:
+    payload = record.get("response_payload")
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, str):
+        parsed = json.loads(payload)
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _strip_json_fence(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return None
+    lines = stripped.splitlines()
+    if len(lines) < 3:
+        return None
+    if not lines[-1].strip().startswith("```"):
+        return None
+    return "\n".join(lines[1:-1]).strip() or None
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _compact_error_detail(detail: str | None) -> str | None:
+    if detail is None:
+        return None
+    compact = " ".join(str(detail).split())
+    return compact or None
 
 
 def _openai_usage_triplet(usage: Any) -> tuple[int | None, int | None, int | None]:

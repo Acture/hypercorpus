@@ -381,7 +381,12 @@ def _format_metric(value: float | None) -> str:
 
 
 def _print_summary(console: Console, summary) -> None:
-    has_selector_costs = any((row.avg_selector_total_tokens or 0) > 0 for row in summary.selector_budgets)
+    has_selector_costs = any(
+        (row.avg_selector_total_tokens or 0) > 0
+        or (row.avg_selector_llm_calls or 0) > 0
+        or (row.avg_selector_fallback_rate or 0) > 0
+        for row in summary.selector_budgets
+    )
     table = Table(title=f"{summary.dataset_name} summary")
     table.add_column("selector")
     table.add_column("budget", justify="right")
@@ -396,6 +401,8 @@ def _print_summary(console: Console, summary) -> None:
     if has_selector_costs:
         table.add_column("selector_tokens", justify="right")
         table.add_column("selector_calls", justify="right")
+        table.add_column("selector_fallback", justify="right")
+        table.add_column("selector_parse_fail", justify="right")
 
     for row in summary.selector_budgets:
         selector_label = row.name
@@ -418,6 +425,8 @@ def _print_summary(console: Console, summary) -> None:
                 [
                     _format_metric(row.avg_selector_total_tokens),
                     _format_metric(row.avg_selector_llm_calls),
+                    _format_metric(row.avg_selector_fallback_rate),
+                    _format_metric(row.avg_selector_parse_failure_rate),
                 ]
             )
         table.add_row(*cells)
@@ -436,5 +445,5 @@ def _print_summary(console: Console, summary) -> None:
         "answer_f1",
     ]
     if has_selector_costs:
-        columns.extend(["selector_tokens", "selector_calls"])
+        columns.extend(["selector_tokens", "selector_calls", "selector_fallback", "selector_parse_fail"])
     console.print(f"columns: {', '.join(columns)}")

@@ -38,6 +38,7 @@ class StepScoreCard:
     total_score: float
     subscores: dict[str, float] = field(default_factory=dict)
     rationale: str | None = None
+    text: str | None = None
     backend: str = "overlap"
     provider: str | None = None
     model: str | None = None
@@ -81,6 +82,7 @@ class WalkStepLog:
     total_tokens: int | None
     cache_hit: bool | None
     fallback_reason: str | None
+    text: str | None
     raw_response: str | None
     candidates: list[StepCandidateTrace] = field(default_factory=list)
 
@@ -196,6 +198,7 @@ class _BaseOverlapStepScorer:
                     total_score=total_score,
                     subscores={key: _clamp_score(value) for key, value in subscores.items()},
                     rationale=None,
+                    text=None,
                     backend="overlap",
                     provider=None,
                     model=None,
@@ -409,6 +412,7 @@ class DynamicWalker:
                     total_tokens=best_card.total_tokens,
                     cache_hit=best_card.cache_hit,
                     fallback_reason=best_card.fallback_reason,
+                    text=best_card.text,
                     raw_response=best_card.raw_response,
                     candidates=[
                         StepCandidateTrace(

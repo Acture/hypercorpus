@@ -120,6 +120,9 @@ class SelectorUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
     cache_hits: int = 0
+    step_count: int = 0
+    fallback_steps: int = 0
+    parse_failure_steps: int = 0
 
 
 @dataclass(slots=True)
@@ -212,6 +215,8 @@ class SelectorBudgetSummary:
     avg_selector_total_tokens: float | None
     avg_selector_runtime_s: float | None
     avg_selector_llm_calls: float | None
+    avg_selector_fallback_rate: float | None
+    avg_selector_parse_failure_rate: float | None
     avg_answer_em: float | None
     avg_answer_f1: float | None
 
@@ -837,6 +842,20 @@ def summarize_evaluations(
                 avg_selector_llm_calls=_average(
                     [float(result.selector_usage.llm_calls) for result in results if result.selector_usage is not None]
                 ),
+                avg_selector_fallback_rate=_average(
+                    [
+                        result.selector_usage.fallback_steps / result.selector_usage.step_count
+                        for result in results
+                        if result.selector_usage is not None and result.selector_usage.step_count > 0
+                    ]
+                ),
+                avg_selector_parse_failure_rate=_average(
+                    [
+                        result.selector_usage.parse_failure_steps / result.selector_usage.step_count
+                        for result in results
+                        if result.selector_usage is not None and result.selector_usage.step_count > 0
+                    ]
+                ),
                 avg_answer_em=_average(
                     [
                         result.end_to_end.em
@@ -1329,6 +1348,23 @@ def _selector_usage_from_logs(logs: Sequence[WalkStepLog]) -> SelectorUsage:
         completion_tokens=sum(log.completion_tokens or 0 for log in logs),
         total_tokens=sum(log.total_tokens or 0 for log in logs),
         cache_hits=sum(1 for log in logs if log.cache_hit),
+        step_count=len(logs),
+        fallback_steps=sum(1 for log in logs if _is_selector_fallback(log.fallback_reason)),
+        parse_failure_steps=sum(1 for log in logs if _is_selector_parse_failure(log.fallback_reason)),
+    )
+
+
+def _is_selector_fallback(reason: str | None) -> bool:
+    return reason is not None and reason != "prefiltered_out"
+
+
+def _is_selector_parse_failure(reason: str | None) -> bool:
+    if reason is None:
+        return False
+    return (
+        reason == "empty_response"
+        or reason.startswith("json_parse_error")
+        or reason.startswith("schema_error")
     )
 
 

@@ -311,6 +311,9 @@ def test_summarize_result_records_separates_selector_model_groups():
                 "completion_tokens": 5,
                 "total_tokens": 15,
                 "cache_hits": 0,
+                "step_count": 2,
+                "fallback_steps": 1,
+                "parse_failure_steps": 1,
             },
         },
         "end_to_end": None,
@@ -335,6 +338,94 @@ def test_summarize_result_records_separates_selector_model_groups():
         ("openai", "gpt-small"),
         ("openai", "gpt-large"),
     ]
+
+
+def test_summarize_result_records_includes_selector_health_metrics():
+    summary = _summarize_result_records(
+        [
+            {
+                "dataset_name": "2wikimultihop",
+                "case_id": "q1",
+                "selector": "seed__link_context_llm__single_path_walk",
+                "budget_mode": "tokens",
+                "budget_value": 128,
+                "budget_label": "tokens-128",
+                "token_budget_tokens": 128,
+                "token_budget_ratio": None,
+                "selector_provider": "anthropic",
+                "selector_model": "claude-haiku-4-5-20251001",
+                "selection": {
+                    "metrics": {
+                        "start_hit": True,
+                        "support_recall": 0.5,
+                        "support_precision": 0.5,
+                        "support_f1": 0.5,
+                        "path_hit": True,
+                        "selected_nodes_count": 2,
+                        "selected_token_estimate": 64,
+                        "compression_ratio": 0.1,
+                        "budget_adherence": True,
+                        "selection_runtime_s": 0.01,
+                    },
+                    "selector_usage": {
+                        "runtime_s": 0.3,
+                        "llm_calls": 1,
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                        "cache_hits": 0,
+                        "step_count": 2,
+                        "fallback_steps": 1,
+                        "parse_failure_steps": 1,
+                    },
+                },
+                "end_to_end": None,
+            },
+            {
+                "dataset_name": "2wikimultihop",
+                "case_id": "q2",
+                "selector": "seed__link_context_llm__single_path_walk",
+                "budget_mode": "tokens",
+                "budget_value": 128,
+                "budget_label": "tokens-128",
+                "token_budget_tokens": 128,
+                "token_budget_ratio": None,
+                "selector_provider": "anthropic",
+                "selector_model": "claude-haiku-4-5-20251001",
+                "selection": {
+                    "metrics": {
+                        "start_hit": True,
+                        "support_recall": 0.5,
+                        "support_precision": 0.5,
+                        "support_f1": 0.5,
+                        "path_hit": True,
+                        "selected_nodes_count": 2,
+                        "selected_token_estimate": 64,
+                        "compression_ratio": 0.1,
+                        "budget_adherence": True,
+                        "selection_runtime_s": 0.01,
+                    },
+                    "selector_usage": {
+                        "runtime_s": 0.4,
+                        "llm_calls": 1,
+                        "prompt_tokens": 12,
+                        "completion_tokens": 6,
+                        "total_tokens": 18,
+                        "cache_hits": 0,
+                        "step_count": 4,
+                        "fallback_steps": 0,
+                        "parse_failure_steps": 0,
+                    },
+                },
+                "end_to_end": None,
+            },
+        ]
+    )
+
+    row = summary.selector_budgets[0]
+    assert row.avg_selector_total_tokens == pytest.approx(16.5)
+    assert row.avg_selector_fallback_rate == pytest.approx(0.25)
+    assert row.avg_selector_parse_failure_rate == pytest.approx(0.25)
 
 
 def test_run_iirc_experiment_handles_missing_path_supervision(iirc_files, tmp_path):
