@@ -15,6 +15,7 @@ dependencies = [
 	"openai>=2.15.0",
 	"pandas>=2.3.3",
 	"rich>=14.2.0",
+	"sentence-transformers>=3.4.1",
 ]
 
 [project.scripts]

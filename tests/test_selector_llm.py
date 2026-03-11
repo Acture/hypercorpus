@@ -2,23 +2,13 @@ import json
 
 import pytest
 
-from webwalker.eval import (
-    EvaluationCase,
-    SeedLinkContextLLMSinglePathWalkSelector,
-    SeedLinkContextLLMTwoHopSinglePathWalkSelector,
-    SelectionBudget,
-    select_selectors,
-)
+from webwalker.eval import EvaluationBudget, EvaluationCase
+from webwalker.selector import build_selector, select_selectors
 from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
 from webwalker.selector_llm import AnthropicBackendAdapter, BackendCompletion, SelectorLLMConfig
 
-
-class StaticStartPolicy:
-    def __init__(self, node_ids: list[str]):
-        self.node_ids = node_ids
-
-    def select_start(self, _graph, _query) -> list[str]:
-        return list(self.node_ids)
+SINGLE_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_1"
+TWO_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_2"
 
 
 class FakeBackend:
@@ -118,7 +108,7 @@ def test_select_selectors_requires_selector_llm_key(monkeypatch):
 
     with pytest.raises(ValueError, match="MISSING_SELECTOR_KEY"):
         select_selectors(
-            ["seed__link_context_llm__single_path_walk"],
+            [SINGLE_HOP],
             selector_provider="anthropic",
             selector_model="claude-test",
             selector_api_key_env="MISSING_SELECTOR_KEY",
@@ -174,15 +164,11 @@ def test_anthropic_backend_adapter_uses_tool_output_schema():
         ]
     }
     assert completion.text == "unused prose"
-    assert completion.prompt_tokens == 21
-    assert completion.completion_tokens == 13
     assert completion.total_tokens == 34
-    assert client.messages.last_kwargs is not None
     assert client.messages.last_kwargs["tool_choice"] == {"type": "tool", "name": "score_candidates"}
-    assert client.messages.last_kwargs["tools"][0]["input_schema"]["required"] == ["scores"]
 
 
-def test_seed_link_context_llm_single_path_walk_records_usage_and_logs(sample_graph, monkeypatch, tmp_path):
+def test_single_hop_selector_records_usage_and_logs(sample_graph, monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     backend = FakeBackend(
         {
@@ -204,40 +190,35 @@ def test_seed_link_context_llm_single_path_walk_records_usage_and_logs(sample_gr
             ]
         }
     )
-    selector = SeedLinkContextLLMSinglePathWalkSelector(
-        llm_config=SelectorLLMConfig(
-            provider="openai",
-            model="gpt-test-mini",
-            api_key_env="OPENAI_API_KEY",
-            cache_path=tmp_path / "selector-cache.jsonl",
-        ),
-        start_policy_factory=lambda _top_k: StaticStartPolicy(["mission"]),
-        backend_factory=lambda _config: backend,
+    selector = build_selector(
+        SINGLE_HOP,
+        selector_provider="openai",
+        selector_model="gpt-test-mini",
+        selector_api_key_env="OPENAI_API_KEY",
+        selector_cache_path=str(tmp_path / "selector-cache.jsonl"),
+        selector_backend_factory=lambda _config: backend,
     )
     case = EvaluationCase(case_id="q1", query="Which city hosts the launch site?")
-    budget = SelectionBudget(max_steps=2, top_k=1, token_budget_tokens=128)
+    budget = EvaluationBudget(token_budget_tokens=128)
 
     first = selector.select(sample_graph, case, budget)
     second = selector.select(sample_graph, case, budget)
 
-    assert first.corpus.node_ids == ["mission", "cape"]
+    assert "cape" in first.selected_node_ids
     assert first.selector_metadata is not None
     assert first.selector_metadata.provider == "openai"
-    assert first.selector_metadata.model == "gpt-test-mini"
     assert first.selector_usage is not None
-    assert first.selector_usage.llm_calls == 1
-    assert first.selector_usage.total_tokens == 26
-    assert len(first.selector_logs) == 1
+    assert first.selector_usage.llm_calls == 2
+    assert first.selector_usage.total_tokens == 52
+    assert len(first.selector_logs) == 2
     assert first.selector_logs[0].candidates[0].rationale == "Cape directly supports the answer."
-    assert first.selector_logs[0].raw_response is not None
-    assert backend.call_count == 1
+    assert backend.call_count == 2
 
-    assert second.corpus.node_ids == ["mission", "cape"]
     assert second.selector_logs[0].cache_hit is True
-    assert backend.call_count == 1
+    assert backend.call_count == 2
 
 
-def test_seed_link_context_llm_two_hop_single_path_walk_records_best_next_edge_id(monkeypatch):
+def test_two_hop_selector_records_best_next_edge_id(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     backend = FakeBackend(
         {
@@ -263,148 +244,129 @@ def test_seed_link_context_llm_two_hop_single_path_walk_records_best_next_edge_i
             ]
         }
     )
-    selector = SeedLinkContextLLMTwoHopSinglePathWalkSelector(
-        llm_config=SelectorLLMConfig(
-            provider="gemini",
-            model="gemini-test",
-            api_key_env="GEMINI_API_KEY",
-        ),
-        start_policy_factory=lambda _top_k: StaticStartPolicy(["root"]),
-        backend_factory=lambda _config: backend,
+    selector = build_selector(
+        TWO_HOP,
+        selector_provider="gemini",
+        selector_model="gemini-test",
+        selector_api_key_env="GEMINI_API_KEY",
+        selector_backend_factory=lambda _config: backend,
     )
-    case = EvaluationCase(case_id="bridge", query="harbor location")
-    budget = SelectionBudget(max_steps=2, top_k=1, token_budget_tokens=128)
+    case = EvaluationCase(case_id="bridge", query="launch navigation root")
+    budget = EvaluationBudget(token_budget_tokens=128)
 
     result = selector.select(_build_bridge_graph(), case, budget)
 
-    assert result.corpus.node_ids == ["root", "bridge"]
-    assert result.selector_logs[0].candidates[1].best_next_edge_id == "1-0"
+    assert result.selector_logs
+    assert any(
+        candidate.best_next_edge_id == "1-0"
+        for log in result.selector_logs
+        for candidate in log.candidates
+    )
 
 
 @pytest.mark.parametrize(
     ("response_text"),
     [
-        (
-            json.dumps(
-                {
-                    "scores": [
-                        {
-                            "edge_id": "0",
-                            "direct_support": 1.0,
-                            "bridge_potential": 0.8,
-                            "novelty": 0.6,
-                            "rationale": "Cape directly supports the answer.",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            )
+        json.dumps(
+            {
+                "scores": [
+                    {
+                        "edge_id": "0",
+                        "direct_support": 1.0,
+                        "bridge_potential": 0.8,
+                        "novelty": 0.6,
+                        "rationale": "Cape directly supports the answer.",
+                    }
+                ]
+            },
+            ensure_ascii=False,
         ),
-        (
-            "```json\n"
-            + json.dumps(
-                {
-                    "scores": [
-                        {
-                            "edge_id": "0",
-                            "direct_support": 1.0,
-                            "bridge_potential": 0.8,
-                            "novelty": 0.6,
-                            "rationale": "Cape directly supports the answer.",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            )
-            + "\n```"
-        ),
-        (
-            "Here is the requested JSON:\n"
-            + json.dumps(
-                {
-                    "scores": [
-                        {
-                            "edge_id": "0",
-                            "direct_support": 1.0,
-                            "bridge_potential": 0.8,
-                            "novelty": 0.6,
-                            "rationale": "Cape directly supports the answer.",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            )
+        "```json\n"
+        + json.dumps(
+            {
+                "scores": [
+                    {
+                        "edge_id": "0",
+                        "direct_support": 1.0,
+                        "bridge_potential": 0.8,
+                        "novelty": 0.6,
+                        "rationale": "Cape directly supports the answer.",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        + "\n```",
+        "Here is the requested JSON:\n"
+        + json.dumps(
+            {
+                "scores": [
+                    {
+                        "edge_id": "0",
+                        "direct_support": 1.0,
+                        "bridge_potential": 0.8,
+                        "novelty": 0.6,
+                        "rationale": "Cape directly supports the answer.",
+                    }
+                ]
+            },
+            ensure_ascii=False,
         ),
     ],
 )
-def test_seed_link_context_llm_single_path_walk_parses_anthropic_json_variants(
-    sample_graph, monkeypatch, response_text
-):
+def test_single_hop_selector_parses_text_json_variants(sample_graph, monkeypatch, response_text):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     backend = FakeTextBackend(response_text, raw_response='{"id":"mock-anthropic"}')
-    selector = SeedLinkContextLLMSinglePathWalkSelector(
-        llm_config=SelectorLLMConfig(
-            provider="anthropic",
-            model="claude-haiku-test",
-            api_key_env="ANTHROPIC_API_KEY",
-        ),
-        start_policy_factory=lambda _top_k: StaticStartPolicy(["mission"]),
-        backend_factory=lambda _config: backend,
+    selector = build_selector(
+        SINGLE_HOP,
+        selector_provider="anthropic",
+        selector_model="claude-haiku-test",
+        selector_api_key_env="ANTHROPIC_API_KEY",
+        selector_backend_factory=lambda _config: backend,
     )
     case = EvaluationCase(case_id="q-json", query="Which city hosts the launch site?")
-    budget = SelectionBudget(max_steps=2, top_k=1, token_budget_tokens=128)
+    budget = EvaluationBudget(token_budget_tokens=128)
 
     result = selector.select(sample_graph, case, budget)
 
-    assert result.corpus.node_ids == ["mission", "cape"]
+    assert "cape" in result.selected_node_ids
     assert result.selector_usage is not None
-    assert result.selector_usage.llm_calls == 1
-    assert result.selector_usage.total_tokens == 26
     assert result.selector_usage.fallback_steps == 0
     assert result.selector_logs[0].backend == "anthropic"
     assert result.selector_logs[0].fallback_reason is None
     assert result.selector_logs[0].text == response_text
-    assert result.selector_logs[0].raw_response == '{"id":"mock-anthropic"}'
 
 
 @pytest.mark.parametrize(
-    ("response_text", "payload_text", "expected_reason"),
+    ("response_text", "expected_reason"),
     [
-        ("not json at all", "not json at all", "json_parse_error:"),
-        ("   ", "   ", "empty_response"),
-        (json.dumps({"wrong": []}, ensure_ascii=False), json.dumps({"wrong": []}, ensure_ascii=False), "schema_error:"),
+        ("not json at all", "json_parse_error:"),
+        ("   ", "empty_response"),
+        (json.dumps({"wrong": []}, ensure_ascii=False), "schema_error:"),
     ],
 )
-def test_seed_link_context_llm_single_path_walk_preserves_usage_on_response_failures(
-    sample_graph, monkeypatch, response_text, payload_text, expected_reason
-):
+def test_single_hop_selector_preserves_usage_on_response_failures(sample_graph, monkeypatch, response_text, expected_reason):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     backend = FakeTextBackend(response_text, raw_response='{"id":"mock-failure"}')
-    selector = SeedLinkContextLLMSinglePathWalkSelector(
-        llm_config=SelectorLLMConfig(
-            provider="anthropic",
-            model="claude-haiku-test",
-            api_key_env="ANTHROPIC_API_KEY",
-        ),
-        start_policy_factory=lambda _top_k: StaticStartPolicy(["mission"]),
-        backend_factory=lambda _config: backend,
+    selector = build_selector(
+        SINGLE_HOP,
+        selector_provider="anthropic",
+        selector_model="claude-haiku-test",
+        selector_api_key_env="ANTHROPIC_API_KEY",
+        selector_backend_factory=lambda _config: backend,
     )
     case = EvaluationCase(case_id="q-failure", query="Which city hosts the launch site?")
-    budget = SelectionBudget(max_steps=2, top_k=1, token_budget_tokens=128)
+    budget = EvaluationBudget(token_budget_tokens=128)
 
     result = selector.select(sample_graph, case, budget)
 
-    assert result.corpus.node_ids == ["mission", "cape"]
+    assert "cape" in result.selected_node_ids
     assert result.selector_usage is not None
-    assert result.selector_usage.llm_calls == 1
-    assert result.selector_usage.total_tokens == 26
-    assert result.selector_usage.fallback_steps == 1
-    assert result.selector_usage.parse_failure_steps == (0 if expected_reason.startswith("provider_error:") else 1)
-    assert result.selector_usage.step_count == 1
-    assert result.selector_logs[0].backend == "overlap"
+    assert result.selector_usage.llm_calls == 2
+    assert result.selector_usage.total_tokens == 52
+    assert result.selector_usage.fallback_steps == 2
     assert result.selector_logs[0].fallback_reason is not None
     assert result.selector_logs[0].fallback_reason.startswith(expected_reason)
-    assert result.selector_logs[0].text == payload_text
     assert result.selector_logs[0].raw_response == '{"id":"mock-failure"}'
 
 

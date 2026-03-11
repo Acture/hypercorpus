@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
+import time
 
 import typer
 from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
+from rich.console import Group
 
 from webwalker.experiments import (
+    ExperimentProgressObserver,
+    ExperimentProgressUpdate,
     budget_ratio_choices_help,
     merge_2wiki_results,
     parse_budget_ratios,
@@ -19,6 +27,7 @@ from webwalker.experiments import (
     selector_choices_help,
     token_budget_choices_help,
 )
+from webwalker.logging import DashboardLogBuffer, DashboardProgressState, dashboard_session
 
 experiments_app = typer.Typer(
     name="webwalker experiments",
@@ -27,10 +36,98 @@ experiments_app = typer.Typer(
 )
 
 
+@dataclass(slots=True)
+class _LiveDashboardState:
+    command_label: str
+    split: str | None = None
+    started_at: float = field(default_factory=time.monotonic)
+    dataset_name: str = "experiment"
+    phase: str = "loading"
+    total_cases: int | None = None
+    completed_cases: int = 0
+    current_case_id: str | None = None
+    current_query: str | None = None
+    summary: ExperimentSummary | None = None
+
+    def apply(self, update: ExperimentProgressUpdate) -> None:
+        self.dataset_name = update.dataset_name
+        self.phase = update.phase
+        self.total_cases = update.total_cases
+        self.completed_cases = update.completed_cases
+        self.current_case_id = update.current_case_id
+        self.current_query = update.current_query
+        if update.summary is not None:
+            self.summary = update.summary
+
+    @property
+    def elapsed_s(self) -> float:
+        return max(0.0, time.monotonic() - self.started_at)
+
+    @property
+    def throughput(self) -> float:
+        if self.elapsed_s <= 0:
+            return 0.0
+        return self.completed_cases / self.elapsed_s
+
+
+class _ExperimentDashboardRenderable:
+    def __init__(
+        self,
+        *,
+        state: _LiveDashboardState,
+        progress_state: DashboardProgressState,
+        log_buffer: DashboardLogBuffer,
+    ) -> None:
+        self.state = state
+        self.progress_state = progress_state
+        self.log_buffer = log_buffer
+
+    def __rich_console__(self, console, options):
+        renderables: list[object] = [
+            _build_dashboard_status_panel(self.state, self.progress_state),
+            _build_summary_renderable(self.state.summary, title=f"{self.state.dataset_name} summary"),
+        ]
+        health = _build_selector_health_renderable(
+            self.state.summary,
+            title=f"{self.state.dataset_name} selector health",
+        )
+        if health is not None:
+            renderables.append(health)
+        renderables.append(_build_log_panel(self.log_buffer))
+        yield Group(*renderables)
+
+
 def _resolve_budget_options(*, token_budgets: str | None, budget_ratios: str | None) -> tuple[list[int] | None, list[float] | None]:
     if token_budgets is not None and budget_ratios is not None:
         raise ValueError("Specify either --token-budgets or --budget-ratios, not both.")
     return parse_token_budgets(token_budgets), parse_budget_ratios(budget_ratios)
+
+
+def _run_with_optional_dashboard(
+    *,
+    console: Console,
+    command_label: str,
+    split: str | None,
+    runner,
+):
+    if not console.is_terminal:
+        return runner(None)
+
+    state = _LiveDashboardState(command_label=command_label, split=split)
+    progress_state = DashboardProgressState()
+    log_buffer = DashboardLogBuffer()
+    renderable = _ExperimentDashboardRenderable(
+        state=state,
+        progress_state=progress_state,
+        log_buffer=log_buffer,
+    )
+
+    def _observer(update: ExperimentProgressUpdate) -> None:
+        state.apply(update)
+
+    with dashboard_session(log_buffer=log_buffer, progress_state=progress_state):
+        with Live(renderable, console=console, refresh_per_second=4, transient=True):
+            return runner(_observer)
 
 
 @experiments_app.command("run-2wiki")
@@ -54,14 +151,14 @@ def run_2wiki(
         "--budget-ratios",
         help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
     ),
-    seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
-    max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
-    top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
     selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
     selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
     selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
     selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -79,29 +176,35 @@ def run_2wiki(
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
     )
-    _, summary = run_2wiki_experiment(
-        questions_path=questions,
-        graph_records_path=graph_records,
-        output_dir=output,
-        limit=limit,
-        selector_names=parse_selector_names(selectors),
-        token_budgets=resolved_token_budgets,
-        budget_ratios=resolved_budget_ratios,
-        seed=seed,
-        max_steps=max_steps,
-        top_k=top_k,
-        selector_provider=selector_provider,
-        selector_model=selector_model,
-        selector_api_key_env=selector_api_key_env,
-        selector_base_url=selector_base_url,
-        selector_cache_path=selector_cache_path,
-        with_e2e=with_e2e,
-        answerer_mode=answerer,
-        answer_model=answer_model,
-        answer_api_key_env=answer_api_key_env,
-        answer_base_url=answer_base_url,
-        answer_cache_path=answer_cache_path,
-        export_graphrag_inputs=export_graphrag_inputs,
+    _, summary = _run_with_optional_dashboard(
+        console=console,
+        command_label="run-2wiki",
+        split=None,
+        runner=lambda progress_observer: run_2wiki_experiment(
+            questions_path=questions,
+            graph_records_path=graph_records,
+            output_dir=output,
+            limit=limit,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
     )
     _print_summary(console, summary)
     console.print(f"results.jsonl -> {output / 'results.jsonl'}")
@@ -132,14 +235,14 @@ def run_iirc(
         "--budget-ratios",
         help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
     ),
-    seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
-    max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
-    top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
     selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
     selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
     selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
     selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -157,29 +260,35 @@ def run_iirc(
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
     )
-    _, summary = run_iirc_experiment(
-        questions_path=questions,
-        graph_records_path=graph_records,
-        output_dir=output,
-        limit=limit,
-        selector_names=parse_selector_names(selectors),
-        token_budgets=resolved_token_budgets,
-        budget_ratios=resolved_budget_ratios,
-        seed=seed,
-        max_steps=max_steps,
-        top_k=top_k,
-        selector_provider=selector_provider,
-        selector_model=selector_model,
-        selector_api_key_env=selector_api_key_env,
-        selector_base_url=selector_base_url,
-        selector_cache_path=selector_cache_path,
-        with_e2e=with_e2e,
-        answerer_mode=answerer,
-        answer_model=answer_model,
-        answer_api_key_env=answer_api_key_env,
-        answer_base_url=answer_base_url,
-        answer_cache_path=answer_cache_path,
-        export_graphrag_inputs=export_graphrag_inputs,
+    _, summary = _run_with_optional_dashboard(
+        console=console,
+        command_label="run-iirc",
+        split=None,
+        runner=lambda progress_observer: run_iirc_experiment(
+            questions_path=questions,
+            graph_records_path=graph_records,
+            output_dir=output,
+            limit=limit,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
     )
     _print_summary(console, summary)
     console.print(f"results.jsonl -> {output / 'results.jsonl'}")
@@ -211,14 +320,14 @@ def run_docs(
         "--budget-ratios",
         help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
     ),
-    seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
-    max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
-    top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
     selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
     selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
     selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
     selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -236,30 +345,36 @@ def run_docs(
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
     )
-    _, summary = run_docs_experiment(
-        questions_path=questions,
-        docs_source=docs_source,
-        output_dir=output,
-        dataset_name=dataset_name,
-        limit=limit,
-        selector_names=parse_selector_names(selectors),
-        token_budgets=resolved_token_budgets,
-        budget_ratios=resolved_budget_ratios,
-        seed=seed,
-        max_steps=max_steps,
-        top_k=top_k,
-        selector_provider=selector_provider,
-        selector_model=selector_model,
-        selector_api_key_env=selector_api_key_env,
-        selector_base_url=selector_base_url,
-        selector_cache_path=selector_cache_path,
-        with_e2e=with_e2e,
-        answerer_mode=answerer,
-        answer_model=answer_model,
-        answer_api_key_env=answer_api_key_env,
-        answer_base_url=answer_base_url,
-        answer_cache_path=answer_cache_path,
-        export_graphrag_inputs=export_graphrag_inputs,
+    _, summary = _run_with_optional_dashboard(
+        console=console,
+        command_label="run-docs",
+        split=None,
+        runner=lambda progress_observer: run_docs_experiment(
+            questions_path=questions,
+            docs_source=docs_source,
+            output_dir=output,
+            dataset_name=dataset_name,
+            limit=limit,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
     )
     _print_summary(console, summary)
     console.print(f"results.jsonl -> {output / 'results.jsonl'}")
@@ -296,14 +411,14 @@ def run_2wiki_store(
         "--budget-ratios",
         help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
     ),
-    seed: int = typer.Option(0, "--seed", help="Random seed for stochastic selectors"),
-    max_steps: int = typer.Option(3, "--max-steps", min=1, help="Maximum walk or expansion steps"),
-    top_k: int = typer.Option(2, "--top-k", min=1, help="Top-k start candidates / dense retrieval depth"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
     selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
     selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
     selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
     selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
     with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
     answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
     answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
@@ -321,35 +436,41 @@ def run_2wiki_store(
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
     )
-    _evaluations, summary, chunk_dir = run_2wiki_store_experiment(
-        store_uri=store,
-        output_root=output_root,
-        exp_name=exp_name,
+    _evaluations, summary, chunk_dir = _run_with_optional_dashboard(
+        console=console,
+        command_label="run-2wiki-store",
         split=split,
-        cache_dir=cache_dir,
-        limit=limit,
-        case_start=case_start,
-        case_limit=case_limit,
-        chunk_size=chunk_size,
-        chunk_index=chunk_index,
-        selector_names=parse_selector_names(selectors),
-        token_budgets=resolved_token_budgets,
-        budget_ratios=resolved_budget_ratios,
-        seed=seed,
-        max_steps=max_steps,
-        top_k=top_k,
-        selector_provider=selector_provider,
-        selector_model=selector_model,
-        selector_api_key_env=selector_api_key_env,
-        selector_base_url=selector_base_url,
-        selector_cache_path=selector_cache_path,
-        with_e2e=with_e2e,
-        answerer_mode=answerer,
-        answer_model=answer_model,
-        answer_api_key_env=answer_api_key_env,
-        answer_base_url=answer_base_url,
-        answer_cache_path=answer_cache_path,
-        export_graphrag_inputs=export_graphrag_inputs,
+        runner=lambda progress_observer: run_2wiki_store_experiment(
+            store_uri=store,
+            output_root=output_root,
+            exp_name=exp_name,
+            split=split,
+            cache_dir=cache_dir,
+            limit=limit,
+            case_start=case_start,
+            case_limit=case_limit,
+            chunk_size=chunk_size,
+            chunk_index=chunk_index,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
     )
     _print_summary(console, summary)
     console.print(f"chunk_dir -> {chunk_dir}")
@@ -387,6 +508,8 @@ def _selector_label(row) -> str:
 
 
 def _has_selector_health(summary) -> bool:
+    if summary is None:
+        return False
     return any(
         (row.avg_selector_total_tokens or 0) > 0
         or (row.avg_selector_llm_calls or 0) > 0
@@ -396,9 +519,9 @@ def _has_selector_health(summary) -> bool:
     )
 
 
-def _print_summary(console: Console, summary) -> None:
-    main_table = Table(title=f"{summary.dataset_name} summary")
-    main_table.add_column("selector", no_wrap=True, overflow="ellipsis", max_width=72)
+def _build_main_summary_table(summary, *, title: str | None = None) -> Table:
+    main_table = Table(title=title or f"{summary.dataset_name} summary")
+    main_table.add_column("selector", overflow="fold")
     main_table.add_column("budget", justify="right", no_wrap=True)
     main_table.add_column("support_recall", justify="right", no_wrap=True)
     main_table.add_column("support_precision", justify="right", no_wrap=True)
@@ -410,9 +533,8 @@ def _print_summary(console: Console, summary) -> None:
     main_table.add_column("answer_f1", justify="right", no_wrap=True)
 
     for row in summary.selector_budgets:
-        selector_label = _selector_label(row)
         cells = [
-            selector_label,
+            _selector_label(row),
             row.budget_label,
             _format_metric(row.avg_support_recall),
             _format_metric(row.avg_support_precision),
@@ -425,13 +547,12 @@ def _print_summary(console: Console, summary) -> None:
         ]
         main_table.add_row(*cells)
 
-    console.print(main_table)
+    return main_table
 
-    if not _has_selector_health(summary):
-        return
 
-    health_table = Table(title=f"{summary.dataset_name} selector health")
-    health_table.add_column("selector", no_wrap=True, overflow="ellipsis", max_width=72)
+def _build_selector_health_table(summary, *, title: str | None = None) -> Table:
+    health_table = Table(title=title or f"{summary.dataset_name} selector health")
+    health_table.add_column("selector", overflow="fold")
     health_table.add_column("budget", justify="right", no_wrap=True)
     health_table.add_column("selector_tokens", justify="right", no_wrap=True)
     health_table.add_column("selector_calls", justify="right", no_wrap=True)
@@ -450,4 +571,73 @@ def _print_summary(console: Console, summary) -> None:
             _format_metric(row.avg_selector_parse_failure_rate),
         )
 
-    console.print(health_table)
+    return health_table
+
+
+def _build_summary_renderable(summary, *, title: str) -> Panel | Table:
+    if summary is None or not summary.selector_budgets:
+        return Panel("Waiting for first completed case...", title=title)
+    return _build_main_summary_table(summary, title=title)
+
+
+def _build_selector_health_renderable(summary, *, title: str) -> Panel | Table | None:
+    if summary is None or not _has_selector_health(summary):
+        return None
+    return _build_selector_health_table(summary, title=title)
+
+
+def _build_dashboard_status_panel(
+    state: _LiveDashboardState,
+    progress_state: DashboardProgressState,
+) -> Panel:
+    def _plain(value: str) -> Text:
+        return Text(value)
+
+    grid = Table.grid(expand=True)
+    grid.add_column(style="cyan", ratio=1)
+    grid.add_column(ratio=5)
+    cases_value = (
+        f"{state.completed_cases}/{state.total_cases}"
+        if state.total_cases is not None
+        else str(state.completed_cases)
+    )
+    grid.add_row("command", _plain(state.command_label))
+    dataset_value = state.dataset_name if state.split is None else f"{state.dataset_name} [{state.split}]"
+    grid.add_row("dataset", _plain(dataset_value))
+    grid.add_row("phase", _plain(state.phase))
+    grid.add_row("cases", _plain(cases_value))
+    grid.add_row("elapsed", _plain(f"{state.elapsed_s:.1f}s"))
+    grid.add_row("throughput", _plain(f"{state.throughput:.2f} case/s"))
+    if state.current_case_id is not None:
+        grid.add_row("current_case", _plain(state.current_case_id))
+    if state.current_query:
+        grid.add_row("query", _plain(state.current_query))
+
+    task = progress_state.latest_task()
+    if task is not None:
+        if task.total is not None and task.total > 0:
+            task_value = f"{task.description} ({task.completed:,.0f}/{task.total:,.0f}, {task.completed / task.total:.0%})"
+        else:
+            task_value = f"{task.description} ({task.completed:,.0f})"
+        if task.detail:
+            task_value = f"{task_value} [{task.detail}]"
+        grid.add_row("task", _plain(task_value))
+
+    return Panel(grid, title=f"{state.dataset_name} live status")
+
+
+def _build_log_panel(log_buffer: DashboardLogBuffer, *, max_lines: int = 12) -> Panel:
+    entries = log_buffer.tail(limit=max_lines)
+    if not entries:
+        return Panel("No logs yet.", title="log tail")
+    lines = "\n".join(entry.rendered for entry in entries)
+    return Panel(Text(lines), title="log tail")
+
+
+def _print_summary(console: Console, summary) -> None:
+    console.print(_build_main_summary_table(summary))
+
+    if not _has_selector_health(summary):
+        return
+
+    console.print(_build_selector_health_table(summary))

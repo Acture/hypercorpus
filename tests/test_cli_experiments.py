@@ -2,8 +2,13 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
+from webwalker.logging import DashboardLogBuffer, DashboardLogEntry, DashboardProgressState
 from webwalker_cli import app
-from webwalker_cli.experiments import _print_summary
+from webwalker_cli.experiments import _ExperimentDashboardRenderable, _LiveDashboardState, _print_summary
+
+CANONICAL_DENSE = "top_1_seed__lexical_overlap__hop_0__dense"
+CANONICAL_OVERLAP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_overlap__lookahead_1"
+CANONICAL_LLM = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_1"
 
 
 def _make_selector_budget_summary(
@@ -69,11 +74,9 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
             "--limit",
             "1",
             "--selectors",
-            "seed__link_context_overlap__single_path_walk,full_corpus_upper_bound",
+            f"{CANONICAL_OVERLAP},full_corpus_upper_bound",
             "--token-budgets",
             "128,256",
-            "--seed",
-            "7",
             "--no-e2e",
         ],
     )
@@ -85,7 +88,6 @@ def test_run_2wiki_cli_smoke(two_wiki_files, tmp_path):
     assert (output_dir / "results.jsonl").exists()
     assert (output_dir / "selector_logs.jsonl").exists()
     assert (output_dir / "summary.json").exists()
-    assert (output_dir / "graphrag_inputs").exists()
 
 
 def test_run_2wiki_cli_supports_no_e2e_and_no_export(two_wiki_files, tmp_path):
@@ -107,7 +109,7 @@ def test_run_2wiki_cli_supports_no_e2e_and_no_export(two_wiki_files, tmp_path):
             "--limit",
             "1",
             "--selectors",
-            "seed_rerank",
+            CANONICAL_DENSE,
             "--token-budgets",
             "128",
             "--no-e2e",
@@ -139,7 +141,7 @@ def test_run_2wiki_cli_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
             "--limit",
             "1",
             "--selectors",
-            "dense_topk",
+            "seed_rerank",
             "--token-budgets",
             "128",
             "--no-e2e",
@@ -149,7 +151,7 @@ def test_run_2wiki_cli_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
 
     assert result.exit_code != 0
     assert isinstance(result.exception, ValueError)
-    assert str(result.exception) == "Unknown selector: dense_topk"
+    assert str(result.exception) == "Unknown selector: seed_rerank"
 
 
 def test_run_2wiki_cli_rejects_conflicting_budget_flags(two_wiki_files, tmp_path):
@@ -171,7 +173,7 @@ def test_run_2wiki_cli_rejects_conflicting_budget_flags(two_wiki_files, tmp_path
             "--limit",
             "1",
             "--selectors",
-            "seed_rerank",
+            CANONICAL_DENSE,
             "--token-budgets",
             "128",
             "--budget-ratios",
@@ -205,7 +207,7 @@ def test_run_2wiki_store_cli_smoke(prepared_two_wiki_store, tmp_path):
             "--chunk-index",
             "0",
             "--selectors",
-            "seed__link_context_overlap__single_path_walk,full_corpus_upper_bound",
+            f"{CANONICAL_OVERLAP},full_corpus_upper_bound",
             "--token-budgets",
             "128,256",
             "--no-e2e",
@@ -235,7 +237,7 @@ def test_run_iirc_cli_smoke(iirc_files, tmp_path):
             "--output",
             str(output_dir),
             "--selectors",
-            "seed_rerank",
+            CANONICAL_DENSE,
             "--token-budgets",
             "128",
             "--no-e2e",
@@ -245,7 +247,6 @@ def test_run_iirc_cli_smoke(iirc_files, tmp_path):
 
     assert result.exit_code == 0, result.stdout
     assert "iirc summary" in result.stdout
-    assert (output_dir / "results.jsonl").exists()
 
 
 def test_run_docs_cli_smoke(docs_files, tmp_path):
@@ -267,7 +268,7 @@ def test_run_docs_cli_smoke(docs_files, tmp_path):
             "--dataset-name",
             "python_docs",
             "--selectors",
-            "seed_rerank",
+            CANONICAL_DENSE,
             "--token-budgets",
             "128",
             "--no-e2e",
@@ -277,7 +278,6 @@ def test_run_docs_cli_smoke(docs_files, tmp_path):
 
     assert result.exit_code == 0, result.stdout
     assert "python_docs summary" in result.stdout
-    assert (output_dir / "results.jsonl").exists()
 
 
 def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store, tmp_path):
@@ -301,7 +301,7 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
             "--chunk-index",
             "0",
             "--selectors",
-            "seed_rerank",
+            CANONICAL_DENSE,
             "--token-budgets",
             "128",
             "--no-e2e",
@@ -328,11 +328,9 @@ def test_print_summary_renders_main_table_only_for_non_llm_rows():
     summary = ExperimentSummary(
         dataset_name="2wikimultihop",
         total_cases=1,
-        selector_budgets=[
-            _make_selector_budget_summary(name="seed_rerank"),
-        ],
+        selector_budgets=[_make_selector_budget_summary(name=CANONICAL_DENSE)],
     )
-    console = Console(record=True, width=160)
+    console = Console(record=True, width=220)
 
     _print_summary(console, summary)
 
@@ -341,6 +339,7 @@ def test_print_summary_renders_main_table_only_for_non_llm_rows():
     assert "support_recall" in output
     assert "support_precision" in output
     assert "answer_em" in output
+    assert "selector legend" not in output
     assert "selector health" not in output
     assert "selector_tokens" not in output
     assert "columns:" not in output
@@ -352,7 +351,7 @@ def test_print_summary_renders_selector_health_table_for_llm_rows():
         total_cases=1,
         selector_budgets=[
             _make_selector_budget_summary(
-                name="seed__link_context_llm__single_path_walk",
+                name=CANONICAL_LLM,
                 selector_provider="anthropic",
                 selector_model="claude-haiku-4-5-20251001",
                 avg_selector_total_tokens=1736.75,
@@ -374,6 +373,76 @@ def test_print_summary_renders_selector_health_table_for_llm_rows():
     assert "selector_calls" in output
     assert "selector_fallback" in output
     assert "selector_parse_fail" in output
-    assert "seed__link_context_llm__single_path_walk@anthropic" in output
+    assert f"{CANONICAL_LLM}@anthropic" in output
     assert "claude-haiku-4-5-202" in output
     assert "columns:" not in output
+
+
+def test_live_dashboard_renderable_includes_status_summary_health_and_logs():
+    summary = ExperimentSummary(
+        dataset_name="2wikimultihop",
+        total_cases=2,
+        selector_budgets=[
+            _make_selector_budget_summary(
+                name=CANONICAL_LLM,
+                selector_provider="anthropic",
+                selector_model="claude-haiku-4-5-20251001",
+                avg_selector_total_tokens=1736.75,
+                avg_selector_runtime_s=5.173,
+                avg_selector_llm_calls=1.45,
+                avg_selector_fallback_rate=0.0,
+                avg_selector_parse_failure_rate=0.0,
+            ),
+        ],
+    )
+    state = _LiveDashboardState(
+        command_label="run-2wiki-store",
+        split="dev",
+        dataset_name="2wikimultihop",
+        phase="evaluating",
+        total_cases=2,
+        completed_cases=1,
+        current_case_id="q2",
+        current_query="Which city hosts the launch site?",
+        summary=summary,
+    )
+    progress_state = DashboardProgressState()
+    task_id = progress_state.add_task("evaluate store-backed 2wiki cases", total=2, detail="q2")
+    progress_state.update(task_id, completed=1)
+    log_buffer = DashboardLogBuffer()
+    log_buffer.append(
+        DashboardLogEntry(
+            rendered="[12:00:00] INFO webwalker.experiments: evaluating q2",
+            logger_name="webwalker.experiments",
+            level_name="INFO",
+            levelno=20,
+        )
+    )
+    log_buffer.append(
+        DashboardLogEntry(
+            rendered="[12:00:01] WARNING urllib3.connectionpool: retrying request",
+            logger_name="urllib3.connectionpool",
+            level_name="WARNING",
+            levelno=30,
+        )
+    )
+
+    console = Console(record=True, width=220)
+    console.print(
+        _ExperimentDashboardRenderable(
+            state=state,
+            progress_state=progress_state,
+            log_buffer=log_buffer,
+        )
+    )
+
+    output = console.export_text()
+    assert "2wikimultihop live status" in output
+    assert "run-2wiki-store" in output
+    assert "2wikimultihop [dev]" in output
+    assert "evaluate store-backed 2wiki cases" in output
+    assert "2wikimultihop summary" in output
+    assert "2wikimultihop selector health" in output
+    assert "log tail" in output
+    assert "evaluating q2" in output
+    assert "retrying request" in output

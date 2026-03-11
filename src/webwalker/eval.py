@@ -1,31 +1,22 @@
 from __future__ import annotations
 
 import math
-import os
-import random
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Literal, Protocol, Sequence
+from typing import Literal, Sequence
 
 from webwalker.answering import Answerer, SupportsAnswer
-from webwalker.candidate.policy import SelectByCosTopK, StartPolicy
-from webwalker.graph import LinkContext, LinkContextGraph
-from webwalker.selector_llm import LLMStepLinkScorer, SelectorLLMConfig
-from webwalker.subgraph import SubgraphExtractor
-from webwalker.text import answer_f1, approx_token_count, normalize_answer, normalized_token_overlap
-from webwalker.walker import (
-    AnchorOverlapStepScorer,
-    DynamicWalker,
-    LinkContextOverlapStepScorer,
-    StepScorerMetadata,
-    StopReason,
-    TitleAwareOverlapStepScorer,
-    WalkBudget,
-    WalkResult,
-    WalkStep,
-    WalkStepLog,
+from webwalker.graph import LinkContextGraph
+from webwalker.selector import (
+    CorpusSelectionResult,
+    CorpusSelector,
+    ScoredLink,
+    SelectionTraceStep,
+    SelectorMetadata,
+    SelectorUsage,
 )
+from webwalker.subgraph import SubgraphExtractor
+from webwalker.text import answer_f1, approx_token_count, normalize_answer
+from webwalker.walker import WalkStepLog
 
 DEFAULT_TOKEN_BUDGETS: tuple[int, ...] = (128, 256, 512, 1024)
 DEFAULT_BUDGET_RATIOS: tuple[float, ...] = (0.01, 0.02, 0.05, 0.10, 1.0)
@@ -49,9 +40,7 @@ class EvaluationCase:
 
 
 @dataclass(slots=True)
-class SelectionBudget:
-    max_steps: int = 3
-    top_k: int = 2
+class EvaluationBudget:
     token_budget_tokens: int | None = None
     token_budget_ratio: float | None = None
     budget_mode: Literal["tokens", "ratio"] = field(init=False)
@@ -59,24 +48,20 @@ class SelectionBudget:
     budget_label: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.max_steps <= 0:
-            raise ValueError("SelectionBudget.max_steps must be positive.")
-        if self.top_k <= 0:
-            raise ValueError("SelectionBudget.top_k must be positive.")
         if self.token_budget_tokens is None and self.token_budget_ratio is None:
             self.token_budget_tokens = DEFAULT_TOKEN_BUDGETS[0]
         if (self.token_budget_tokens is None) == (self.token_budget_ratio is None):
-            raise ValueError("SelectionBudget requires exactly one of token_budget_tokens or token_budget_ratio.")
+            raise ValueError("EvaluationBudget requires exactly one of token_budget_tokens or token_budget_ratio.")
         if self.token_budget_tokens is not None:
             if self.token_budget_tokens <= 0:
-                raise ValueError("SelectionBudget.token_budget_tokens must be positive.")
+                raise ValueError("EvaluationBudget.token_budget_tokens must be positive.")
             self.budget_mode = "tokens"
             self.budget_value = int(self.token_budget_tokens)
             self.budget_label = f"tokens-{self.token_budget_tokens}"
             return
         assert self.token_budget_ratio is not None
         if self.token_budget_ratio <= 0 or self.token_budget_ratio > 1:
-            raise ValueError("SelectionBudget.token_budget_ratio must be in (0, 1].")
+            raise ValueError("EvaluationBudget.token_budget_ratio must be in (0, 1].")
         self.budget_mode = "ratio"
         self.budget_value = float(self.token_budget_ratio)
         self.budget_label = f"ratio-{self.token_budget_ratio:.4f}"
@@ -89,40 +74,6 @@ class SelectedEdgeContext:
     anchor_text: str
     sentence: str
     score: float
-
-
-@dataclass(slots=True)
-class SelectionTraceStep:
-    index: int
-    node_id: str
-    score: float
-    source_node_id: str | None = None
-    anchor_text: str | None = None
-    sentence: str | None = None
-
-
-@dataclass(slots=True)
-class SelectorMetadata:
-    scorer_kind: str
-    backend: str
-    provider: str | None = None
-    model: str | None = None
-    prompt_version: str | None = None
-    candidate_prefilter_top_n: int | None = None
-    two_hop_prefilter_top_n: int | None = None
-
-
-@dataclass(slots=True)
-class SelectorUsage:
-    runtime_s: float = 0.0
-    llm_calls: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cache_hits: int = 0
-    step_count: int = 0
-    fallback_steps: int = 0
-    parse_failure_steps: int = 0
 
 
 @dataclass(slots=True)
@@ -171,7 +122,7 @@ class EndToEndResult:
 @dataclass(slots=True)
 class SelectionResult:
     selector_name: str
-    budget: SelectionBudget
+    budget: EvaluationBudget
     corpus: SelectedCorpus
     metrics: SelectionMetrics
     trace: list[SelectionTraceStep]
@@ -228,510 +179,176 @@ class ExperimentSummary:
     selector_budgets: list[SelectorBudgetSummary]
 
 
-class CorpusSelector(Protocol):
+@dataclass(slots=True)
+class _AverageAccumulator:
+    total: float = 0.0
+    count: int = 0
+
+    def add(self, value: float | None) -> None:
+        if value is None:
+            return
+        self.total += value
+        self.count += 1
+
+    def average(self) -> float | None:
+        if self.count == 0:
+            return None
+        return self.total / self.count
+
+    def average_or_zero(self) -> float:
+        value = self.average()
+        return value if value is not None else 0.0
+
+
+@dataclass(slots=True)
+class _SelectorBudgetAccumulator:
     name: str
+    selector_provider: str | None
+    selector_model: str | None
+    budget: EvaluationBudget
+    num_cases: int = 0
+    avg_start_hit: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_support_recall: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_support_precision: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_support_f1: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_path_hit: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selected_nodes: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selected_token_estimate: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_compression_ratio: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_budget_adherence: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selection_runtime_s: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selector_prompt_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selector_completion_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selector_total_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selector_runtime_s: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selector_llm_calls: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selector_fallback_rate: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_selector_parse_failure_rate: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_answer_em: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_answer_f1: _AverageAccumulator = field(default_factory=_AverageAccumulator)
 
-    def select(
-        self,
-        graph: LinkContextGraph,
-        case: EvaluationCase,
-        budget: SelectionBudget,
-    ) -> SelectionResult:
-        ...
+    def add_result(self, result: SelectionResult) -> None:
+        self.num_cases += 1
+        metrics = result.metrics
+        usage = result.selector_usage
+        self.avg_start_hit.add(_bool_metric(metrics.start_hit))
+        self.avg_support_recall.add(metrics.support_recall)
+        self.avg_support_precision.add(metrics.support_precision)
+        self.avg_support_f1.add(metrics.support_f1)
+        self.avg_path_hit.add(_bool_metric(metrics.path_hit))
+        self.avg_selected_nodes.add(float(metrics.selected_nodes_count))
+        self.avg_selected_token_estimate.add(float(metrics.selected_token_estimate))
+        self.avg_compression_ratio.add(metrics.compression_ratio)
+        self.avg_budget_adherence.add(1.0 if metrics.budget_adherence else 0.0)
+        self.avg_selection_runtime_s.add(metrics.selection_runtime_s)
+        if usage is not None:
+            self.avg_selector_prompt_tokens.add(float(usage.prompt_tokens))
+            self.avg_selector_completion_tokens.add(float(usage.completion_tokens))
+            self.avg_selector_total_tokens.add(float(usage.total_tokens))
+            self.avg_selector_runtime_s.add(usage.runtime_s)
+            self.avg_selector_llm_calls.add(float(usage.llm_calls))
+            if usage.step_count > 0:
+                self.avg_selector_fallback_rate.add(usage.fallback_steps / usage.step_count)
+                self.avg_selector_parse_failure_rate.add(usage.parse_failure_steps / usage.step_count)
+        if result.end_to_end is not None:
+            self.avg_answer_em.add(result.end_to_end.em)
+            self.avg_answer_f1.add(result.end_to_end.f1)
 
-
-class SeedRerankSelector:
-    name = "seed_rerank"
-
-    def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
-        self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-
-    def select(
-        self,
-        graph: LinkContextGraph,
-        case: EvaluationCase,
-        budget: SelectionBudget,
-    ) -> SelectionResult:
-        started_at = time.perf_counter()
-        root_candidates = self.start_policy_factory(budget.top_k).select_start(graph, case.query)
-        ordered_nodes = _dedupe(root_candidates)
-        trace = [
-            SelectionTraceStep(index=index, node_id=node_id, score=_node_score(graph, case.query, node_id))
-            for index, node_id in enumerate(ordered_nodes)
-        ]
-        runtime_s = time.perf_counter() - started_at
-        return _build_selection_result(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            ordered_node_ids=ordered_nodes,
-            root_candidates=ordered_nodes,
-            edge_contexts=[],
-            trace=trace,
-            runtime_s=runtime_s,
-            stop_reason="top_k_retrieval",
+    def to_summary(self) -> SelectorBudgetSummary:
+        return SelectorBudgetSummary(
+            name=self.name,
+            selector_provider=self.selector_provider,
+            selector_model=self.selector_model,
+            budget_mode=self.budget.budget_mode,
+            budget_value=self.budget.budget_value,
+            budget_label=self.budget.budget_label,
+            token_budget_ratio=self.budget.token_budget_ratio,
+            token_budget_tokens=self.budget.token_budget_tokens,
+            num_cases=self.num_cases,
+            avg_start_hit=self.avg_start_hit.average(),
+            avg_support_recall=self.avg_support_recall.average(),
+            avg_support_precision=self.avg_support_precision.average(),
+            avg_support_f1=self.avg_support_f1.average(),
+            avg_path_hit=self.avg_path_hit.average(),
+            avg_selected_nodes=self.avg_selected_nodes.average_or_zero(),
+            avg_selected_token_estimate=self.avg_selected_token_estimate.average_or_zero(),
+            avg_compression_ratio=self.avg_compression_ratio.average_or_zero(),
+            avg_budget_adherence=self.avg_budget_adherence.average_or_zero(),
+            avg_selection_runtime_s=self.avg_selection_runtime_s.average_or_zero(),
+            avg_selector_prompt_tokens=self.avg_selector_prompt_tokens.average(),
+            avg_selector_completion_tokens=self.avg_selector_completion_tokens.average(),
+            avg_selector_total_tokens=self.avg_selector_total_tokens.average(),
+            avg_selector_runtime_s=self.avg_selector_runtime_s.average(),
+            avg_selector_llm_calls=self.avg_selector_llm_calls.average(),
+            avg_selector_fallback_rate=self.avg_selector_fallback_rate.average(),
+            avg_selector_parse_failure_rate=self.avg_selector_parse_failure_rate.average(),
+            avg_answer_em=self.avg_answer_em.average(),
+            avg_answer_f1=self.avg_answer_f1.average(),
         )
 
 
-class SeedPlusTopologyNeighborsSelector:
-    name = "seed_plus_topology_neighbors"
+class IncrementalExperimentAggregator:
+    def __init__(self, *, dataset_name: str):
+        self.dataset_name = dataset_name
+        self.total_cases = 0
+        self._buckets: dict[tuple[str, str, int | float, str | None, str | None], _SelectorBudgetAccumulator] = {}
 
-    def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
-        self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
+    def add_case_evaluation(self, evaluation: CaseEvaluation) -> None:
+        self.total_cases += 1
+        for selection in evaluation.selections:
+            self.add_selection_result(selection)
 
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        return _expand_from_roots(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            start_policy_factory=self.start_policy_factory,
-            score_link=lambda current, link: _topology_link_score(graph, case.query, current, link),
-            tie_break_key=lambda link: (
-                normalized_token_overlap(case.query, _target_title(graph, link.target)),
-                len(graph.neighbors(link.target)),
-                link.target,
-            ),
+    def add_selection_result(self, selection: SelectionResult) -> None:
+        key = (
+            selection.selector_name,
+            selection.budget.budget_mode,
+            selection.budget.budget_value,
+            selection.selector_metadata.provider if selection.selector_metadata is not None else None,
+            selection.selector_metadata.model if selection.selector_metadata is not None else None,
         )
-
-
-class SeedPlusAnchorNeighborsSelector:
-    name = "seed_plus_anchor_neighbors"
-
-    def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
-        self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        return _expand_from_roots(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            start_policy_factory=self.start_policy_factory,
-            score_link=lambda _current, link: normalized_token_overlap(case.query, link.anchor_text),
-            tie_break_key=lambda link: (link.target,),
-        )
-
-
-class SeedPlusLinkContextNeighborsSelector:
-    name = "seed_plus_link_context_neighbors"
-
-    def __init__(
-        self,
-        *,
-        start_policy_factory: Callable[[int], StartPolicy[str]] | None = None,
-        anchor_weight: float = 0.6,
-        sentence_weight: float = 0.4,
-    ):
-        self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-        self.anchor_weight = anchor_weight
-        self.sentence_weight = sentence_weight
-
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        return _expand_from_roots(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            start_policy_factory=self.start_policy_factory,
-            score_link=lambda _current, link: (
-                normalized_token_overlap(case.query, link.anchor_text) * self.anchor_weight
-                + normalized_token_overlap(case.query, link.sentence) * self.sentence_weight
-            ),
-            tie_break_key=lambda link: (link.target,),
-        )
-
-
-class _SinglePathWalkSelector:
-    name = "single_path_walk"
-    min_score = 0.05
-
-    def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
-        self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-
-    def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
-        return self.start_policy_factory(budget.top_k).select_start(graph, case.query)
-
-    def _build_step_scorer(self):
-        raise NotImplementedError
-
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        started_at = time.perf_counter()
-        start_nodes = self._select_start_nodes(graph, case, budget)
-        scorer = self._build_step_scorer()
-        walk = DynamicWalker(graph, scorer=scorer).walk(
-            case.query,
-            start_nodes,
-            WalkBudget(max_steps=budget.max_steps, min_score=self.min_score),
-        )
-        runtime_s = time.perf_counter() - started_at
-        return _selection_from_walk(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            walk=walk,
-            runtime_s=runtime_s,
-        )
-
-
-class SeedAnchorOverlapSinglePathWalkSelector(_SinglePathWalkSelector):
-    name = "seed__anchor_overlap__single_path_walk"
-
-    def _build_step_scorer(self):
-        return AnchorOverlapStepScorer()
-
-
-class SeedLinkContextOverlapSinglePathWalkSelector(_SinglePathWalkSelector):
-    name = "seed__link_context_overlap__single_path_walk"
-
-    def _build_step_scorer(self):
-        return LinkContextOverlapStepScorer()
-
-
-class SeedAnchorOverlapTwoHopSinglePathWalkSelector(_SinglePathWalkSelector):
-    name = "seed__anchor_overlap__two_hop_single_path_walk"
-
-    def _build_step_scorer(self):
-        return AnchorOverlapStepScorer(lookahead_steps=2)
-
-
-class SeedLinkContextOverlapTwoHopSinglePathWalkSelector(_SinglePathWalkSelector):
-    name = "seed__link_context_overlap__two_hop_single_path_walk"
-
-    def _build_step_scorer(self):
-        return LinkContextOverlapStepScorer(lookahead_steps=2)
-
-
-class SeedTitleAwareSinglePathWalkSelector(_SinglePathWalkSelector):
-    name = "seed__title_aware__single_path_walk"
-
-    def _build_step_scorer(self):
-        return TitleAwareOverlapStepScorer()
-
-
-class _LLMSinglePathWalkSelector(_SinglePathWalkSelector):
-    llm_mode: Literal["single_hop", "two_hop"] = "single_hop"
-
-    def __init__(
-        self,
-        *,
-        llm_config: SelectorLLMConfig | None = None,
-        start_policy_factory: Callable[[int], StartPolicy[str]] | None = None,
-        backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
-    ):
-        super().__init__(start_policy_factory=start_policy_factory)
-        self.llm_config = llm_config or SelectorLLMConfig()
-        self.backend_factory = backend_factory
-
-    def _build_step_scorer(self):
-        return LLMStepLinkScorer(
-            config=self.llm_config,
-            mode=self.llm_mode,
-            prefilter_scorer=LinkContextOverlapStepScorer(),
-            fallback_scorer=(
-                LinkContextOverlapStepScorer(lookahead_steps=2)
-                if self.llm_mode == "two_hop"
-                else LinkContextOverlapStepScorer()
-            ),
-            backend_factory=self.backend_factory,
-        )
-
-
-class SeedLinkContextLLMSinglePathWalkSelector(_LLMSinglePathWalkSelector):
-    name = "seed__link_context_llm__single_path_walk"
-    llm_mode = "single_hop"
-
-
-class SeedLinkContextLLMTwoHopSinglePathWalkSelector(_LLMSinglePathWalkSelector):
-    name = "seed__link_context_llm__two_hop_single_path_walk"
-    llm_mode = "two_hop"
-
-
-class OracleSeedLinkContextOverlapSinglePathWalkSelector(_SinglePathWalkSelector):
-    name = "oracle_seed__link_context_overlap__single_path_walk"
-
-    def __init__(self, *, fallback_start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
-        self.fallback_start_policy_factory = fallback_start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-
-    def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
-        return case.gold_start_nodes or self.fallback_start_policy_factory(budget.top_k).select_start(graph, case.query)
-
-    def _build_step_scorer(self):
-        return LinkContextOverlapStepScorer()
-
-
-class OracleSeedLinkContextLLMSinglePathWalkSelector(_LLMSinglePathWalkSelector):
-    name = "oracle_seed__link_context_llm__single_path_walk"
-    llm_mode = "single_hop"
-
-    def __init__(
-        self,
-        *,
-        llm_config: SelectorLLMConfig | None = None,
-        fallback_start_policy_factory: Callable[[int], StartPolicy[str]] | None = None,
-        backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
-    ):
-        super().__init__(llm_config=llm_config, start_policy_factory=None, backend_factory=backend_factory)
-        self.fallback_start_policy_factory = fallback_start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-
-    def _select_start_nodes(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> list[str]:
-        return case.gold_start_nodes or self.fallback_start_policy_factory(budget.top_k).select_start(graph, case.query)
-
-
-class RandomWalkSelector:
-    name = "random__single_path_walk"
-
-    def __init__(
-        self,
-        *,
-        seed: int = 0,
-        start_policy_factory: Callable[[int], StartPolicy[str]] | None = None,
-    ):
-        self.seed = seed
-        self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        started_at = time.perf_counter()
-        start_nodes = self.start_policy_factory(budget.top_k).select_start(graph, case.query)
-        walk = _random_walk(
-            graph,
-            case,
-            start_nodes,
-            WalkBudget(max_steps=budget.max_steps, min_score=0.0),
-            self.seed,
-        )
-        runtime_s = time.perf_counter() - started_at
-        return _selection_from_walk(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            walk=walk,
-            runtime_s=runtime_s,
-        )
-
-
-class FullCorpusUpperBoundSelector:
-    name = "full_corpus_upper_bound"
-
-    def __init__(self, *, start_policy_factory: Callable[[int], StartPolicy[str]] | None = None):
-        self.start_policy_factory = start_policy_factory or (lambda top_k: SelectByCosTopK(k=top_k))
-
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        started_at = time.perf_counter()
-        root_candidates = self.start_policy_factory(budget.top_k).select_start(graph, case.query)
-        ordered_nodes = list(graph.nodes)
-        trace = [
-            SelectionTraceStep(index=index, node_id=node_id, score=_node_score(graph, case.query, node_id))
-            for index, node_id in enumerate(root_candidates)
-        ]
-        runtime_s = time.perf_counter() - started_at
-        return _build_selection_result(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            ordered_node_ids=ordered_nodes,
-            root_candidates=root_candidates,
-            edge_contexts=[],
-            trace=trace,
-            runtime_s=runtime_s,
-            stop_reason="full_corpus_proxy",
-            force_full_corpus=True,
-        )
-
-
-class GoldSupportContextSelector:
-    name = "gold_support_context"
-
-    def select(self, graph: LinkContextGraph, case: EvaluationCase, budget: SelectionBudget) -> SelectionResult:
-        started_at = time.perf_counter()
-        ordered_nodes = list(case.gold_support_nodes)
-        root_candidates = list(case.gold_start_nodes or case.gold_support_nodes)
-        trace = [
-            SelectionTraceStep(
-                index=index,
-                node_id=node_id,
-                score=1.0 if node_id in set(case.gold_support_nodes) else _node_score(graph, case.query, node_id),
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            bucket = _SelectorBudgetAccumulator(
+                name=selection.selector_name,
+                selector_provider=selection.selector_metadata.provider if selection.selector_metadata is not None else None,
+                selector_model=selection.selector_metadata.model if selection.selector_metadata is not None else None,
+                budget=selection.budget,
             )
-            for index, node_id in enumerate(ordered_nodes)
-        ]
-        runtime_s = time.perf_counter() - started_at
-        return _build_selection_result(
-            selector_name=self.name,
-            graph=graph,
-            case=case,
-            budget=budget,
-            ordered_node_ids=ordered_nodes,
-            root_candidates=root_candidates,
-            edge_contexts=[],
-            trace=trace,
-            runtime_s=runtime_s,
-            stop_reason="gold_support_context",
-            ignore_budget=True,
+            self._buckets[key] = bucket
+        bucket.add_result(selection)
+
+    def to_summary(self) -> ExperimentSummary:
+        return ExperimentSummary(
+            dataset_name=self.dataset_name,
+            total_cases=self.total_cases,
+            selector_budgets=[bucket.to_summary() for bucket in self._buckets.values()],
         )
 
-
-def build_default_selectors(*, seed: int = 0) -> list[CorpusSelector]:
-    del seed
-    return [
-        SeedRerankSelector(),
-        SeedPlusTopologyNeighborsSelector(),
-        SeedPlusAnchorNeighborsSelector(),
-        SeedPlusLinkContextNeighborsSelector(),
-        SeedAnchorOverlapSinglePathWalkSelector(),
-        SeedLinkContextOverlapSinglePathWalkSelector(),
-        SeedAnchorOverlapTwoHopSinglePathWalkSelector(),
-        SeedLinkContextOverlapTwoHopSinglePathWalkSelector(),
-    ]
-
-
-def build_diagnostic_selectors(*, seed: int = 0) -> list[CorpusSelector]:
-    return [
-        *build_default_selectors(seed=seed),
-        SeedTitleAwareSinglePathWalkSelector(),
-        OracleSeedLinkContextOverlapSinglePathWalkSelector(),
-        GoldSupportContextSelector(),
-        RandomWalkSelector(seed=seed),
-        FullCorpusUpperBoundSelector(),
-    ]
-
-
-def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
-    default_names = [
-        "seed_rerank",
-        "seed_plus_topology_neighbors",
-        "seed_plus_anchor_neighbors",
-        "seed_plus_link_context_neighbors",
-        "seed__anchor_overlap__single_path_walk",
-        "seed__link_context_overlap__single_path_walk",
-        "seed__anchor_overlap__two_hop_single_path_walk",
-        "seed__link_context_overlap__two_hop_single_path_walk",
-    ]
-    if not include_diagnostics:
-        return default_names
-    return [
-        *default_names,
-        "seed__title_aware__single_path_walk",
-        "oracle_seed__link_context_overlap__single_path_walk",
-        "gold_support_context",
-        "random__single_path_walk",
-        "full_corpus_upper_bound",
-        "seed__link_context_llm__single_path_walk",
-        "seed__link_context_llm__two_hop_single_path_walk",
-        "oracle_seed__link_context_llm__single_path_walk",
-    ]
-
-
-def select_selectors(
-    names: Sequence[str] | None = None,
-    *,
-    seed: int = 0,
-    include_diagnostics: bool = True,
-    selector_provider: Literal["openai", "anthropic", "gemini"] = "openai",
-    selector_model: str | None = None,
-    selector_api_key_env: str | None = None,
-    selector_base_url: str | None = None,
-    selector_cache_path: str | None = None,
-    selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
-) -> list[CorpusSelector]:
-    llm_config = SelectorLLMConfig(
-        provider=selector_provider,
-        model=selector_model,
-        api_key_env=selector_api_key_env,
-        base_url=selector_base_url,
-        cache_path=None if selector_cache_path is None else Path(selector_cache_path),
-    )
-    registry = _selector_registry(
-        seed=seed,
-        include_diagnostics=include_diagnostics,
-        llm_config=llm_config,
-        selector_backend_factory=selector_backend_factory,
-    )
-    if names is None:
-        return build_diagnostic_selectors(seed=seed) if include_diagnostics else build_default_selectors(seed=seed)
-
-    selected: list[CorpusSelector] = []
-    for name in names:
-        if name not in registry:
-            raise ValueError(f"Unknown selector: {name}")
-        if _selector_name_uses_llm(name):
-            _validate_selector_llm_config(llm_config)
-        selected.append(registry[name]())
-    return selected
-
-
-def _selector_registry(
-    *,
-    seed: int,
-    include_diagnostics: bool,
-    llm_config: SelectorLLMConfig,
-    selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None,
-) -> dict[str, Callable[[], CorpusSelector]]:
-    default_builders: list[tuple[str, Callable[[], CorpusSelector]]] = [
-        ("seed_rerank", SeedRerankSelector),
-        ("seed_plus_topology_neighbors", SeedPlusTopologyNeighborsSelector),
-        ("seed_plus_anchor_neighbors", SeedPlusAnchorNeighborsSelector),
-        ("seed_plus_link_context_neighbors", SeedPlusLinkContextNeighborsSelector),
-        ("seed__anchor_overlap__single_path_walk", SeedAnchorOverlapSinglePathWalkSelector),
-        ("seed__link_context_overlap__single_path_walk", SeedLinkContextOverlapSinglePathWalkSelector),
-        ("seed__anchor_overlap__two_hop_single_path_walk", SeedAnchorOverlapTwoHopSinglePathWalkSelector),
-        ("seed__link_context_overlap__two_hop_single_path_walk", SeedLinkContextOverlapTwoHopSinglePathWalkSelector),
-    ]
-    registry = {name: builder for name, builder in default_builders}
-    if not include_diagnostics:
-        return registry
-    registry.update(
-        {
-            "seed__title_aware__single_path_walk": SeedTitleAwareSinglePathWalkSelector,
-            "oracle_seed__link_context_overlap__single_path_walk": OracleSeedLinkContextOverlapSinglePathWalkSelector,
-            "gold_support_context": GoldSupportContextSelector,
-            "random__single_path_walk": lambda: RandomWalkSelector(seed=seed),
-            "full_corpus_upper_bound": FullCorpusUpperBoundSelector,
-            "seed__link_context_llm__single_path_walk": lambda: SeedLinkContextLLMSinglePathWalkSelector(
-                llm_config=llm_config,
-                backend_factory=selector_backend_factory,
-            ),
-            "seed__link_context_llm__two_hop_single_path_walk": lambda: SeedLinkContextLLMTwoHopSinglePathWalkSelector(
-                llm_config=llm_config,
-                backend_factory=selector_backend_factory,
-            ),
-            "oracle_seed__link_context_llm__single_path_walk": lambda: OracleSeedLinkContextLLMSinglePathWalkSelector(
-                llm_config=llm_config,
-                backend_factory=selector_backend_factory,
-            ),
-        }
-    )
-    return registry
-
-
-def _validate_selector_llm_config(config: SelectorLLMConfig) -> None:
-    if not config.api_key_env:
-        raise ValueError("selector_api_key_env must be configured for LLM selectors.")
-    if not config.model:
-        raise ValueError("selector_model must be configured for LLM selectors.")
-    if not os.environ.get(config.api_key_env):
-        raise ValueError(f"Missing API key in environment variable {config.api_key_env}")
-
-
-def _selector_name_uses_llm(name: str) -> bool:
-    return "_llm__" in name
+    @classmethod
+    def from_evaluations(
+        cls,
+        evaluations: Sequence[CaseEvaluation],
+        *,
+        dataset_name: str,
+    ) -> IncrementalExperimentAggregator:
+        aggregator = cls(dataset_name=dataset_name)
+        for evaluation in evaluations:
+            aggregator.add_case_evaluation(evaluation)
+        return aggregator
 
 
 class Evaluator:
     def __init__(
         self,
-        selectors: list[CorpusSelector] | None = None,
+        selectors: Sequence[CorpusSelector],
         *,
-        budget: SelectionBudget | None = None,
+        budget: EvaluationBudget | None = None,
         with_e2e: bool = False,
         extractor: SubgraphExtractor | None = None,
         answerer: SupportsAnswer | None = None,
     ):
-        self.selectors = selectors or build_default_selectors()
-        self.budget = budget or SelectionBudget()
+        self.selectors = list(selectors)
+        self.budget = budget or EvaluationBudget()
         self.with_e2e = with_e2e
         self.extractor = extractor or SubgraphExtractor()
         self.answerer = answerer or Answerer()
@@ -739,7 +356,8 @@ class Evaluator:
     def evaluate_case(self, graph: LinkContextGraph, case: EvaluationCase) -> CaseEvaluation:
         selections: list[SelectionResult] = []
         for selector in self.selectors:
-            result = selector.select(graph, case, self.budget)
+            raw_selection = selector.select(graph, case, self.budget)
+            result = _selection_result_from_raw(graph=graph, case=case, budget=self.budget, raw=raw_selection)
             if self.with_e2e:
                 result.end_to_end = _run_end_to_end(
                     graph=graph,
@@ -754,8 +372,7 @@ class Evaluator:
     def summarize(self, evaluations: Sequence[CaseEvaluation]) -> ExperimentSummary:
         if not evaluations:
             raise ValueError("Cannot summarize an empty experiment.")
-        dataset_name = evaluations[0].case.dataset_name
-        return summarize_evaluations(evaluations, dataset_name=dataset_name)
+        return summarize_evaluations(evaluations, dataset_name=evaluations[0].case.dataset_name)
 
 
 def summarize_evaluations(
@@ -765,167 +382,26 @@ def summarize_evaluations(
 ) -> ExperimentSummary:
     if not evaluations:
         raise ValueError("Cannot summarize an empty experiment.")
-
-    ordered_keys = list(
-        dict.fromkeys(
-            (
-                selection.selector_name,
-                selection.budget.budget_mode,
-                selection.budget.budget_value,
-                selection.selector_metadata.provider if selection.selector_metadata is not None else None,
-                selection.selector_metadata.model if selection.selector_metadata is not None else None,
-            )
-            for evaluation in evaluations
-            for selection in evaluation.selections
-        )
-    )
-
-    selector_budgets: list[SelectorBudgetSummary] = []
-    for name, budget_mode, budget_value, selector_provider, selector_model in ordered_keys:
-        results = [
-            selection
-            for evaluation in evaluations
-            for selection in evaluation.selections
-            if selection.selector_name == name
-            and _matches_budget(selection.budget, budget_mode=budget_mode, budget_value=budget_value)
-            and (selection.selector_metadata.provider if selection.selector_metadata is not None else None)
-            == selector_provider
-            and (selection.selector_metadata.model if selection.selector_metadata is not None else None) == selector_model
-        ]
-        exemplar = results[0].budget
-        selector_budgets.append(
-            SelectorBudgetSummary(
-                name=name,
-                selector_provider=selector_provider,
-                selector_model=selector_model,
-                budget_mode=budget_mode,
-                budget_value=budget_value,
-                budget_label=exemplar.budget_label,
-                token_budget_ratio=exemplar.token_budget_ratio,
-                token_budget_tokens=exemplar.token_budget_tokens,
-                num_cases=len(results),
-                avg_start_hit=_average(
-                    [1.0 if result.metrics.start_hit else 0.0 for result in results if result.metrics.start_hit is not None]
-                ),
-                avg_support_recall=_average(
-                    [result.metrics.support_recall for result in results if result.metrics.support_recall is not None]
-                ),
-                avg_support_precision=_average(
-                    [result.metrics.support_precision for result in results if result.metrics.support_precision is not None]
-                ),
-                avg_support_f1=_average(
-                    [result.metrics.support_f1 for result in results if result.metrics.support_f1 is not None]
-                ),
-                avg_path_hit=_average(
-                    [1.0 if result.metrics.path_hit else 0.0 for result in results if result.metrics.path_hit is not None]
-                ),
-                avg_selected_nodes=_average([float(result.metrics.selected_nodes_count) for result in results]) or 0.0,
-                avg_selected_token_estimate=_average(
-                    [float(result.metrics.selected_token_estimate) for result in results]
-                )
-                or 0.0,
-                avg_compression_ratio=_average([result.metrics.compression_ratio for result in results]) or 0.0,
-                avg_budget_adherence=_average([1.0 if result.metrics.budget_adherence else 0.0 for result in results]) or 0.0,
-                avg_selection_runtime_s=_average([result.metrics.selection_runtime_s for result in results]) or 0.0,
-                avg_selector_prompt_tokens=_average(
-                    [float(result.selector_usage.prompt_tokens) for result in results if result.selector_usage is not None]
-                ),
-                avg_selector_completion_tokens=_average(
-                    [float(result.selector_usage.completion_tokens) for result in results if result.selector_usage is not None]
-                ),
-                avg_selector_total_tokens=_average(
-                    [float(result.selector_usage.total_tokens) for result in results if result.selector_usage is not None]
-                ),
-                avg_selector_runtime_s=_average(
-                    [result.selector_usage.runtime_s for result in results if result.selector_usage is not None]
-                ),
-                avg_selector_llm_calls=_average(
-                    [float(result.selector_usage.llm_calls) for result in results if result.selector_usage is not None]
-                ),
-                avg_selector_fallback_rate=_average(
-                    [
-                        result.selector_usage.fallback_steps / result.selector_usage.step_count
-                        for result in results
-                        if result.selector_usage is not None and result.selector_usage.step_count > 0
-                    ]
-                ),
-                avg_selector_parse_failure_rate=_average(
-                    [
-                        result.selector_usage.parse_failure_steps / result.selector_usage.step_count
-                        for result in results
-                        if result.selector_usage is not None and result.selector_usage.step_count > 0
-                    ]
-                ),
-                avg_answer_em=_average(
-                    [
-                        result.end_to_end.em
-                        for result in results
-                        if result.end_to_end is not None and result.end_to_end.em is not None
-                    ]
-                ),
-                avg_answer_f1=_average(
-                    [
-                        result.end_to_end.f1
-                        for result in results
-                        if result.end_to_end is not None and result.end_to_end.f1 is not None
-                    ]
-                ),
-            )
-        )
-
-    return ExperimentSummary(
+    return IncrementalExperimentAggregator.from_evaluations(
+        evaluations,
         dataset_name=dataset_name,
-        total_cases=len(evaluations),
-        selector_budgets=selector_budgets,
-    )
+    ).to_summary()
 
 
-def _build_selection_result(
+def _selection_result_from_raw(
     *,
-    selector_name: str,
     graph: LinkContextGraph,
     case: EvaluationCase,
-    budget: SelectionBudget,
-    ordered_node_ids: Sequence[str],
-    root_candidates: Sequence[str],
-    edge_contexts: Sequence[SelectedEdgeContext],
-    trace: Sequence[SelectionTraceStep],
-    runtime_s: float,
-    stop_reason: str | None,
-    force_full_corpus: bool = False,
-    ignore_budget: bool = False,
-    selector_metadata: SelectorMetadata | None = None,
-    selector_usage: SelectorUsage | None = None,
-    selector_logs: Sequence[WalkStepLog] | None = None,
+    budget: EvaluationBudget,
+    raw: CorpusSelectionResult,
 ) -> SelectionResult:
     total_graph_tokens = _graph_token_estimate(graph)
     budget_token_limit = _budget_token_limit(graph, budget)
-    if force_full_corpus:
-        selected_node_ids = list(dict.fromkeys(ordered_node_ids))
-        selected_token_estimate = total_graph_tokens
-        selected_root_ids = [node_id for node_id in root_candidates if node_id in set(selected_node_ids)]
-    elif ignore_budget:
-        selected_node_ids = list(dict.fromkeys(ordered_node_ids))
-        selected_token_estimate = sum(_node_token_cost(graph, node_id) for node_id in selected_node_ids)
-        selected_root_ids = [node_id for node_id in root_candidates if node_id in set(selected_node_ids)]
-    else:
-        selected_node_ids, selected_token_estimate = _fit_nodes_in_order(
-            graph,
-            ordered_node_ids,
-            budget_token_limit,
-        )
-        selected_root_ids = [node_id for node_id in root_candidates if node_id in set(selected_node_ids)]
-
-    selected_node_set = set(selected_node_ids)
     corpus = SelectedCorpus(
-        node_ids=selected_node_ids,
-        edge_contexts=[
-            context
-            for context in edge_contexts
-            if context.source in selected_node_set and context.target in selected_node_set
-        ],
-        token_estimate=selected_token_estimate,
-        root_node_ids=selected_root_ids,
+        node_ids=list(raw.selected_node_ids),
+        edge_contexts=[_selected_edge_from_link(link) for link in raw.selected_links],
+        token_estimate=raw.token_cost_estimate,
+        root_node_ids=list(raw.root_node_ids),
     )
     metrics = SelectionMetrics(
         budget_mode=budget.budget_mode,
@@ -934,7 +410,7 @@ def _build_selection_result(
         token_budget_ratio=budget.token_budget_ratio,
         token_budget_tokens=budget.token_budget_tokens,
         budget_token_limit=budget_token_limit,
-        selection_runtime_s=runtime_s,
+        selection_runtime_s=raw.selector_usage.runtime_s if raw.selector_usage is not None else 0.0,
         selected_nodes_count=len(corpus.node_ids),
         selected_token_estimate=corpus.token_estimate,
         compression_ratio=_compression_ratio(corpus.token_estimate, total_graph_tokens),
@@ -946,143 +422,25 @@ def _build_selection_result(
         path_hit=_path_hit(corpus.node_ids, case.gold_path_nodes),
     )
     return SelectionResult(
-        selector_name=selector_name,
+        selector_name=raw.selector_name,
         budget=budget,
         corpus=corpus,
         metrics=metrics,
-        trace=[
-            step
-            for step in trace
-            if step.node_id in selected_node_set or step.index == 0
-        ],
-        stop_reason=stop_reason,
-        selector_metadata=selector_metadata,
-        selector_usage=selector_usage or SelectorUsage(),
-        selector_logs=list(selector_logs or []),
+        trace=list(raw.trace),
+        stop_reason=raw.stop_reason,
+        selector_metadata=raw.selector_metadata,
+        selector_usage=raw.selector_usage or SelectorUsage(),
+        selector_logs=list(raw.selector_logs),
     )
 
 
-def _expand_from_roots(
-    *,
-    selector_name: str,
-    graph: LinkContextGraph,
-    case: EvaluationCase,
-    budget: SelectionBudget,
-    start_policy_factory: Callable[[int], StartPolicy[str]],
-    score_link: Callable[[str, LinkContext], float],
-    tie_break_key: Callable[[LinkContext], tuple[object, ...]],
-) -> SelectionResult:
-    started_at = time.perf_counter()
-    root_candidates = start_policy_factory(budget.top_k).select_start(graph, case.query)
-    ordered_node_ids = list(_dedupe(root_candidates))
-    trace = [
-        SelectionTraceStep(index=index, node_id=node_id, score=_node_score(graph, case.query, node_id))
-        for index, node_id in enumerate(ordered_node_ids)
-    ]
-    edge_contexts: list[SelectedEdgeContext] = []
-    expansion_slots = max(1, budget.max_steps - 1)
-
-    for root_node_id in root_candidates:
-        candidates: list[tuple[float, LinkContext]] = []
-        for neighbor in graph.neighbors(root_node_id):
-            links = graph.links_between(root_node_id, neighbor)
-            if not links:
-                continue
-            best_score, best_link = max(
-                ((score_link(root_node_id, link), link) for link in links),
-                key=lambda item: (item[0], *tie_break_key(item[1])),
-            )
-            candidates.append((best_score, best_link))
-
-        candidates.sort(
-            key=lambda item: (item[0], *tie_break_key(item[1])),
-            reverse=True,
-        )
-
-        for score, link in candidates[:expansion_slots]:
-            if link.target in ordered_node_ids:
-                continue
-            ordered_node_ids.append(link.target)
-            edge_contexts.append(
-                SelectedEdgeContext(
-                    source=link.source,
-                    target=link.target,
-                    anchor_text=link.anchor_text,
-                    sentence=link.sentence,
-                    score=score,
-                )
-            )
-            trace.append(
-                SelectionTraceStep(
-                    index=len(trace),
-                    node_id=link.target,
-                    score=score,
-                    source_node_id=link.source,
-                    anchor_text=link.anchor_text,
-                    sentence=link.sentence,
-                )
-            )
-
-    runtime_s = time.perf_counter() - started_at
-    return _build_selection_result(
-        selector_name=selector_name,
-        graph=graph,
-        case=case,
-        budget=budget,
-        ordered_node_ids=ordered_node_ids,
-        root_candidates=root_candidates,
-        edge_contexts=edge_contexts,
-        trace=trace,
-        runtime_s=runtime_s,
-        stop_reason="neighbor_expansion",
-    )
-
-
-def _selection_from_walk(
-    *,
-    selector_name: str,
-    graph: LinkContextGraph,
-    case: EvaluationCase,
-    budget: SelectionBudget,
-    walk: WalkResult,
-    runtime_s: float,
-) -> SelectionResult:
-    trace = [
-        SelectionTraceStep(
-            index=step.index,
-            node_id=step.node_id,
-            score=step.score,
-            source_node_id=step.source_node_id,
-            anchor_text=step.anchor_text,
-            sentence=step.sentence,
-        )
-        for step in walk.steps
-    ]
-    edge_contexts = [
-        SelectedEdgeContext(
-            source=step.source_node_id or "",
-            target=step.node_id,
-            anchor_text=step.anchor_text or "",
-            sentence=step.sentence or "",
-            score=step.score,
-        )
-        for step in walk.steps[1:]
-    ]
-    root_candidates = [walk.steps[0].node_id] if walk.steps else []
-    return _build_selection_result(
-        selector_name=selector_name,
-        graph=graph,
-        case=case,
-        budget=budget,
-        ordered_node_ids=walk.visited_nodes,
-        root_candidates=root_candidates,
-        edge_contexts=edge_contexts,
-        trace=trace,
-        runtime_s=runtime_s,
-        stop_reason=walk.stop_reason.value,
-        selector_metadata=_selector_metadata_from_walk(walk),
-        selector_usage=_selector_usage_from_logs(walk.selector_logs),
-        selector_logs=walk.selector_logs,
+def _selected_edge_from_link(link: ScoredLink) -> SelectedEdgeContext:
+    return SelectedEdgeContext(
+        source=link.source,
+        target=link.target,
+        anchor_text=link.anchor_text,
+        sentence=link.sentence,
+        score=link.score,
     )
 
 
@@ -1111,27 +469,7 @@ def _run_end_to_end(
     )
 
 
-def _fit_nodes_in_order(
-    graph: LinkContextGraph,
-    ordered_node_ids: Sequence[str],
-    budget_token_limit: int,
-) -> tuple[list[str], int]:
-    selected: list[str] = []
-    seen: set[str] = set()
-    token_estimate = 0
-    for node_id in ordered_node_ids:
-        if node_id in seen:
-            continue
-        node_tokens = _node_token_cost(graph, node_id)
-        if token_estimate + node_tokens > budget_token_limit:
-            continue
-        selected.append(node_id)
-        seen.add(node_id)
-        token_estimate += node_tokens
-    return selected, token_estimate
-
-
-def _budget_token_limit(graph: LinkContextGraph, budget: SelectionBudget) -> int:
+def _budget_token_limit(graph: LinkContextGraph, budget: EvaluationBudget) -> int:
     total_tokens = _graph_token_estimate(graph)
     if total_tokens <= 0:
         return 0
@@ -1144,122 +482,12 @@ def _budget_token_limit(graph: LinkContextGraph, budget: SelectionBudget) -> int
 
 
 def _minimum_document_tokens(graph: LinkContextGraph) -> int:
-    token_counts = [
-        _node_token_cost(graph, node_id)
-        for node_id in graph.nodes
-        if _node_token_cost(graph, node_id) > 0
-    ]
+    token_counts = [_node_token_cost(graph, node_id) for node_id in graph.nodes if _node_token_cost(graph, node_id) > 0]
     return min(token_counts) if token_counts else 0
 
 
-def _random_walk(
-    graph: LinkContextGraph,
-    case: EvaluationCase,
-    start_nodes: Sequence[str],
-    budget: WalkBudget,
-    seed: int,
-) -> WalkResult:
-    rng = random.Random(f"{seed}:{case.case_id}")
-    return _walk_with_neighbor_selector(
-        graph,
-        case.query,
-        list(start_nodes),
-        budget,
-        lambda _current, eligible: rng.choice(eligible),
-    )
-
-
-def _walk_with_neighbor_selector(
-    graph: LinkContextGraph,
-    query: str,
-    start_nodes: list[str],
-    budget: WalkBudget,
-    selector: Callable[[str, list[str]], str],
-) -> WalkResult:
-    if budget.max_steps <= 0:
-        raise ValueError("Walk budget must allow at least one step.")
-    if not start_nodes:
-        raise ValueError("walk requires at least one start node.")
-
-    current = start_nodes[0]
-    visited_nodes = [current]
-    visited_set = {current}
-    steps = [WalkStep(index=0, node_id=current, score=_node_score(graph, query, current))]
-    stop_reason = StopReason.BUDGET_EXHAUSTED
-
-    while len(steps) < budget.max_steps:
-        eligible = [
-            neighbor
-            for neighbor in graph.neighbors(current)
-            if budget.allow_revisit or neighbor not in visited_set
-        ]
-        if not eligible:
-            stop_reason = StopReason.DEAD_END
-            break
-
-        next_node = selector(current, eligible)
-        link = graph.links_between(current, next_node)[0]
-        score = _node_score(graph, query, next_node)
-        if score < budget.min_score:
-            stop_reason = StopReason.SCORE_BELOW_THRESHOLD
-            break
-
-        current = next_node
-        visited_nodes.append(current)
-        visited_set.add(current)
-        steps.append(
-            WalkStep(
-                index=len(steps),
-                node_id=current,
-                score=score,
-                source_node_id=link.source,
-                anchor_text=link.anchor_text,
-                sentence=link.sentence,
-            )
-        )
-    else:
-        stop_reason = StopReason.BUDGET_EXHAUSTED
-
-    return WalkResult(
-        query=query,
-        steps=steps,
-        visited_nodes=visited_nodes,
-        stop_reason=stop_reason,
-        scorer_metadata=StepScorerMetadata(
-            scorer_kind="overlap",
-            backend="overlap",
-        ),
-        selector_logs=[],
-    )
-
-
-def _topology_link_score(
-    graph: LinkContextGraph,
-    query: str,
-    _current: str,
-    link: LinkContext,
-) -> float:
-    return (
-        normalized_token_overlap(query, _target_title(graph, link.target))
-        + len(graph.neighbors(link.target)) * 0.01
-    )
-
-
-def _target_title(graph: LinkContextGraph, node_id: str) -> str:
-    return str(graph.node_attr.get(node_id, {}).get("title", node_id))
-
-
-def _node_score(graph: LinkContextGraph, query: str, node_id: str) -> float:
-    attr = graph.node_attr.get(node_id, {})
-    text = f"{attr.get('title', '')} {attr.get('text', '')}".strip()
-    return normalized_token_overlap(query, text)
-
-
 def _graph_token_estimate(graph: LinkContextGraph) -> int:
-    total = 0
-    for node_id in graph.nodes:
-        total += _node_token_cost(graph, node_id)
-    return total
+    return sum(_node_token_cost(graph, node_id) for node_id in graph.nodes)
 
 
 def _node_token_cost(graph: LinkContextGraph, node_id: str) -> int:
@@ -1277,6 +505,12 @@ def _compression_ratio(selected_tokens: int, total_tokens: int) -> float:
 
 def _dedupe(items: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+def _bool_metric(value: bool | None) -> float | None:
+    if value is None:
+        return None
+    return 1.0 if value else 0.0
 
 
 def _average(values: Sequence[float]) -> float | None:
@@ -1325,51 +559,8 @@ def _path_hit(selected_nodes: Sequence[str], gold_path_nodes: Sequence[str] | No
     return set(gold_path_nodes).issubset(set(selected_nodes))
 
 
-def _selector_metadata_from_walk(walk: WalkResult) -> SelectorMetadata:
-    metadata: StepScorerMetadata = walk.scorer_metadata
-    return SelectorMetadata(
-        scorer_kind=metadata.scorer_kind,
-        backend=metadata.backend,
-        provider=metadata.provider,
-        model=metadata.model,
-        prompt_version=metadata.prompt_version,
-        candidate_prefilter_top_n=metadata.candidate_prefilter_top_n,
-        two_hop_prefilter_top_n=metadata.two_hop_prefilter_top_n,
-    )
-
-
-def _selector_usage_from_logs(logs: Sequence[WalkStepLog]) -> SelectorUsage:
-    if not logs:
-        return SelectorUsage()
-    return SelectorUsage(
-        runtime_s=sum(log.latency_s for log in logs),
-        llm_calls=sum(1 for log in logs if log.provider is not None),
-        prompt_tokens=sum(log.prompt_tokens or 0 for log in logs),
-        completion_tokens=sum(log.completion_tokens or 0 for log in logs),
-        total_tokens=sum(log.total_tokens or 0 for log in logs),
-        cache_hits=sum(1 for log in logs if log.cache_hit),
-        step_count=len(logs),
-        fallback_steps=sum(1 for log in logs if _is_selector_fallback(log.fallback_reason)),
-        parse_failure_steps=sum(1 for log in logs if _is_selector_parse_failure(log.fallback_reason)),
-    )
-
-
-def _is_selector_fallback(reason: str | None) -> bool:
-    return reason is not None and reason != "prefiltered_out"
-
-
-def _is_selector_parse_failure(reason: str | None) -> bool:
-    if reason is None:
-        return False
-    return (
-        reason == "empty_response"
-        or reason.startswith("json_parse_error")
-        or reason.startswith("schema_error")
-    )
-
-
 def _matches_budget(
-    budget: SelectionBudget,
+    budget: EvaluationBudget,
     *,
     budget_mode: Literal["tokens", "ratio"],
     budget_value: int | float,
@@ -1386,3 +577,19 @@ def _em(answer: str, expected_answer: str | None) -> float | None:
     if expected_answer is None:
         return None
     return 1.0 if normalize_answer(answer) == normalize_answer(expected_answer) else 0.0
+
+
+__all__ = [
+    "CaseEvaluation",
+    "EndToEndResult",
+    "EvaluationBudget",
+    "EvaluationCase",
+    "Evaluator",
+    "ExperimentSummary",
+    "SelectedCorpus",
+    "SelectedEdgeContext",
+    "SelectionMetrics",
+    "SelectionResult",
+    "SelectorBudgetSummary",
+    "summarize_evaluations",
+]

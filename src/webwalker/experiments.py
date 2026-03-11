@@ -4,9 +4,9 @@ import csv
 import json
 import logging
 import os
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Literal, Sequence
 
 from webwalker.answering import Answerer, LLMAnswerer, LLMAnswererConfig, SupportsAnswer
 from webwalker.datasets.common import DatasetAdapter
@@ -18,17 +18,34 @@ from webwalker.eval import (
     DEFAULT_BUDGET_RATIOS,
     DEFAULT_TOKEN_BUDGETS,
     CaseEvaluation,
+    EvaluationBudget,
     Evaluator,
     ExperimentSummary,
-    SelectionBudget,
+    IncrementalExperimentAggregator,
     SelectorBudgetSummary,
-    available_selector_names,
-    select_selectors,
     summarize_evaluations,
 )
 from webwalker.logging import create_progress, should_render_progress
+from webwalker.selector import available_selector_names, select_selectors
 
 logger = logging.getLogger(__name__)
+
+
+ExperimentPhase = Literal["loading", "evaluating", "exporting", "finalizing", "completed"]
+
+
+@dataclass(slots=True)
+class ExperimentProgressUpdate:
+    dataset_name: str
+    phase: ExperimentPhase
+    total_cases: int | None = None
+    completed_cases: int = 0
+    current_case_id: str | None = None
+    current_query: str | None = None
+    summary: ExperimentSummary | None = None
+
+
+ExperimentProgressObserver = Callable[[ExperimentProgressUpdate], None]
 
 
 def run_dataset_experiment(
@@ -41,14 +58,14 @@ def run_dataset_experiment(
     selector_names: Sequence[str] | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
-    seed: int = 0,
-    max_steps: int = 3,
-    top_k: int = 2,
     selector_provider: str = "openai",
     selector_model: str | None = None,
     selector_api_key_env: str | None = None,
     selector_base_url: str | None = None,
     selector_cache_path: str | Path | None = None,
+    sentence_transformer_model: str | None = None,
+    sentence_transformer_cache_path: str | Path | None = None,
+    sentence_transformer_device: str | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -56,27 +73,35 @@ def run_dataset_experiment(
     answer_base_url: str | None = None,
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
+    progress_observer: ExperimentProgressObserver | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     dataset_label = getattr(adapter, "dataset_name", "dataset")
+    _notify_progress(
+        progress_observer,
+        dataset_name=dataset_label,
+        phase="loading",
+        total_cases=None,
+        completed_cases=0,
+    )
     logger.info("Loading %s graph from %s", dataset_label, graph_source)
     graph = adapter.load_graph(graph_source)
     logger.info("Loading %s questions from %s", dataset_label, questions_path)
     cases = adapter.load_cases(questions_path, limit=limit)
     selectors = select_selectors(
         selector_names,
-        seed=seed,
         include_diagnostics=selector_names is not None,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
         selector_base_url=selector_base_url,
         selector_cache_path=str(selector_cache_path) if selector_cache_path is not None else None,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_cache_path=sentence_transformer_cache_path,
+        sentence_transformer_device=sentence_transformer_device,
     )
     budgets = _resolve_budgets(
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
-        max_steps=max_steps,
-        top_k=top_k,
     )
     evaluators = _build_evaluators(
         selectors=selectors,
@@ -99,29 +124,76 @@ def run_dataset_experiment(
         export_graphrag_inputs,
     )
 
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    results_path, selector_logs_path, summary_path = _initialize_result_files(output_path)
+    aggregator = IncrementalExperimentAggregator(
+        dataset_name=cases[0].dataset_name if cases else dataset_label,
+    )
+
+    def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
+        if export_graphrag_inputs:
+            _notify_progress(
+                progress_observer,
+                dataset_name=dataset_label,
+                phase="exporting",
+                total_cases=total_cases,
+                completed_cases=completed_cases - 1,
+                current_case_id=evaluation.case.case_id,
+                current_query=evaluation.case.query,
+                summary=aggregator.to_summary() if completed_cases > 1 else None,
+            )
+            _export_case_graphrag_inputs(
+                graph=graph,
+                evaluation=evaluation,
+                output_dir=output_path,
+            )
+        aggregator.add_case_evaluation(evaluation)
+        _append_case_result_files(
+            results_path=results_path,
+            selector_logs_path=selector_logs_path,
+            evaluation=evaluation,
+        )
+        summary = aggregator.to_summary()
+        _write_summary_file(summary_path=summary_path, summary=summary)
+        _notify_progress(
+            progress_observer,
+            dataset_name=dataset_label,
+            phase="evaluating",
+            total_cases=total_cases,
+            completed_cases=completed_cases,
+            current_case_id=evaluation.case.case_id,
+            current_query=evaluation.case.query,
+            summary=summary,
+        )
+
     evaluations = _evaluate_cases(
         graph=graph,
         cases=cases,
         evaluators=evaluators,
         description=f"evaluate {dataset_label} cases",
+        dataset_name=dataset_label,
+        progress_observer=progress_observer,
+        on_case_complete=_on_case_complete,
     )
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    if export_graphrag_inputs:
-        _export_graphrag_inputs(
-            graph=graph,
-            evaluations=evaluations,
-            output_dir=output_path,
-            description=f"export {dataset_label} graphrag inputs",
-        )
-
-    summary = summarize_evaluations(
-        evaluations,
-        dataset_name=cases[0].dataset_name if cases else dataset_label,
+    _notify_progress(
+        progress_observer,
+        dataset_name=dataset_label,
+        phase="finalizing",
+        total_cases=len(cases),
+        completed_cases=len(evaluations),
+        summary=aggregator.to_summary(),
     )
-    _write_result_files(chunk_dir=output_path, evaluations=evaluations, summary=summary)
+    summary = aggregator.to_summary()
+    _write_summary_file(summary_path=summary_path, summary=summary)
+    _notify_progress(
+        progress_observer,
+        dataset_name=dataset_label,
+        phase="completed",
+        total_cases=len(cases),
+        completed_cases=len(evaluations),
+        summary=summary,
+    )
     logger.info("Completed %s experiment; results written to %s", dataset_label, output_path)
 
     return evaluations, summary
@@ -136,14 +208,14 @@ def run_2wiki_experiment(
     selector_names: Sequence[str] | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
-    seed: int = 0,
-    max_steps: int = 3,
-    top_k: int = 2,
     selector_provider: str = "openai",
     selector_model: str | None = None,
     selector_api_key_env: str | None = None,
     selector_base_url: str | None = None,
     selector_cache_path: str | Path | None = None,
+    sentence_transformer_model: str | None = None,
+    sentence_transformer_cache_path: str | Path | None = None,
+    sentence_transformer_device: str | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -151,6 +223,7 @@ def run_2wiki_experiment(
     answer_base_url: str | None = None,
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
+    progress_observer: ExperimentProgressObserver | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
         adapter=TwoWikiAdapter(),
@@ -161,14 +234,14 @@ def run_2wiki_experiment(
         selector_names=selector_names,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
-        seed=seed,
-        max_steps=max_steps,
-        top_k=top_k,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
         selector_base_url=selector_base_url,
         selector_cache_path=selector_cache_path,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_cache_path=sentence_transformer_cache_path,
+        sentence_transformer_device=sentence_transformer_device,
         with_e2e=with_e2e,
         answerer_mode=answerer_mode,
         answer_model=answer_model,
@@ -176,6 +249,7 @@ def run_2wiki_experiment(
         answer_base_url=answer_base_url,
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
+        progress_observer=progress_observer,
     )
 
 
@@ -188,14 +262,14 @@ def run_iirc_experiment(
     selector_names: Sequence[str] | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
-    seed: int = 0,
-    max_steps: int = 3,
-    top_k: int = 2,
     selector_provider: str = "openai",
     selector_model: str | None = None,
     selector_api_key_env: str | None = None,
     selector_base_url: str | None = None,
     selector_cache_path: str | Path | None = None,
+    sentence_transformer_model: str | None = None,
+    sentence_transformer_cache_path: str | Path | None = None,
+    sentence_transformer_device: str | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -203,6 +277,7 @@ def run_iirc_experiment(
     answer_base_url: str | None = None,
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
+    progress_observer: ExperimentProgressObserver | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
         adapter=IIRCAdapter(),
@@ -213,14 +288,14 @@ def run_iirc_experiment(
         selector_names=selector_names,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
-        seed=seed,
-        max_steps=max_steps,
-        top_k=top_k,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
         selector_base_url=selector_base_url,
         selector_cache_path=selector_cache_path,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_cache_path=sentence_transformer_cache_path,
+        sentence_transformer_device=sentence_transformer_device,
         with_e2e=with_e2e,
         answerer_mode=answerer_mode,
         answer_model=answer_model,
@@ -228,6 +303,7 @@ def run_iirc_experiment(
         answer_base_url=answer_base_url,
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
+        progress_observer=progress_observer,
     )
 
 
@@ -241,14 +317,14 @@ def run_docs_experiment(
     selector_names: Sequence[str] | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
-    seed: int = 0,
-    max_steps: int = 3,
-    top_k: int = 2,
     selector_provider: str = "openai",
     selector_model: str | None = None,
     selector_api_key_env: str | None = None,
     selector_base_url: str | None = None,
     selector_cache_path: str | Path | None = None,
+    sentence_transformer_model: str | None = None,
+    sentence_transformer_cache_path: str | Path | None = None,
+    sentence_transformer_device: str | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -256,6 +332,7 @@ def run_docs_experiment(
     answer_base_url: str | None = None,
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
+    progress_observer: ExperimentProgressObserver | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
         adapter=DocumentationAdapter(dataset_name=dataset_name),
@@ -266,14 +343,14 @@ def run_docs_experiment(
         selector_names=selector_names,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
-        seed=seed,
-        max_steps=max_steps,
-        top_k=top_k,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
         selector_base_url=selector_base_url,
         selector_cache_path=selector_cache_path,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_cache_path=sentence_transformer_cache_path,
+        sentence_transformer_device=sentence_transformer_device,
         with_e2e=with_e2e,
         answerer_mode=answerer_mode,
         answer_model=answer_model,
@@ -281,6 +358,7 @@ def run_docs_experiment(
         answer_base_url=answer_base_url,
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
+        progress_observer=progress_observer,
     )
 
 
@@ -299,14 +377,14 @@ def run_2wiki_store_experiment(
     selector_names: Sequence[str] | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
-    seed: int = 0,
-    max_steps: int = 3,
-    top_k: int = 2,
     selector_provider: str = "openai",
     selector_model: str | None = None,
     selector_api_key_env: str | None = None,
     selector_base_url: str | None = None,
     selector_cache_path: str | Path | None = None,
+    sentence_transformer_model: str | None = None,
+    sentence_transformer_cache_path: str | Path | None = None,
+    sentence_transformer_device: str | None = None,
     with_e2e: bool = False,
     answerer_mode: str = "heuristic",
     answer_model: str = "gpt-4.1-mini",
@@ -314,8 +392,16 @@ def run_2wiki_store_experiment(
     answer_base_url: str | None = None,
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
+    progress_observer: ExperimentProgressObserver | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
     store = ShardedLinkContextStore(store_uri, cache_dir=cache_dir)
+    _notify_progress(
+        progress_observer,
+        dataset_name="2wikimultihop",
+        phase="loading",
+        total_cases=None,
+        completed_cases=0,
+    )
     logger.info("Loading %s split questions from sharded store", split)
     cases = store.load_questions(split)
     selected_cases, chunk_meta = _slice_cases(
@@ -329,19 +415,19 @@ def run_2wiki_store_experiment(
     )
     selectors = select_selectors(
         selector_names,
-        seed=seed,
         include_diagnostics=selector_names is not None,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
         selector_base_url=selector_base_url,
         selector_cache_path=str(selector_cache_path) if selector_cache_path is not None else None,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_cache_path=sentence_transformer_cache_path,
+        sentence_transformer_device=sentence_transformer_device,
     )
     budgets = _resolve_budgets(
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
-        max_steps=max_steps,
-        top_k=top_k,
     )
     evaluators = _build_evaluators(
         selectors=selectors,
@@ -364,26 +450,68 @@ def run_2wiki_store_experiment(
         export_graphrag_inputs,
     )
 
+    chunk_dir = _chunk_output_dir(output_root=Path(output_root), exp_name=exp_name, chunk_meta=chunk_meta)
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    results_path, selector_logs_path, summary_path = _initialize_result_files(chunk_dir)
+    aggregator = IncrementalExperimentAggregator(
+        dataset_name=selected_cases[0].dataset_name if selected_cases else "2wikimultihop",
+    )
+
+    def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
+        if export_graphrag_inputs:
+            _notify_progress(
+                progress_observer,
+                dataset_name="2wikimultihop",
+                phase="exporting",
+                total_cases=total_cases,
+                completed_cases=completed_cases - 1,
+                current_case_id=evaluation.case.case_id,
+                current_query=evaluation.case.query,
+                summary=aggregator.to_summary() if completed_cases > 1 else None,
+            )
+            _export_case_graphrag_inputs(
+                graph=store,
+                evaluation=evaluation,
+                output_dir=chunk_dir,
+            )
+        aggregator.add_case_evaluation(evaluation)
+        _append_case_result_files(
+            results_path=results_path,
+            selector_logs_path=selector_logs_path,
+            evaluation=evaluation,
+        )
+        summary = aggregator.to_summary()
+        _write_summary_file(summary_path=summary_path, summary=summary)
+        _notify_progress(
+            progress_observer,
+            dataset_name="2wikimultihop",
+            phase="evaluating",
+            total_cases=total_cases,
+            completed_cases=completed_cases,
+            current_case_id=evaluation.case.case_id,
+            current_query=evaluation.case.query,
+            summary=summary,
+        )
+
     evaluations = _evaluate_cases(
         graph=store,
         cases=selected_cases,
         evaluators=evaluators,
         description="evaluate store-backed 2wiki cases",
+        dataset_name="2wikimultihop",
+        progress_observer=progress_observer,
+        on_case_complete=_on_case_complete,
     )
-
-    chunk_dir = _chunk_output_dir(output_root=Path(output_root), exp_name=exp_name, chunk_meta=chunk_meta)
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-
-    if export_graphrag_inputs:
-        _export_graphrag_inputs(
-            graph=store,
-            evaluations=evaluations,
-            output_dir=chunk_dir,
-            description="export store graphrag inputs",
-        )
-
-    summary = summarize_evaluations(evaluations, dataset_name=selected_cases[0].dataset_name if selected_cases else "2wikimultihop")
-    _write_result_files(chunk_dir=chunk_dir, evaluations=evaluations, summary=summary)
+    _notify_progress(
+        progress_observer,
+        dataset_name="2wikimultihop",
+        phase="finalizing",
+        total_cases=len(selected_cases),
+        completed_cases=len(evaluations),
+        summary=aggregator.to_summary(),
+    )
+    summary = aggregator.to_summary()
+    _write_summary_file(summary_path=summary_path, summary=summary)
     (chunk_dir / "chunk.json").write_text(
         json.dumps(
             {
@@ -409,6 +537,14 @@ def run_2wiki_store_experiment(
             indent=2,
         ),
         encoding="utf-8",
+    )
+    _notify_progress(
+        progress_observer,
+        dataset_name="2wikimultihop",
+        phase="completed",
+        total_cases=len(selected_cases),
+        completed_cases=len(evaluations),
+        summary=summary,
     )
     logger.info("Completed store-backed 2Wiki chunk; results written to %s", chunk_dir)
     return evaluations, summary, chunk_dir
@@ -537,7 +673,7 @@ def store_token_budget_choices_help() -> str:
 def _build_evaluators(
     *,
     selectors,
-    budgets: Sequence[SelectionBudget],
+    budgets: Sequence[EvaluationBudget],
     with_e2e: bool,
     answerer_mode: str,
     answer_model: str,
@@ -568,16 +704,12 @@ def _resolve_budgets(
     *,
     token_budgets: Sequence[int] | None,
     budget_ratios: Sequence[float] | None,
-    max_steps: int,
-    top_k: int,
-) -> list[SelectionBudget]:
+) -> list[EvaluationBudget]:
     if token_budgets is not None and budget_ratios is not None:
         raise ValueError("Specify either token_budgets or budget_ratios, not both.")
     if token_budgets is not None:
         return [
-            SelectionBudget(
-                max_steps=max_steps,
-                top_k=top_k,
+            EvaluationBudget(
                 token_budget_tokens=budget,
                 token_budget_ratio=None,
             )
@@ -585,18 +717,14 @@ def _resolve_budgets(
         ]
     if budget_ratios is not None:
         return [
-            SelectionBudget(
-                max_steps=max_steps,
-                top_k=top_k,
+            EvaluationBudget(
                 token_budget_tokens=None,
                 token_budget_ratio=ratio,
             )
             for ratio in budget_ratios
         ]
     return [
-        SelectionBudget(
-            max_steps=max_steps,
-            top_k=top_k,
+        EvaluationBudget(
             token_budget_tokens=budget,
             token_budget_ratio=None,
         )
@@ -637,17 +765,41 @@ def _evaluate_cases(
     cases: Sequence[Any],
     evaluators: Sequence[Evaluator],
     description: str,
+    dataset_name: str,
+    progress_observer: ExperimentProgressObserver | None = None,
+    on_case_complete: Callable[[CaseEvaluation, int, int], None] | None = None,
 ) -> list[CaseEvaluation]:
     evaluations: list[CaseEvaluation] = []
     total = len(cases)
     if total == 0:
         return evaluations
     logger.info("%s (%s cases)", description.capitalize(), total)
+    _notify_progress(
+        progress_observer,
+        dataset_name=dataset_name,
+        phase="evaluating",
+        total_cases=total,
+        completed_cases=0,
+    )
+    completed_cases = 0
     for case in _iterate_with_optional_progress(cases, description=description):
+        _notify_progress(
+            progress_observer,
+            dataset_name=dataset_name,
+            phase="evaluating",
+            total_cases=total,
+            completed_cases=completed_cases,
+            current_case_id=getattr(case, "case_id", None),
+            current_query=getattr(case, "query", None),
+        )
         selections = []
         for evaluator in evaluators:
             selections.extend(evaluator.evaluate_case(graph, case).selections)
-        evaluations.append(CaseEvaluation(case=case, selections=selections))
+        evaluation = CaseEvaluation(case=case, selections=selections)
+        evaluations.append(evaluation)
+        completed_cases += 1
+        if on_case_complete is not None:
+            on_case_complete(evaluation, completed_cases, total)
     return evaluations
 
 
@@ -660,19 +812,28 @@ def _export_graphrag_inputs(
 ) -> None:
     total = sum(len(evaluation.selections) for evaluation in evaluations)
     logger.info("%s (%s exports)", description.capitalize(), total)
-    selection_iter = (
-        (evaluation.case.case_id, selection)
-        for evaluation in evaluations
-        for selection in evaluation.selections
-    )
-    for case_id, selection in _iterate_with_optional_progress(
-        selection_iter,
-        total=total,
+    for evaluation in _iterate_with_optional_progress(
+        evaluations,
+        total=len(evaluations),
         description=description,
     ):
+        _export_case_graphrag_inputs(
+            graph=graph,
+            evaluation=evaluation,
+            output_dir=output_dir,
+        )
+
+
+def _export_case_graphrag_inputs(
+    *,
+    graph,
+    evaluation: CaseEvaluation,
+    output_dir: Path,
+) -> None:
+    for selection in evaluation.selections:
         selection.graphrag_input_path = _write_graphrag_input(
             graph=graph,
-            case_id=case_id,
+            case_id=evaluation.case.case_id,
             selection=selection,
             output_dir=output_dir,
         )
@@ -742,25 +903,64 @@ def _budget_label_slug(value: str) -> str:
     return value.replace(".", "_")
 
 
-def _write_result_files(
+def _notify_progress(
+    observer: ExperimentProgressObserver | None,
     *,
-    chunk_dir: Path,
-    evaluations: list[CaseEvaluation],
-    summary: ExperimentSummary,
+    dataset_name: str,
+    phase: ExperimentPhase,
+    total_cases: int | None,
+    completed_cases: int,
+    current_case_id: str | None = None,
+    current_query: str | None = None,
+    summary: ExperimentSummary | None = None,
 ) -> None:
+    if observer is None:
+        return
+    observer(
+        ExperimentProgressUpdate(
+            dataset_name=dataset_name,
+            phase=phase,
+            total_cases=total_cases,
+            completed_cases=completed_cases,
+            current_case_id=current_case_id,
+            current_query=current_query,
+            summary=summary,
+        )
+    )
+
+
+def _initialize_result_files(
+    chunk_dir: Path,
+) -> tuple[Path, Path, Path]:
     results_path = chunk_dir / "results.jsonl"
     selector_logs_path = chunk_dir / "selector_logs.jsonl"
     summary_path = chunk_dir / "summary.json"
-    with results_path.open("w", encoding="utf-8") as handle:
-        for evaluation in evaluations:
-            for selection in evaluation.selections:
-                record = _selection_record(evaluation, selection)
+    results_path.write_text("", encoding="utf-8")
+    selector_logs_path.write_text("", encoding="utf-8")
+    return results_path, selector_logs_path, summary_path
+
+
+def _append_case_result_files(
+    *,
+    results_path: Path,
+    selector_logs_path: Path,
+    evaluation: CaseEvaluation,
+) -> None:
+    with results_path.open("a", encoding="utf-8") as handle:
+        for selection in evaluation.selections:
+            record = _selection_record(evaluation, selection)
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with selector_logs_path.open("a", encoding="utf-8") as handle:
+        for selection in evaluation.selections:
+            for record in _selector_log_records(evaluation, selection):
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    with selector_logs_path.open("w", encoding="utf-8") as handle:
-        for evaluation in evaluations:
-            for selection in evaluation.selections:
-                for record in _selector_log_records(evaluation, selection):
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _write_summary_file(
+    *,
+    summary_path: Path,
+    summary: ExperimentSummary,
+) -> None:
     summary_path.write_text(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
         encoding="utf-8",
