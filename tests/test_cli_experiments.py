@@ -344,16 +344,16 @@ def test_print_summary_renders_main_table_only_for_non_llm_rows():
 
     output = console.export_text()
     assert "2wikimultihop summary" in output
-    assert "support_recall" in output
-    assert "support_precision_nonempty" in output
-    assert "support_f1_nonempty" in output
-    assert "support_f1_all" in output
-    assert "utilization" in output
-    assert "empty_rate" in output
-    assert "answer_em" in output
+    assert "recall" in output
+    assert "prec_nonempty" in output
+    assert "f1_nonempty" in output
+    assert "f1_all" in output
+    assert "util" in output
+    assert "empty" in output
+    assert "ans_em" in output
     assert "selector legend" not in output
     assert "selector health" not in output
-    assert "selector_tokens" not in output
+    assert "2wikimultihop selector health" not in output
     assert "columns:" not in output
 
 
@@ -381,13 +381,13 @@ def test_print_summary_renders_selector_health_table_for_llm_rows():
     output = console.export_text()
     assert "2wikimultihop summary" in output
     assert "2wikimultihop selector health" in output
-    assert "selector_tokens" in output
-    assert "selector_calls" in output
-    assert "selector_fallback" in output
-    assert "selector_parse_fail" in output
-    assert f"{CANONICAL_LLM}@anthropic" in output
-    assert "claude-haik" in output
-    assert "20251001" in output
+    assert "sel_tokens" in output
+    assert "sel_calls" in output
+    assert "fallback" in output
+    assert "parse_fail" in output
+    assert "top_1_seed__lexical_overlap__hop_2__single_path_walk__" in output
+    assert "@anthropic" in output
+    assert "claude-haiku-4-5-20251001" in output
     assert "columns:" not in output
 
 

@@ -16,12 +16,20 @@ from webwalker.experiments import (
     ExperimentProgressObserver,
     ExperimentProgressUpdate,
     budget_ratio_choices_help,
+    merge_hotpotqa_results,
+    merge_iirc_results,
+    merge_musique_results,
     merge_2wiki_results,
     parse_budget_ratios,
     parse_token_budgets,
     parse_selector_names,
     run_docs_experiment,
+    run_hotpotqa_experiment,
     run_iirc_experiment,
+    run_iirc_store_experiment,
+    run_musique_experiment,
+    run_musique_store_experiment,
+    run_hotpotqa_store_experiment,
     run_2wiki_experiment,
     run_2wiki_store_experiment,
     selector_choices_help,
@@ -130,6 +138,23 @@ def _run_with_optional_dashboard(
             return runner(_observer)
 
 
+def _print_direct_outputs(*, console: Console, output: Path, export_graphrag_inputs: bool) -> None:
+    console.print(f"results.jsonl -> {output / 'results.jsonl'}")
+    console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
+    console.print(f"summary.json -> {output / 'summary.json'}")
+    if export_graphrag_inputs:
+        console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
+
+
+def _print_store_outputs(*, console: Console, chunk_dir: Path, export_graphrag_inputs: bool) -> None:
+    console.print(f"chunk_dir -> {chunk_dir}")
+    console.print(f"results.jsonl -> {chunk_dir / 'results.jsonl'}")
+    console.print(f"selector_logs.jsonl -> {chunk_dir / 'selector_logs.jsonl'}")
+    console.print(f"summary.json -> {chunk_dir / 'summary.json'}")
+    if export_graphrag_inputs:
+        console.print(f"graphrag_inputs -> {chunk_dir / 'graphrag_inputs'}")
+
+
 @experiments_app.command("run-2wiki")
 def run_2wiki(
     questions: Path = typer.Option(..., "--questions", exists=True, dir_okay=False, help="Path to 2Wiki questions JSON"),
@@ -170,7 +195,7 @@ def run_2wiki(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
-) -> None:
+    ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
         token_budgets=token_budgets,
@@ -205,13 +230,9 @@ def run_2wiki(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
-    )
+    ) 
     _print_summary(console, summary)
-    console.print(f"results.jsonl -> {output / 'results.jsonl'}")
-    console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
-    console.print(f"summary.json -> {output / 'summary.json'}")
-    if export_graphrag_inputs:
-        console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
+    _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
 
 
 @experiments_app.command("run-iirc")
@@ -254,7 +275,7 @@ def run_iirc(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
-) -> None:
+    ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
         token_budgets=token_budgets,
@@ -289,13 +310,176 @@ def run_iirc(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
+    ) 
+    _print_summary(console, summary)
+    _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
+
+
+@experiments_app.command("run-musique")
+def run_musique(
+    questions: Path = typer.Option(..., "--questions", exists=True, dir_okay=False, help="Path to MuSiQue questions JSON/JSONL"),
+    graph_records: Path = typer.Option(..., "--graph-records", exists=True, dir_okay=False, help="Path to normalized MuSiQue graph JSON/JSONL"),
+    output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    selectors: str | None = typer.Option(
+        None,
+        "--selectors",
+        help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
+    ),
+    token_budgets: str | None = typer.Option(
+        None,
+        "--token-budgets",
+        help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}",
+    ),
+    budget_ratios: str | None = typer.Option(
+        None,
+        "--budget-ratios",
+        help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
+    ),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
+    export_graphrag_inputs: bool = typer.Option(
+        True,
+        "--export-graphrag-inputs/--no-export-graphrag-inputs",
+        help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
+    ),
+) -> None:
+    console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+    )
+    _, summary = _run_with_optional_dashboard(
+        console=console,
+        command_label="run-musique",
+        split=None,
+        runner=lambda progress_observer: run_musique_experiment(
+            questions_path=questions,
+            graph_records_path=graph_records,
+            output_dir=output,
+            limit=limit,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
     )
     _print_summary(console, summary)
-    console.print(f"results.jsonl -> {output / 'results.jsonl'}")
-    console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
-    console.print(f"summary.json -> {output / 'summary.json'}")
-    if export_graphrag_inputs:
-        console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
+    _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
+
+
+@experiments_app.command("run-hotpotqa")
+def run_hotpotqa(
+    questions: Path = typer.Option(..., "--questions", exists=True, dir_okay=False, help="Path to HotpotQA questions JSON/JSONL"),
+    output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
+    variant: str = typer.Option(..., "--variant", help="HotpotQA variant: distractor or fullwiki"),
+    graph_records: Path | None = typer.Option(None, "--graph-records", exists=True, dir_okay=False, help="Path to normalized HotpotQA graph JSON/JSONL for fullwiki runs"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    selectors: str | None = typer.Option(
+        None,
+        "--selectors",
+        help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
+    ),
+    token_budgets: str | None = typer.Option(
+        None,
+        "--token-budgets",
+        help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}",
+    ),
+    budget_ratios: str | None = typer.Option(
+        None,
+        "--budget-ratios",
+        help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
+    ),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
+    export_graphrag_inputs: bool = typer.Option(
+        True,
+        "--export-graphrag-inputs/--no-export-graphrag-inputs",
+        help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
+    ),
+) -> None:
+    if variant not in {"distractor", "fullwiki"}:
+        raise typer.BadParameter("--variant must be one of: distractor, fullwiki")
+    if variant == "fullwiki" and graph_records is None:
+        raise typer.BadParameter("--graph-records is required when --variant fullwiki")
+
+    console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+    )
+    _, summary = _run_with_optional_dashboard(
+        console=console,
+        command_label="run-hotpotqa",
+        split=None,
+        runner=lambda progress_observer: run_hotpotqa_experiment(
+            questions_path=questions,
+            output_dir=output,
+            variant=variant,
+            graph_records_path=graph_records,
+            limit=limit,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
+    )
+    _print_summary(console, summary)
+    _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
 
 
 @experiments_app.command("run-docs")
@@ -375,13 +559,9 @@ def run_docs(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
-    )
+    ) 
     _print_summary(console, summary)
-    console.print(f"results.jsonl -> {output / 'results.jsonl'}")
-    console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
-    console.print(f"summary.json -> {output / 'summary.json'}")
-    if export_graphrag_inputs:
-        console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
+    _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
 
 
 @experiments_app.command("run-2wiki-store")
@@ -471,14 +651,243 @@ def run_2wiki_store(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
+    ) 
+    _print_summary(console, summary)
+    _print_store_outputs(console=console, chunk_dir=chunk_dir, export_graphrag_inputs=export_graphrag_inputs)
+
+
+def _run_store_command(
+    *,
+    console: Console,
+    command_label: str,
+    split: str,
+    runner,
+    export_graphrag_inputs: bool,
+) -> None:
+    _evaluations, summary, chunk_dir = _run_with_optional_dashboard(
+        console=console,
+        command_label=command_label,
+        split=split,
+        runner=runner,
     )
     _print_summary(console, summary)
-    console.print(f"chunk_dir -> {chunk_dir}")
-    console.print(f"results.jsonl -> {chunk_dir / 'results.jsonl'}")
-    console.print(f"selector_logs.jsonl -> {chunk_dir / 'selector_logs.jsonl'}")
-    console.print(f"summary.json -> {chunk_dir / 'summary.json'}")
-    if export_graphrag_inputs:
-        console.print(f"graphrag_inputs -> {chunk_dir / 'graphrag_inputs'}")
+    _print_store_outputs(console=console, chunk_dir=chunk_dir, export_graphrag_inputs=export_graphrag_inputs)
+
+
+@experiments_app.command("run-iirc-store")
+def run_iirc_store(
+    store: str = typer.Option(..., "--store", help="Path or s3:// URI to a prepared IIRC store"),
+    exp_name: str = typer.Option(..., "--exp-name", help="Experiment name under the output root"),
+    output_root: Path = typer.Option(Path("runs"), "--output-root", file_okay=False, help="Root directory for chunk outputs"),
+    split: str = typer.Option("dev", "--split", help="Question split inside the prepared store"),
+    cache_dir: Path | None = typer.Option(None, "--cache-dir", file_okay=False, help="Local cache directory for remote stores"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Optional total number of questions to consider before slicing"),
+    case_start: int = typer.Option(0, "--case-start", min=0, help="Start offset after split selection"),
+    case_limit: int | None = typer.Option(None, "--case-limit", min=1, help="Maximum number of questions for this run"),
+    chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
+    chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
+    selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
+    token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
+    budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
+    export_graphrag_inputs: bool = typer.Option(True, "--export-graphrag-inputs/--no-export-graphrag-inputs", help="Write GraphRAG-compatible CSV slices for each case/selector/budget"),
+) -> None:
+    console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
+    _run_store_command(
+        console=console,
+        command_label="run-iirc-store",
+        split=split,
+        export_graphrag_inputs=export_graphrag_inputs,
+        runner=lambda progress_observer: run_iirc_store_experiment(
+            store_uri=store,
+            output_root=output_root,
+            exp_name=exp_name,
+            split=split,
+            cache_dir=cache_dir,
+            limit=limit,
+            case_start=case_start,
+            case_limit=case_limit,
+            chunk_size=chunk_size,
+            chunk_index=chunk_index,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
+    )
+
+
+@experiments_app.command("run-musique-store")
+def run_musique_store(
+    store: str = typer.Option(..., "--store", help="Path or s3:// URI to a prepared MuSiQue store"),
+    exp_name: str = typer.Option(..., "--exp-name", help="Experiment name under the output root"),
+    output_root: Path = typer.Option(Path("runs"), "--output-root", file_okay=False, help="Root directory for chunk outputs"),
+    split: str = typer.Option("dev", "--split", help="Question split inside the prepared store"),
+    cache_dir: Path | None = typer.Option(None, "--cache-dir", file_okay=False, help="Local cache directory for remote stores"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Optional total number of questions to consider before slicing"),
+    case_start: int = typer.Option(0, "--case-start", min=0, help="Start offset after split selection"),
+    case_limit: int | None = typer.Option(None, "--case-limit", min=1, help="Maximum number of questions for this run"),
+    chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
+    chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
+    selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
+    token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
+    budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
+    export_graphrag_inputs: bool = typer.Option(True, "--export-graphrag-inputs/--no-export-graphrag-inputs", help="Write GraphRAG-compatible CSV slices for each case/selector/budget"),
+) -> None:
+    console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
+    _run_store_command(
+        console=console,
+        command_label="run-musique-store",
+        split=split,
+        export_graphrag_inputs=export_graphrag_inputs,
+        runner=lambda progress_observer: run_musique_store_experiment(
+            store_uri=store,
+            output_root=output_root,
+            exp_name=exp_name,
+            split=split,
+            cache_dir=cache_dir,
+            limit=limit,
+            case_start=case_start,
+            case_limit=case_limit,
+            chunk_size=chunk_size,
+            chunk_index=chunk_index,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
+    )
+
+
+@experiments_app.command("run-hotpotqa-store")
+def run_hotpotqa_store(
+    store: str = typer.Option(..., "--store", help="Path or s3:// URI to a prepared HotpotQA fullwiki store"),
+    exp_name: str = typer.Option(..., "--exp-name", help="Experiment name under the output root"),
+    output_root: Path = typer.Option(Path("runs"), "--output-root", file_okay=False, help="Root directory for chunk outputs"),
+    split: str = typer.Option("dev", "--split", help="Question split inside the prepared store"),
+    cache_dir: Path | None = typer.Option(None, "--cache-dir", file_okay=False, help="Local cache directory for remote stores"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Optional total number of questions to consider before slicing"),
+    case_start: int = typer.Option(0, "--case-start", min=0, help="Start offset after split selection"),
+    case_limit: int | None = typer.Option(None, "--case-limit", min=1, help="Maximum number of questions for this run"),
+    chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
+    chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
+    selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
+    token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
+    budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
+    selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
+    selector_model: str | None = typer.Option(None, "--selector-model", help="Selector LLM model name"),
+    selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
+    selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
+    selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
+    sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
+    sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
+    with_e2e: bool = typer.Option(False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"),
+    answerer: str = typer.Option("heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"),
+    answer_model: str = typer.Option("gpt-4.1-mini", "--answer-model", help="Fixed reader model name"),
+    answer_api_key_env: str = typer.Option("OPENAI_API_KEY", "--answer-api-key-env", help="Env var containing the reader API key"),
+    answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
+    answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
+    export_graphrag_inputs: bool = typer.Option(True, "--export-graphrag-inputs/--no-export-graphrag-inputs", help="Write GraphRAG-compatible CSV slices for each case/selector/budget"),
+) -> None:
+    console = Console()
+    resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
+    _run_store_command(
+        console=console,
+        command_label="run-hotpotqa-store",
+        split=split,
+        export_graphrag_inputs=export_graphrag_inputs,
+        runner=lambda progress_observer: run_hotpotqa_store_experiment(
+            store_uri=store,
+            output_root=output_root,
+            exp_name=exp_name,
+            split=split,
+            cache_dir=cache_dir,
+            limit=limit,
+            case_start=case_start,
+            case_limit=case_limit,
+            chunk_size=chunk_size,
+            chunk_index=chunk_index,
+            selector_names=parse_selector_names(selectors),
+            token_budgets=resolved_token_budgets,
+            budget_ratios=resolved_budget_ratios,
+            selector_provider=selector_provider,
+            selector_model=selector_model,
+            selector_api_key_env=selector_api_key_env,
+            selector_base_url=selector_base_url,
+            selector_cache_path=selector_cache_path,
+            sentence_transformer_model=sentence_transformer_model,
+            sentence_transformer_cache_path=sentence_transformer_cache_path,
+            sentence_transformer_device=sentence_transformer_device,
+            with_e2e=with_e2e,
+            answerer_mode=answerer,
+            answer_model=answer_model,
+            answer_api_key_env=answer_api_key_env,
+            answer_base_url=answer_base_url,
+            answer_cache_path=answer_cache_path,
+            export_graphrag_inputs=export_graphrag_inputs,
+            progress_observer=progress_observer,
+        ),
+    )
 
 
 @experiments_app.command("merge-2wiki-results")
@@ -488,6 +897,48 @@ def merge_2wiki_store_results(
 ) -> None:
     console = Console()
     summary, missing_chunks = merge_2wiki_results(run_dir=run_dir, output_dir=output_dir)
+    merged_dir = output_dir or run_dir
+    _print_summary(console, summary)
+    console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
+    console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
+    console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
+
+
+@experiments_app.command("merge-iirc-results")
+def merge_iirc_store_results(
+    run_dir: Path = typer.Option(..., "--run-dir", file_okay=False, help="Run directory containing chunks/"),
+    output_dir: Path | None = typer.Option(None, "--output-dir", file_okay=False, help="Optional output directory for merged files"),
+) -> None:
+    console = Console()
+    summary, missing_chunks = merge_iirc_results(run_dir=run_dir, output_dir=output_dir)
+    merged_dir = output_dir or run_dir
+    _print_summary(console, summary)
+    console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
+    console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
+    console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
+
+
+@experiments_app.command("merge-musique-results")
+def merge_musique_store_results(
+    run_dir: Path = typer.Option(..., "--run-dir", file_okay=False, help="Run directory containing chunks/"),
+    output_dir: Path | None = typer.Option(None, "--output-dir", file_okay=False, help="Optional output directory for merged files"),
+) -> None:
+    console = Console()
+    summary, missing_chunks = merge_musique_results(run_dir=run_dir, output_dir=output_dir)
+    merged_dir = output_dir or run_dir
+    _print_summary(console, summary)
+    console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
+    console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
+    console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
+
+
+@experiments_app.command("merge-hotpotqa-results")
+def merge_hotpotqa_store_results(
+    run_dir: Path = typer.Option(..., "--run-dir", file_okay=False, help="Run directory containing chunks/"),
+    output_dir: Path | None = typer.Option(None, "--output-dir", file_okay=False, help="Optional output directory for merged files"),
+) -> None:
+    console = Console()
+    summary, missing_chunks = merge_hotpotqa_results(run_dir=run_dir, output_dir=output_dir)
     merged_dir = output_dir or run_dir
     _print_summary(console, summary)
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
@@ -521,19 +972,19 @@ def _has_selector_health(summary) -> bool:
 
 def _build_main_summary_table(summary, *, title: str | None = None) -> Table:
     main_table = Table(title=title or f"{summary.dataset_name} summary")
-    main_table.add_column("selector", overflow="fold")
+    main_table.add_column("selector", overflow="fold", max_width=72)
     main_table.add_column("budget", justify="right", no_wrap=True)
-    main_table.add_column("support_recall", justify="right", no_wrap=True)
-    main_table.add_column("support_precision_nonempty", justify="right", no_wrap=True)
-    main_table.add_column("support_f1_nonempty", justify="right", no_wrap=True)
-    main_table.add_column("support_f1_all", justify="right", no_wrap=True)
-    main_table.add_column("selected_tokens", justify="right", no_wrap=True)
-    main_table.add_column("utilization", justify="right", no_wrap=True)
-    main_table.add_column("empty_rate", justify="right", no_wrap=True)
-    main_table.add_column("budget_adherence", justify="right", no_wrap=True)
-    main_table.add_column("runtime_s", justify="right", no_wrap=True)
-    main_table.add_column("answer_em", justify="right", no_wrap=True)
-    main_table.add_column("answer_f1", justify="right", no_wrap=True)
+    main_table.add_column("recall", justify="right", no_wrap=True)
+    main_table.add_column("prec_nonempty", justify="right", no_wrap=True)
+    main_table.add_column("f1_nonempty", justify="right", no_wrap=True)
+    main_table.add_column("f1_all", justify="right", no_wrap=True)
+    main_table.add_column("sel_tokens", justify="right", no_wrap=True)
+    main_table.add_column("util", justify="right", no_wrap=True)
+    main_table.add_column("empty", justify="right", no_wrap=True)
+    main_table.add_column("adhere", justify="right", no_wrap=True)
+    main_table.add_column("rt_s", justify="right", no_wrap=True)
+    main_table.add_column("ans_em", justify="right", no_wrap=True)
+    main_table.add_column("ans_f1", justify="right", no_wrap=True)
 
     for row in summary.selector_budgets:
         cells = [
@@ -558,13 +1009,13 @@ def _build_main_summary_table(summary, *, title: str | None = None) -> Table:
 
 def _build_selector_health_table(summary, *, title: str | None = None) -> Table:
     health_table = Table(title=title or f"{summary.dataset_name} selector health")
-    health_table.add_column("selector", overflow="fold")
+    health_table.add_column("selector", overflow="fold", max_width=88)
     health_table.add_column("budget", justify="right", no_wrap=True)
-    health_table.add_column("selector_tokens", justify="right", no_wrap=True)
-    health_table.add_column("selector_calls", justify="right", no_wrap=True)
-    health_table.add_column("selector_runtime_s", justify="right", no_wrap=True)
-    health_table.add_column("selector_fallback", justify="right", no_wrap=True)
-    health_table.add_column("selector_parse_fail", justify="right", no_wrap=True)
+    health_table.add_column("sel_tokens", justify="right", no_wrap=True)
+    health_table.add_column("sel_calls", justify="right", no_wrap=True)
+    health_table.add_column("sel_rt_s", justify="right", no_wrap=True)
+    health_table.add_column("fallback", justify="right", no_wrap=True)
+    health_table.add_column("parse_fail", justify="right", no_wrap=True)
 
     for row in summary.selector_budgets:
         health_table.add_row(
