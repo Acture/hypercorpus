@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pytest import fixture
 
-from webwalker.datasets import prepare_2wiki_store
+from webwalker.datasets import prepare_2wiki_store, prepare_normalized_graph_store
 from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
 
 
@@ -360,6 +360,190 @@ def iirc_files(tmp_path: Path, iirc_graph_records: list[dict], iirc_questions: l
 	graph_path.write_text(json.dumps(iirc_graph_records, ensure_ascii=False), encoding="utf-8")
 	questions_path.write_text(json.dumps(iirc_questions, ensure_ascii=False), encoding="utf-8")
 	return questions_path, graph_path
+
+
+@fixture
+def prepared_iirc_store(iirc_files, tmp_path: Path):
+	questions_path, graph_path = iirc_files
+	output_dir = tmp_path / "iirc-store"
+	return prepare_normalized_graph_store(
+		output_dir,
+		dataset_name="iirc",
+		questions_source=questions_path,
+		graph_source=graph_path,
+	)
+
+
+@fixture
+def musique_graph_records() -> list[dict]:
+	return [
+		{
+			"node_id": "Apollo Program",
+			"title": "Apollo Program",
+			"sentences": ["Apollo Program launched from Kennedy Space Center."],
+			"links": [
+				{
+					"target": "Kennedy Space Center",
+					"anchor_text": "Kennedy Space Center",
+					"sentence": "Apollo Program launched from Kennedy Space Center.",
+					"sent_idx": 0,
+				}
+			],
+		},
+		{
+			"node_id": "Kennedy Space Center",
+			"title": "Kennedy Space Center",
+			"sentences": ["Kennedy Space Center is in Florida."],
+			"links": [
+				{
+					"target": "Florida",
+					"anchor_text": "Florida",
+					"sentence": "Kennedy Space Center is in Florida.",
+					"sent_idx": 0,
+				}
+			],
+		},
+		{
+			"node_id": "Florida",
+			"title": "Florida",
+			"sentences": ["Florida is a state in the United States."],
+			"links": [],
+		},
+	]
+
+
+@fixture
+def musique_questions() -> list[dict]:
+	return [
+		{
+			"id": "m1",
+			"question": "Which state contains Kennedy Space Center?",
+			"answer": "Florida",
+			"supporting_pages": ["Apollo Program", "Kennedy Space Center", "Florida"],
+			"start_nodes": ["Apollo Program"],
+			"reasoning_path": ["Apollo Program", "Kennedy Space Center", "Florida"],
+		}
+	]
+
+
+@fixture
+def musique_files(tmp_path: Path, musique_graph_records: list[dict], musique_questions: list[dict]) -> tuple[Path, Path]:
+	graph_path = tmp_path / "musique-graph.json"
+	questions_path = tmp_path / "musique-questions.json"
+	graph_path.write_text(json.dumps(musique_graph_records, ensure_ascii=False), encoding="utf-8")
+	questions_path.write_text(json.dumps(musique_questions, ensure_ascii=False), encoding="utf-8")
+	return questions_path, graph_path
+
+
+@fixture
+def prepared_musique_store(musique_files, tmp_path: Path):
+	questions_path, graph_path = musique_files
+	output_dir = tmp_path / "musique-store"
+	return prepare_normalized_graph_store(
+		output_dir,
+		dataset_name="musique",
+		questions_source=questions_path,
+		graph_source=graph_path,
+	)
+
+
+@fixture
+def hotpotqa_distractor_questions() -> list[dict]:
+	return [
+		{
+			"_id": "h1",
+			"question": "Which state contains the launch facility used by Apollo Program?",
+			"answer": "Florida",
+			"supporting_facts": [["Apollo Program", 0], ["Kennedy Space Center", 0]],
+			"context": [
+				["Apollo Program", ["Apollo Program launched from Kennedy Space Center."]],
+				["Kennedy Space Center", ["Kennedy Space Center is in Florida."]],
+				["Florida", ["Florida is a state in the United States."]],
+			],
+		}
+	]
+
+
+@fixture
+def hotpotqa_distractor_file(tmp_path: Path, hotpotqa_distractor_questions: list[dict]) -> Path:
+	questions_path = tmp_path / "hotpotqa-distractor.json"
+	questions_path.write_text(json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8")
+	return questions_path
+
+
+@fixture
+def hotpotqa_fullwiki_graph_records() -> list[dict]:
+	return [
+		{
+			"node_id": "Apollo Program",
+			"title": "Apollo Program",
+			"sentences": ["Apollo Program launched from Kennedy Space Center."],
+			"links": [
+				{
+					"target": "Kennedy Space Center",
+					"anchor_text": "Kennedy Space Center",
+					"sentence": "Apollo Program launched from Kennedy Space Center.",
+					"sent_idx": 0,
+				}
+			],
+		},
+		{
+			"node_id": "Kennedy Space Center",
+			"title": "Kennedy Space Center",
+			"sentences": ["Kennedy Space Center is in Florida."],
+			"links": [
+				{
+					"target": "Florida",
+					"anchor_text": "Florida",
+					"sentence": "Kennedy Space Center is in Florida.",
+					"sent_idx": 0,
+				}
+			],
+		},
+		{
+			"node_id": "Florida",
+			"title": "Florida",
+			"sentences": ["Florida is a state in the United States."],
+			"links": [],
+		},
+	]
+
+
+@fixture
+def hotpotqa_fullwiki_questions() -> list[dict]:
+	return [
+		{
+			"_id": "hf1",
+			"question": "Which state contains Kennedy Space Center?",
+			"answer": "Florida",
+			"supporting_facts": [["Apollo Program", 0], ["Kennedy Space Center", 0], ["Florida", 0]],
+		}
+	]
+
+
+@fixture
+def hotpotqa_fullwiki_files(
+	tmp_path: Path,
+	hotpotqa_fullwiki_graph_records: list[dict],
+	hotpotqa_fullwiki_questions: list[dict],
+) -> tuple[Path, Path]:
+	graph_path = tmp_path / "hotpotqa-fullwiki-graph.json"
+	questions_path = tmp_path / "hotpotqa-fullwiki-questions.json"
+	graph_path.write_text(json.dumps(hotpotqa_fullwiki_graph_records, ensure_ascii=False), encoding="utf-8")
+	questions_path.write_text(json.dumps(hotpotqa_fullwiki_questions, ensure_ascii=False), encoding="utf-8")
+	return questions_path, graph_path
+
+
+@fixture
+def prepared_hotpotqa_store(hotpotqa_fullwiki_files, tmp_path: Path):
+	questions_path, graph_path = hotpotqa_fullwiki_files
+	output_dir = tmp_path / "hotpotqa-store"
+	return prepare_normalized_graph_store(
+		output_dir,
+		dataset_name="hotpotqa-fullwiki",
+		questions_source=questions_path,
+		graph_source=graph_path,
+	)
 
 
 @fixture

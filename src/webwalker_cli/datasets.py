@@ -15,6 +15,7 @@ from webwalker.datasets import (
     estimate_prepare_bytes,
     fetch_2wiki_dataset,
     inspect_2wiki_store,
+    prepare_normalized_graph_store,
     prepare_2wiki_store,
     probe_source_size,
     write_2wiki_sample_dataset,
@@ -122,6 +123,135 @@ def prepare_2wiki_store_cli(
         "uv run webwalker-cli experiments run-2wiki-store "
         f"--store {prepared.root} "
         "--exp-name pilot-2wiki "
+        "--split dev "
+        "--chunk-size 100 "
+        "--chunk-index 0"
+    )
+
+
+def _prepare_generic_store(
+    *,
+    console: Console,
+    dataset_name: str,
+    output_dir: Path,
+    questions_source: str,
+    graph_source: str,
+    keep_raw: bool,
+    overwrite: bool,
+    min_free_gib: float,
+) -> None:
+    graph_size = probe_source_size(graph_source)
+    ensure_min_free_space(output_dir, min_free_gib=min_free_gib, expected_new_bytes=estimate_prepare_bytes(graph_size))
+    try:
+        prepared = prepare_normalized_graph_store(
+            output_dir,
+            dataset_name=dataset_name,
+            questions_source=questions_source,
+            graph_source=graph_source,
+            keep_raw=keep_raw,
+            overwrite=overwrite,
+            min_free_gib=min_free_gib,
+        )
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"store root -> {prepared.root}")
+    console.print(f"manifest.json -> {prepared.manifest_path}")
+    console.print(f"catalog.sqlite -> {prepared.catalog_path}")
+    console.print(f"shards -> {prepared.manifest.shard_count}")
+    for split_name, path in sorted(prepared.questions_paths.items()):
+        console.print(f"questions[{split_name}] -> {path}")
+
+
+@datasets_app.command("prepare-iirc-store")
+def prepare_iirc_store_cli(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for the prepared sharded store"),
+    questions_source: str = typer.Option(..., "--questions-source", help="Local path or URL to IIRC questions JSON/JSONL"),
+    graph_source: str = typer.Option(..., "--graph-source", help="Local path or URL to normalized IIRC graph JSON/JSONL"),
+    keep_raw: bool = typer.Option(False, "--keep-raw/--no-keep-raw", help="Keep downloaded raw graph artifacts under the store root"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing prepared store"),
+    min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
+) -> None:
+    console = Console()
+    _prepare_generic_store(
+        console=console,
+        dataset_name="iirc",
+        output_dir=output_dir,
+        questions_source=questions_source,
+        graph_source=graph_source,
+        keep_raw=keep_raw,
+        overwrite=overwrite,
+        min_free_gib=min_free_gib,
+    )
+    console.print("run:")
+    console.print(
+        "uv run webwalker-cli experiments run-iirc-store "
+        f"--store {output_dir} "
+        "--exp-name pilot-iirc "
+        "--split dev "
+        "--chunk-size 100 "
+        "--chunk-index 0"
+    )
+
+
+@datasets_app.command("prepare-musique-store")
+def prepare_musique_store_cli(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for the prepared sharded store"),
+    questions_source: str = typer.Option(..., "--questions-source", help="Local path or URL to MuSiQue questions JSON/JSONL"),
+    graph_source: str = typer.Option(..., "--graph-source", help="Local path or URL to normalized MuSiQue graph JSON/JSONL"),
+    keep_raw: bool = typer.Option(False, "--keep-raw/--no-keep-raw", help="Keep downloaded raw graph artifacts under the store root"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing prepared store"),
+    min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
+) -> None:
+    console = Console()
+    _prepare_generic_store(
+        console=console,
+        dataset_name="musique",
+        output_dir=output_dir,
+        questions_source=questions_source,
+        graph_source=graph_source,
+        keep_raw=keep_raw,
+        overwrite=overwrite,
+        min_free_gib=min_free_gib,
+    )
+    console.print("run:")
+    console.print(
+        "uv run webwalker-cli experiments run-musique-store "
+        f"--store {output_dir} "
+        "--exp-name pilot-musique "
+        "--split dev "
+        "--chunk-size 100 "
+        "--chunk-index 0"
+    )
+
+
+@datasets_app.command("prepare-hotpotqa-store")
+def prepare_hotpotqa_store_cli(
+    output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for the prepared sharded store"),
+    questions_source: str = typer.Option(..., "--questions-source", help="Local path or URL to HotpotQA fullwiki questions JSON/JSONL"),
+    graph_source: str = typer.Option(..., "--graph-source", help="Local path or URL to normalized HotpotQA fullwiki graph JSON/JSONL"),
+    variant: str = typer.Option("fullwiki", "--variant", help="HotpotQA store variant; only fullwiki is supported for stores"),
+    keep_raw: bool = typer.Option(False, "--keep-raw/--no-keep-raw", help="Keep downloaded raw graph artifacts under the store root"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing prepared store"),
+    min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
+) -> None:
+    if variant != "fullwiki":
+        raise typer.BadParameter("HotpotQA distractor runs are direct-only; use --variant fullwiki for prepared stores.")
+    console = Console()
+    _prepare_generic_store(
+        console=console,
+        dataset_name="hotpotqa-fullwiki",
+        output_dir=output_dir,
+        questions_source=questions_source,
+        graph_source=graph_source,
+        keep_raw=keep_raw,
+        overwrite=overwrite,
+        min_free_gib=min_free_gib,
+    )
+    console.print("run:")
+    console.print(
+        "uv run webwalker-cli experiments run-hotpotqa-store "
+        f"--store {output_dir} "
+        "--exp-name pilot-hotpotqa "
         "--split dev "
         "--chunk-size 100 "
         "--chunk-index 0"
