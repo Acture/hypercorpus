@@ -4,14 +4,14 @@ This document is the `full pool / research inventory` for `webwalker`.
 
 It is not the paper outline and it is not the baseline-priority guide. Those responsibilities live in [corpus-selection-literature.md](corpus-selection-literature.md) and [paper-positioning.md](paper-positioning.md).
 
-围绕 `semantic link-guided graph walking + lazy subgraph extraction + targeted GraphRAG for multi-hop QA` 整理的 55 篇带注释文献池。
+围绕 `linked-corpora discovery + complex answer retrieval + query-time graph search` 整理的 64 篇带注释文献池。
 
 ## Summary
 
-- 总条目数：55
-- Bucket 分布：`benchmarks-and-critiques` 10，`retrieval-and-reasoning-paths` 12，`iterative-rag-and-decomposition` 12，`graphrag-and-kg-rag` 12，`adjacent-navigation-and-ir` 9
-- Priority 分布：`P0` 15，`P1` 20，`P2` 20
-- 来源范围：ACL Anthology、arXiv、DOI/Publisher paper page、NeurIPS/OpenReview、MIT Press TACL
+- 总条目数：64
+- Bucket 分布：`benchmarks-and-critiques` 10，`retrieval-and-reasoning-paths` 12，`iterative-rag-and-decomposition` 12，`graphrag-and-kg-rag` 16，`adjacent-navigation-and-ir` 14
+- Priority 分布：`P0` 18，`P1` 24，`P2` 22
+- 来源范围：ACL Anthology、arXiv、ACM/DOI publisher pages、SpringerLink、IBM Research、NeurIPS/OpenReview、MIT Press TACL
 - 注释约定：
   - `why_relevant_cn`：第 1 句，只写论文核心贡献
   - `relation_to_webwalker`：第 2 句，写它和 `webwalker` 的关系，并标 `direct` / `adjacent` / `baseline`
@@ -24,7 +24,7 @@ It is not the paper outline and it is not the baseline-priority guide. Those res
 
 ## Corpus Selection Focus
 
-如果你的核心目标是做 `RAG` 之前的 `corpus selection` 优化，优先读下面这 15 篇，不要平均用力。
+如果你的核心目标是做 `RAG` 之前的 `corpus selection` 或 `subgraph discovery` 优化，优先读下面这 25 篇，不要平均用力。
 
 ### 1. 先明确“什么叫真的需要选对语料”
 
@@ -35,7 +35,16 @@ It is not the paper outline and it is not the baseline-priority guide. Those res
 
 这四篇用来定义你的问题边界：你不是在优化普通 top-k 检索，而是在优化“把后续推理真正需要的文档子集先挑出来”。
 
-### 2. 直接看与“选哪些文档/页面进入后续阶段”最相关的方法
+### 2. 用 IR 社区把问题写成 complex answer retrieval
+
+1. `Benchmark for Complex Answer Retrieval`
+2. `Characterizing Question Facets for Complex Answer Retrieval`
+3. `Local and Global Query Expansion for Hierarchical Complex Topics`
+4. `Why Does This Entity Matter? Support Passage Retrieval for Entity Retrieval`
+
+这组文献把你的问题从 “multi-hop QA 检索技巧” 拉回到 `complex answer retrieval / hierarchical topic retrieval / support passage retrieval` 的 IR 主线。
+
+### 3. 直接看与“选哪些文档/页面进入后续阶段”最相关的方法
 
 1. `Learning to Retrieve Reasoning Paths over Wikipedia Graph for Question Answering`
 2. `Answering Complex Open-Domain Questions with Multi-Hop Dense Retrieval`
@@ -46,17 +55,19 @@ It is not the paper outline and it is not the baseline-priority guide. Those res
 
 这组文献最接近你的主问题，因为它们都在回答“第一跳从哪来、下一跳往哪扩、什么时候停止、哪些文档该留下”。
 
-### 3. 再看“如何把语料筛选做成图选择或子图选择”
+### 4. 再看“如何把语料筛选做成图选择或子图选择”
 
 1. `HippoRAG: Neurobiologically Inspired Long-Term Memory for Large Language Models`
 2. `Knowledge Graph-Guided Retrieval Augmented Generation`
 3. `LightRAG: Simple and Fast Retrieval-Augmented Generation`
 4. `PathRAG: Pruning Graph-based Retrieval Augmented Generation with Relational Paths`
 5. `When to use Graphs in RAG: A Comprehensive Analysis for Graph Retrieval-Augmented Generation`
+6. `Exploiting Relevance Feedback in Knowledge Graph Search`
+7. `Keyword Search over Knowledge Graphs via Static and Dynamic Hub Labelings`
 
-这组文献帮助你把 corpus selection 从“选文档”升级成“选路径、选邻域、选子图”。
+这组文献帮助你把 corpus selection 从“选文档”升级成“选路径、选邻域、选子图”，并补上更 algorithmic 的 `KDD/WWW` 图搜索叙事。
 
-### 4. 最后补“图上扩展策略”的邻近灵感
+### 5. 最后补“图上扩展策略”的邻近灵感
 
 1. `End-to-End Goal-Driven Web Navigation`
 2. `Focused crawling: A new approach to topic-specific Web resource discovery`
@@ -65,7 +76,7 @@ It is not the paper outline and it is not the baseline-priority guide. Those res
 
 这组不是 RAG 论文，但对你最关键，因为它们直指 `walker policy`、扩展前沿控制、query-conditioned graph prior 这些设计点。
 
-### 5. 对 `webwalker` 最值得先回答的 4 个研究问题
+### 6. 对 `webwalker` 最值得先回答的 4 个研究问题
 
 1. `corpus selection` 的单位是什么：整篇文档、文档中的链接上下文、还是路径诱导出的子图。
 2. 目标函数是什么：后续 EM/F1、supporting facts recall、time-to-first-answer，还是 token budget 下的 answer quality。
@@ -120,12 +131,21 @@ graphrag-and-kg-rag	P1	2024	arXiv	LightRAG: Simple and Fast Retrieval-Augmented 
 graphrag-and-kg-rag	P2	2024	arXiv	StructRAG: Boosting Knowledge Intensive Reasoning of LLMs via Inference-time Hybrid Information Structurization	Zhuoqun Li et al.	https://arxiv.org/abs/2410.08815	在推理时把散乱证据重构成最合适的结构，再据此生成答案。	direct: 它与 webwalker 的 targeted GraphRAG 后端很接近，但更关注结构化推理而非走图。	inference-time structurization
 graphrag-and-kg-rag	P2	2025	arXiv	PathRAG: Pruning Graph-based Retrieval Augmented Generation with Relational Paths	Boyu Chen et al.	https://arxiv.org/abs/2502.14902	通过 relational path pruning 降低 graph-based RAG 的冗余，并用 path-based prompting 组织证据。	direct: 它对 webwalker 的 path scoring、path pruning 与 prompt organization 都有直接参考价值。	path pruning
 graphrag-and-kg-rag	P2	2026	arXiv	Towards Robust Retrieval-Augmented Generation Based on Knowledge Graph: A Comparative Analysis	Hazem Amamou et al.	https://arxiv.org/abs/2603.05698	在统一基准下比较 GraphRAG 与 vanilla RAG 的鲁棒性，并分析不同噪声情形。	baseline: 它可帮助 webwalker 补足“噪声、反事实、负拒答”这些当前计划里尚弱的评估维度。	robustness analysis
+graphrag-and-kg-rag	P0	2015	KDD	Exploiting Relevance Feedback in Knowledge Graph Search	Yu Su, Shengqi Yang, Huan Sun, Mudhakar Srivatsa, Sue E. Kase, Michelle Vanni, Xifeng Yan	https://research.ibm.com/publications/exploiting-relevance-feedback-in-knowledge-graph-search	提出 graph relevance feedback 框架，在 knowledge graph search 中联合调整排序函数与查询表示。	adjacent: 它说明 query-conditioned graph discovery 可以通过反馈和动态重排序持续对齐用户意图，是 webwalker 的算法邻近工作。	KDD anchor; graph relevance feedback
+graphrag-and-kg-rag	P1	2009	ICDE	Top-k Exploration of Query Candidates for Efficient Keyword Search on Graph-Shaped (RDF) Data	Duc Thanh Tran, Haofen Wang, Sebastian Rudolph, Philipp Cimiano	https://doi.org/10.1109/ICDE.2009.119	针对 RDF 图提出高效的 query candidate exploration，用 top-k 扩展减少 graph keyword search 的搜索空间。	adjacent: 它为 webwalker 的 query-time graph exploration 与候选扩展控制提供了早期算法参照。	graph keyword search; RDF exploration
+graphrag-and-kg-rag	P1	2020	WWW	Keyword Search over Knowledge Graphs via Static and Dynamic Hub Labelings	Yuxuan Shi, Gong Cheng, Evgeny Kharlamov	https://doi.org/10.1145/3366423.3380110	提出结合静态与动态 hub labeling 的知识图关键词搜索算法，在大规模知识图上高效检索近似最优答案子图。	adjacent: 它说明 query-time compact subgraph discovery 可以作为独立算法问题求解，而不必退化为文档级 top-k 检索。	WWW anchor; KG keyword search; hub labeling
+graphrag-and-kg-rag	P2	2019	ICDE	Keyword-Centric Community Search	Zhiwei Zhang, Xin Huang, Jianliang Xu, Byron Choi, Zechao Shang	https://doi.org/10.1109/ICDE.2019.00045	提出仅基于 query keywords 在 attributed graph 中发现最相关 cohesive community 的问题与高效算法。	adjacent: 它与 webwalker 共享“从关键词出发发现紧凑相关子图而非单点答案”的算法形态。	attributed graphs; cohesive subgraph search
 adjacent-navigation-and-ir	P0	2016	NeurIPS	End-to-End Goal-Driven Web Navigation	Rodrigo Nogueira and Kyunghyun Cho	https://papers.nips.cc/paper/6064-end-to-end-goal-driven-web-navigation	把网站建成由页面和超链接组成的图，要求智能体按自然语言目标做顺序导航。	adjacent: 它不是 QA 检索论文，但几乎是 webwalker “在超链接图上按目标走路”这一设定的最直接邻近工作。	WebNav / WikiNav
 adjacent-navigation-and-ir	P1	1999	Computer Networks	Focused crawling: A new approach to topic-specific Web resource discovery	Soumen Chakrabarti et al.	https://doi.org/10.1016/S1389-1286(99)00052-3	提出 Focused Crawler，通过分类器与 distiller 在网页图上优先探索主题相关链接。	adjacent: 它是 webwalker 的经典祖先思想之一，尤其对应“如何在巨大链接图中控制扩展前沿”。	classic focused crawling
 adjacent-navigation-and-ir	P1	2018	Information Retrieval Journal	Overcoming low-utility facets for complex answer retrieval	Sean MacAvaney et al.	https://arxiv.org/abs/1811.08772	研究复杂答案检索中“facet 词本身不容易直接匹配”的问题，并提出层次化与图嵌入补救方法。	adjacent: 它能帮助 webwalker 改进 query-to-anchor matching，避免只看表面词重叠。	TREC CAR perspective
+adjacent-navigation-and-ir	P0	2017	ICTIR	Benchmark for Complex Answer Retrieval	Federico Nanni, Bhaskar Mitra, Matt Magnusson, Laura Dietz	https://doi.org/10.1145/3121050.3121099	提出 TREC Complex Answer Retrieval 基准，把复杂信息需求表示为层级主题并要求系统检索可组成复杂答案的段落。	direct: 它为 webwalker 提供了 IR 社区中最贴近“复杂证据发现”而非最终答案生成的任务原型。	TREC CAR anchor; complex answer retrieval benchmark
+adjacent-navigation-and-ir	P0	2018	SIGIR	Characterizing Question Facets for Complex Answer Retrieval	Sean MacAvaney, Andrew Yates, Arman Cohan, Luca Soldaini, Kai Hui, Nazli Goharian, Ophir Frieder	https://doi.org/10.1145/3209978.3210135	提出 facet utility 建模，区分结构性 facet 与主题性 facet，并据此改进复杂答案检索排序。	direct: 它帮助 webwalker 把 query-time link expansion 写成对 query structure 和 facet utility 敏感的发现问题，而不是平面 top-k 匹配。	TREC CAR; SIGIR anchor; facet utility
+adjacent-navigation-and-ir	P1	2019	ECIR	Local and Global Query Expansion for Hierarchical Complex Topics	Jeff Dalton, Shahrzad Naseri, Laura Dietz, James Allan	https://doi.org/10.1007/978-3-030-15712-8_19	研究层级复杂主题的局部与全局 query expansion，证明利用 hierarchical topic structure 对复杂检索有效。	direct: 它为 webwalker 的 query decomposition、anchor matching 和分层扩展提供了明确的 IR 先例。	TREC CAR; hierarchical query expansion
+adjacent-navigation-and-ir	P1	2019	ICTIR	Why Does This Entity Matter? Support Passage Retrieval for Entity Retrieval	Shubham Chatterjee, Laura Dietz	https://doi.org/10.1145/3341981.3344243	研究如何为 entity retrieval 补充可读的 support passage，并分析 contextual entities 与 entity salience 等解释性信号。	direct: 它与 webwalker 的 link-context selection 和“为什么保留该节点/边”的证据解释高度相关。	support passage retrieval; explanation-oriented retrieval
 adjacent-navigation-and-ir	P2	2025	arXiv	Towards Better Instruction Following Retrieval Models	Yuchen Zhuang et al.	https://arxiv.org/abs/2505.21439	研究检索器如何理解显式指令，而不是只做普通 query-passage 匹配。	adjacent: 它对 webwalker 未来把“先找桥点、再找答案页”编码成检索指令很有帮助。	InF-IR / InF-Embed
 adjacent-navigation-and-ir	P2	2002	WWW	Topic-Sensitive PageRank	Taher H. Haveliwala	https://doi.org/10.1145/511446.511513	提出按主题偏置的 PageRank，把静态链接重要性改造成 query-aware 的主题重要性。	adjacent: 它可作为 webwalker 设计 query-conditioned graph prior 的经典参照。	graph prior
 adjacent-navigation-and-ir	P2	2019	IEEE Access	A Survey on Personalized PageRank Computation Algorithms	Sungchan Park et al.	https://doi.org/10.1109/ACCESS.2019.2952653	综述了 Personalized PageRank 的计算、近似与应用，覆盖多种大图场景。	adjacent: 它能为 webwalker 引入轻量 PPR baseline 或做与 HippoRAG 的 ablation 提供算法背景。	PPR survey
+adjacent-navigation-and-ir	P2	2021	Data Science and Engineering	Keyword Search on Large Graphs: A Survey	Jianye Yang, Wu Yao, Wenjie Zhang	https://doi.org/10.1007/s41019-021-00154-4	系统综述大图关键词搜索的树、近邻、子图和其他语义排名模型，给出图关键词搜索的统一问题版图。	adjacent: 它为 webwalker 补足 “keyword/subgraph discovery over large graphs” 这条算法谱系的总览。	survey; large-graph keyword search
 adjacent-navigation-and-ir	P2	2021	arXiv	Tree-based Focused Web Crawling with Reinforcement Learning	Andreas Kontogiannis et al.	https://arxiv.org/abs/2112.07620	用强化学习把 focused crawling 表述为在网页子图上的决策过程，并显式优化 harvest rate。	adjacent: 它对 webwalker 若未来尝试 RL walker policy 很有直接启发。	RL crawler
 adjacent-navigation-and-ir	P2	2008	Information Sciences	An ontology-based approach to learnable focused crawling	Sang-Wook Kim et al.	https://doi.org/10.1016/j.ins.2008.07.030	提出基于领域本体和可学习相关性函数的 focused crawling 框架。	adjacent: 它提醒 webwalker 的链接语义不一定只来自锚文本，也可来自更高层的显式概念结构。	ontology-guided crawling
 adjacent-navigation-and-ir	P2	2024	Engineering Applications of Artificial Intelligence	Weakly supervised learning for an effective focused web crawler	Syed Hassan Raza et al.	https://doi.org/10.1016/j.engappai.2024.107944	用弱监督语义匹配学习网页和主题的相关性，从而更稳地筛掉噪声链接。	adjacent: 它能为 webwalker 的 edge scoring 中“sentence/anchor semantic relevance”部分提供现代 focused-crawling 参照。	semantic crawler

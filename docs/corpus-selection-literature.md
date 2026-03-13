@@ -41,14 +41,18 @@ These are the first systems the paper needs to beat, match, or clearly complemen
 
 ### 3. Position Natural Hyperlink Navigation As The Distinctive Twist
 
-Use adjacent navigation and focused-crawling work to justify why natural hyperlinks matter:
+Use adjacent navigation, focused-crawling work, and IR-native complex-answer-retrieval papers to justify why natural hyperlinks matter:
 
 - `End-to-End Goal-Driven Web Navigation`
 - `Focused crawling`
 - `Topic-Sensitive PageRank`
 - `Personalized PageRank`
+- `Benchmark for Complex Answer Retrieval`
+- `Characterizing Question Facets for Complex Answer Retrieval`
+- `Local and Global Query Expansion for Hierarchical Complex Topics`
+- `Why Does This Entity Matter? Support Passage Retrieval for Entity Retrieval`
 
-These works support the idea that query-conditioned movement on a linked graph is a real problem setting, not a contrived implementation detail.
+These works support two points at once: query-conditioned movement on a linked graph is a real problem setting, and the underlying retrieval problem is also legible as complex-answer retrieval rather than only as multi-hop QA.
 
 ### 4. Use Graph-Retrieval Systems As Comparators, Not The Main Head-To-Head Yet
 
@@ -59,8 +63,10 @@ For the current paper stage, use graph retrieval systems to locate `webwalker` i
 - `KG2RAG`
 - `PathRAG`
 - `Walk&Retrieve`
+- `Exploiting Relevance Feedback in Knowledge Graph Search`
+- `Keyword Search over Knowledge Graphs via Static and Dynamic Hub Labelings`
 
-These are important comparators, but the current evidence does not yet support claiming direct superiority over them.
+These are important comparators, but the current evidence does not yet support claiming direct superiority over them. For a more algorithmic `KDD/general discovery` story, the last two papers are especially useful because they frame query-time graph discovery as a standalone search problem rather than a downstream QA helper.
 
 ### 5. Keep End-To-End GraphRAG Systems Secondary
 
