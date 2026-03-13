@@ -38,7 +38,7 @@ from webwalker.experiments import (
     token_budget_choices_help,
 )
 from webwalker.logging import DashboardLogBuffer, DashboardProgressState, dashboard_session
-from webwalker.reports import export_summary_report_from_file
+from webwalker.reports import export_report_bundle_from_file
 
 experiments_app = typer.Typer(
     name="webwalker experiments",
@@ -979,6 +979,8 @@ def merge_2wiki_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
+    console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -995,6 +997,8 @@ def merge_iirc_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
+    console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -1011,6 +1015,8 @@ def merge_musique_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
+    console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -1027,6 +1033,8 @@ def merge_hotpotqa_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
+    console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -1034,10 +1042,21 @@ def merge_hotpotqa_store_results(
 def export_summary_report_cli(
     summary: Path = typer.Option(..., "--summary", exists=True, dir_okay=False, help="Path to an experiment summary.json"),
     output: Path | None = typer.Option(None, "--output", dir_okay=False, help="Optional output CSV path"),
+    comparison_output: Path | None = typer.Option(
+        None,
+        "--comparison-output",
+        dir_okay=False,
+        help="Optional output CSV path for study_comparison_rows.csv",
+    ),
 ) -> None:
     console = Console()
-    report_path = export_summary_report_from_file(summary, output)
-    console.print(f"summary_rows.csv -> {report_path}")
+    bundle = export_report_bundle_from_file(
+        summary,
+        summary_rows_output_path=output,
+        study_comparison_output_path=comparison_output,
+    )
+    console.print(f"summary_rows.csv -> {bundle.summary_rows_path}")
+    console.print(f"study_comparison_rows.csv -> {bundle.study_comparison_rows_path}")
 
 
 def _format_metric(value: float | None) -> str:

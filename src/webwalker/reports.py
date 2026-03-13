@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +68,12 @@ STUDY_COMPARISON_FIELDNAMES = [
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class ReportBundlePaths:
+    summary_rows_path: Path
+    study_comparison_rows_path: Path
+
+
 def load_experiment_summary(summary_path: str | Path) -> ExperimentSummary:
     payload = json.loads(Path(summary_path).read_text(encoding="utf-8"))
     rows = [SelectorBudgetSummary(**record) for record in payload["selector_budgets"]]
@@ -102,6 +108,36 @@ def export_summary_report_from_file(summary_path: str | Path, output_path: str |
     summary = load_experiment_summary(summary_file)
     destination = Path(output_path) if output_path is not None else summary_file.with_name("summary_rows.csv")
     return export_summary_report(summary, destination)
+
+
+def export_report_bundle_from_file(
+    summary_path: str | Path,
+    *,
+    summary_rows_output_path: str | Path | None = None,
+    study_comparison_output_path: str | Path | None = None,
+) -> ReportBundlePaths:
+    summary_file = Path(summary_path)
+    summary = load_experiment_summary(summary_file)
+    summary_rows_path = (
+        Path(summary_rows_output_path)
+        if summary_rows_output_path is not None
+        else summary_file.with_name("summary_rows.csv")
+    )
+    study_comparison_path = (
+        Path(study_comparison_output_path)
+        if study_comparison_output_path is not None
+        else summary_rows_path.parent / "study_comparison_rows.csv"
+    )
+    study_preset, control_selector_name = _report_context_from_manifest(summary_file)
+    return ReportBundlePaths(
+        summary_rows_path=export_summary_report(summary, summary_rows_path),
+        study_comparison_rows_path=export_study_comparison_report(
+            summary,
+            study_comparison_path,
+            study_preset=study_preset,
+            control_selector_name=control_selector_name,
+        ),
+    )
 
 
 def study_comparison_rows(
@@ -180,6 +216,26 @@ def export_study_comparison_report(
         writer.writeheader()
         writer.writerows(rows)
     return output
+
+
+def _report_context_from_manifest(summary_file: Path) -> tuple[str | None, str | None]:
+    manifest_path = summary_file.with_name("run_manifest.json")
+    if not manifest_path.exists():
+        return None, None
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    study_preset = payload.get("study_preset")
+    control_selector_name = payload.get("control_selector_name")
+    if control_selector_name is None and study_preset is not None:
+        try:
+            from webwalker.experiments import resolve_study_preset
+
+            control_selector_name = resolve_study_preset(str(study_preset)).control_selector_name
+        except Exception:
+            control_selector_name = None
+    return (
+        str(study_preset) if study_preset is not None else None,
+        str(control_selector_name) if control_selector_name is not None else None,
+    )
 
 
 def _selector_budget_report_row(dataset_name: str, selector_budget: SelectorBudgetSummary) -> dict[str, Any]:

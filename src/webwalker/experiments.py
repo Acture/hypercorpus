@@ -243,6 +243,7 @@ def run_dataset_experiment(
         resolved_budget_ratios=resolved.budget_ratios,
         case_ids_file=case_ids_file,
         total_selected_cases=len(selected_cases),
+        control_selector_name=resolved.control_selector_name,
     )
 
     def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
@@ -574,6 +575,7 @@ def run_hotpotqa_experiment(
         resolved_budget_ratios=resolved.budget_ratios,
         case_ids_file=case_ids_file,
         total_selected_cases=total,
+        control_selector_name=resolved.control_selector_name,
     )
     evaluations: list[CaseEvaluation] = []
     logger.info(
@@ -902,6 +904,7 @@ def run_store_experiment(
         resolved_budget_ratios=resolved.budget_ratios,
         case_ids_file=case_ids_file,
         total_selected_cases=len(selected_cases),
+        control_selector_name=resolved.control_selector_name,
     )
 
     def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
@@ -1115,20 +1118,19 @@ def merge_store_results(
     chunk_indices: list[int] = []
     total_cases: int | None = None
     chunk_size: int | None = None
-    study_presets: set[str] = set()
+    chunk_metas: list[dict[str, Any]] = []
 
     for chunk_dir in _iterate_with_optional_progress(chunk_dirs, description="merge chunk results"):
         chunk_meta_path = chunk_dir / "chunk.json"
         if chunk_meta_path.exists():
             chunk_meta = json.loads(chunk_meta_path.read_text(encoding="utf-8"))
+            chunk_metas.append(chunk_meta)
             if chunk_meta.get("chunk_index") is not None:
                 chunk_indices.append(int(chunk_meta["chunk_index"]))
             if chunk_meta.get("total_cases") is not None:
                 total_cases = int(chunk_meta["total_cases"])
             if chunk_meta.get("chunk_size") is not None:
                 chunk_size = int(chunk_meta["chunk_size"])
-            if chunk_meta.get("study_preset"):
-                study_presets.add(str(chunk_meta["study_preset"]))
         results_path = chunk_dir / "results.jsonl"
         if not results_path.exists():
             continue
@@ -1156,7 +1158,8 @@ def merge_store_results(
     with merged_selector_logs.open("w", encoding="utf-8") as handle:
         for record in selector_log_records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    merged_study_preset = next(iter(study_presets)) if len(study_presets) == 1 else None
+    merged_study_preset = _consistent_chunk_value(chunk_metas, "study_preset")
+    missing_chunks = _missing_chunk_indices(chunk_indices, total_cases=total_cases, chunk_size=chunk_size)
     merged_control_selector = (
         resolve_study_preset(merged_study_preset).control_selector_name
         if merged_study_preset is not None
@@ -1168,8 +1171,21 @@ def merge_store_results(
         study_preset=merged_study_preset,
         control_selector_name=merged_control_selector,
     )
-
-    missing_chunks = _missing_chunk_indices(chunk_indices, total_cases=total_cases, chunk_size=chunk_size)
+    _write_evaluated_case_ids(merged_dir, _ordered_case_ids_from_records(records))
+    _write_run_manifest(
+        merged_dir,
+        dataset_name=summary.dataset_name,
+        split=_consistent_chunk_value(chunk_metas, "split"),
+        study_preset=merged_study_preset,
+        selector_preset=_consistent_chunk_value(chunk_metas, "selector_preset"),
+        resolved_selectors=_merged_resolved_selectors(chunk_metas, records),
+        resolved_token_budgets=_consistent_chunk_value(chunk_metas, "token_budgets"),
+        resolved_budget_ratios=_consistent_chunk_value(chunk_metas, "budget_ratios"),
+        case_ids_file=_consistent_chunk_value(chunk_metas, "case_ids_file"),
+        total_selected_cases=summary.total_cases,
+        control_selector_name=merged_control_selector,
+        missing_chunks=missing_chunks,
+    )
     logger.info(
         "Merged %s result records into %s (missing_chunks=%s)",
         len(records),
@@ -1364,7 +1380,7 @@ def _resolve_case_selection(
 
 
 def _write_evaluated_case_ids(output_dir: Path, cases: Sequence[Any]) -> None:
-    lines = [str(case.case_id) for case in cases]
+    lines = [_case_id_value(case) for case in cases]
     content = "\n".join(lines)
     if content:
         content += "\n"
@@ -1384,6 +1400,8 @@ def _write_run_manifest(
     total_selected_cases: int,
     split: str | None = None,
     variant: str | None = None,
+    control_selector_name: str | None = None,
+    missing_chunks: Sequence[int] | None = None,
 ) -> None:
     payload = {
         "dataset_name": dataset_name,
@@ -1396,11 +1414,53 @@ def _write_run_manifest(
         "resolved_budget_ratios": list(resolved_budget_ratios) if resolved_budget_ratios is not None else None,
         "case_ids_file": str(case_ids_file) if case_ids_file is not None else None,
         "total_selected_cases": total_selected_cases,
+        "control_selector_name": control_selector_name,
+        "missing_chunks": list(missing_chunks) if missing_chunks is not None else None,
     }
     (output_dir / "run_manifest.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _ordered_case_ids_from_records(records: Sequence[dict[str, Any]]) -> list[str]:
+    ordered_case_ids: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        case_id = str(record["case_id"])
+        if case_id in seen:
+            continue
+        seen.add(case_id)
+        ordered_case_ids.append(case_id)
+    return ordered_case_ids
+
+
+def _case_id_value(case: Any) -> str:
+    return str(case if isinstance(case, str) else case.case_id)
+
+
+def _consistent_chunk_value(chunk_metas: Sequence[dict[str, Any]], key: str) -> Any:
+    if not chunk_metas:
+        return None
+    first = chunk_metas[0].get(key)
+    if all(chunk_meta.get(key) == first for chunk_meta in chunk_metas[1:]):
+        return first
+    return None
+
+
+def _merged_resolved_selectors(chunk_metas: Sequence[dict[str, Any]], records: Sequence[dict[str, Any]]) -> list[str]:
+    selectors = _consistent_chunk_value(chunk_metas, "selectors")
+    if selectors is not None:
+        return list(selectors)
+    ordered_selectors: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        selector_name = str(record["selector"])
+        if selector_name in seen:
+            continue
+        seen.add(selector_name)
+        ordered_selectors.append(selector_name)
+    return ordered_selectors
 
 
 def _build_evaluators(

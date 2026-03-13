@@ -494,6 +494,8 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
     assert "missing_chunks -> [1]" in merge_result.stdout
     assert "merged summary_rows.csv" in merge_result.stdout
     assert "merged study_comparison_rows.csv" in merge_result.stdout
+    assert "merged run_manifest.json" in merge_result.stdout
+    assert "merged evaluated_case_ids.txt" in merge_result.stdout
 
 
 def test_export_summary_report_cli_writes_csv(two_wiki_files, tmp_path):
@@ -524,7 +526,7 @@ def test_export_summary_report_cli_writes_csv(two_wiki_files, tmp_path):
     )
     assert run_result.exit_code == 0, run_result.stdout
 
-    report_path = output_dir / "custom-summary.csv"
+    report_path = tmp_path / "exports" / "custom-summary.csv"
     export_result = runner.invoke(
         app,
         [
@@ -539,8 +541,31 @@ def test_export_summary_report_cli_writes_csv(two_wiki_files, tmp_path):
 
     assert export_result.exit_code == 0, export_result.stdout
     assert "summary_rows.csv ->" in export_result.stdout
+    assert "study_comparison_rows.csv ->" in export_result.stdout
     assert report_path.name in export_result.stdout
     assert report_path.exists()
+    default_comparison_path = report_path.parent / "study_comparison_rows.csv"
+    assert default_comparison_path.name in export_result.stdout
+    assert default_comparison_path.exists()
+
+    comparison_path = tmp_path / "exports-2" / "custom-comparison.csv"
+    export_with_custom_comparison = runner.invoke(
+        app,
+        [
+            "experiments",
+            "export-summary-report",
+            "--summary",
+            str(output_dir / "summary.json"),
+            "--output",
+            str(report_path),
+            "--comparison-output",
+            str(comparison_path),
+        ],
+    )
+
+    assert export_with_custom_comparison.exit_code == 0, export_with_custom_comparison.stdout
+    assert comparison_path.name in export_with_custom_comparison.stdout
+    assert comparison_path.exists()
 
 
 def test_print_summary_renders_main_table_only_for_non_llm_rows():

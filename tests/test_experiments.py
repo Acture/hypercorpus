@@ -1,4 +1,5 @@
 import csv
+from dataclasses import asdict
 import json
 
 import pytest
@@ -17,7 +18,13 @@ from webwalker.experiments import (
     run_2wiki_store_experiment,
 )
 from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
-from webwalker.reports import STUDY_COMPARISON_FIELDNAMES, SUMMARY_REPORT_FIELDNAMES, study_comparison_rows, summary_report_rows
+from webwalker.reports import (
+    STUDY_COMPARISON_FIELDNAMES,
+    SUMMARY_REPORT_FIELDNAMES,
+    export_report_bundle_from_file,
+    study_comparison_rows,
+    summary_report_rows,
+)
 from webwalker.selector import build_selector
 
 
@@ -682,6 +689,157 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
     assert chunk_meta["budget_ratios"] is None
 
 
+def test_export_report_bundle_from_file_uses_manifest_study_context(two_wiki_files, tmp_path):
+    output_dir = tmp_path / "bundle-report-with-manifest"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    control_selector_name = resolve_study_preset("baseline_retest_local").control_selector_name
+    assert control_selector_name is not None
+    summary = ExperimentSummary(
+        dataset_name="2wikimultihop",
+        total_cases=1,
+        selector_budgets=[
+            SelectorBudgetSummary(
+                name=control_selector_name,
+                selector_provider=None,
+                selector_model=None,
+                budget_mode="tokens",
+                budget_value=128,
+                budget_label="tokens-128",
+                token_budget_ratio=None,
+                token_budget_tokens=128,
+                num_cases=1,
+                avg_start_hit=None,
+                avg_support_recall=0.4,
+                avg_support_precision=0.6,
+                avg_support_f1=0.48,
+                avg_path_hit=0.0,
+                avg_selected_nodes=2.0,
+                avg_selected_token_estimate=64.0,
+                avg_compression_ratio=0.1,
+                avg_budget_adherence=1.0,
+                avg_budget_utilization=0.5,
+                avg_empty_selection_rate=0.0,
+                avg_selection_runtime_s=0.01,
+                avg_support_f1_zero_on_empty=0.48,
+                avg_selector_prompt_tokens=None,
+                avg_selector_completion_tokens=None,
+                avg_selector_total_tokens=None,
+                avg_selector_runtime_s=None,
+                avg_selector_llm_calls=None,
+                avg_selector_fallback_rate=None,
+                avg_selector_parse_failure_rate=None,
+                avg_answer_em=None,
+                avg_answer_f1=None,
+            ),
+            SelectorBudgetSummary(
+                name="full_corpus_upper_bound",
+                selector_provider=None,
+                selector_model=None,
+                budget_mode="tokens",
+                budget_value=128,
+                budget_label="tokens-128",
+                token_budget_ratio=None,
+                token_budget_tokens=128,
+                num_cases=1,
+                avg_start_hit=None,
+                avg_support_recall=0.8,
+                avg_support_precision=0.8,
+                avg_support_f1=0.8,
+                avg_path_hit=1.0,
+                avg_selected_nodes=4.0,
+                avg_selected_token_estimate=120.0,
+                avg_compression_ratio=1.0,
+                avg_budget_adherence=1.0,
+                avg_budget_utilization=0.9,
+                avg_empty_selection_rate=0.0,
+                avg_selection_runtime_s=0.01,
+                avg_support_f1_zero_on_empty=0.8,
+                avg_selector_prompt_tokens=None,
+                avg_selector_completion_tokens=None,
+                avg_selector_total_tokens=None,
+                avg_selector_runtime_s=None,
+                avg_selector_llm_calls=None,
+                avg_selector_fallback_rate=None,
+                avg_selector_parse_failure_rate=None,
+                avg_answer_em=None,
+                avg_answer_f1=None,
+            ),
+        ],
+    )
+    (output_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "dataset_name": summary.dataset_name,
+                "total_cases": summary.total_cases,
+                "selector_budgets": [asdict(row) for row in summary.selector_budgets],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "run_manifest.json").write_text(
+        json.dumps({"study_preset": "baseline_retest_local"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    bundle = export_report_bundle_from_file(
+        output_dir / "summary.json",
+        summary_rows_output_path=output_dir / "exports" / "custom-summary.csv",
+    )
+
+    assert bundle.summary_rows_path == output_dir / "exports" / "custom-summary.csv"
+    assert bundle.summary_rows_path.exists()
+    assert bundle.study_comparison_rows_path == output_dir / "exports" / "study_comparison_rows.csv"
+    assert bundle.study_comparison_rows_path.exists()
+
+    with bundle.study_comparison_rows_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    dense_row = next(
+        row
+        for row in rows
+        if row["selector_name"] == control_selector_name
+    )
+    assert dense_row["study_preset"] == "baseline_retest_local"
+    assert dense_row["control_selector_name"] == control_selector_name
+    assert float(dense_row["delta_support_f1_vs_control"]) == 0.0
+
+
+def test_export_report_bundle_from_file_without_manifest_still_writes_comparison_rows(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "bundle-report-without-manifest"
+
+    run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=1,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+    (output_dir / "run_manifest.json").unlink()
+
+    bundle = export_report_bundle_from_file(
+        output_dir / "summary.json",
+        study_comparison_output_path=output_dir / "exports" / "comparison.csv",
+    )
+
+    assert bundle.summary_rows_path == output_dir / "summary_rows.csv"
+    assert bundle.summary_rows_path.exists()
+    assert bundle.study_comparison_rows_path == output_dir / "exports" / "comparison.csv"
+    assert bundle.study_comparison_rows_path.exists()
+
+    with bundle.study_comparison_rows_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert rows[0]["study_preset"] == ""
+    assert rows[0]["control_selector_name"] == ""
+    assert rows[0]["delta_support_f1_vs_control"] == ""
+
+
 def test_run_2wiki_store_experiment_filters_cases_by_case_ids_file(prepared_two_wiki_store, tmp_path):
     case_ids_path = tmp_path / "store-case-ids.txt"
     case_ids_path.write_text("q2\n", encoding="utf-8")
@@ -734,6 +892,82 @@ def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared
     assert (tmp_path / "runs" / "pilot" / "summary.json").exists()
     assert (tmp_path / "runs" / "pilot" / "summary_rows.csv").exists()
     assert (tmp_path / "runs" / "pilot" / "study_comparison_rows.csv").exists()
+    assert (tmp_path / "runs" / "pilot" / "run_manifest.json").exists()
+    assert (tmp_path / "runs" / "pilot" / "evaluated_case_ids.txt").exists()
+
+    manifest = json.loads((tmp_path / "runs" / "pilot" / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["dataset_name"] == "2wikimultihop"
+    assert manifest["study_preset"] is None
+    assert manifest["selector_preset"] == "full"
+    assert manifest["resolved_selectors"] == [CANONICAL_DENSE]
+    assert manifest["resolved_token_budgets"] is None
+    assert manifest["resolved_budget_ratios"] == [0.1]
+    assert manifest["control_selector_name"] is None
+    assert manifest["missing_chunks"] == []
+    assert (tmp_path / "runs" / "pilot" / "evaluated_case_ids.txt").read_text(encoding="utf-8") == "q1\nq2\n"
+
+
+def test_merge_2wiki_results_writes_manifest_when_chunks_are_missing(prepared_two_wiki_store, tmp_path):
+    run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot-missing",
+        chunk_size=1,
+        chunk_index=0,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    summary, missing = merge_2wiki_results(run_dir=tmp_path / "runs" / "pilot-missing")
+
+    assert summary.total_cases == 1
+    assert missing == [1]
+    manifest = json.loads((tmp_path / "runs" / "pilot-missing" / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["missing_chunks"] == [1]
+    assert (tmp_path / "runs" / "pilot-missing" / "evaluated_case_ids.txt").read_text(encoding="utf-8") == "q1\n"
+
+
+def test_merge_2wiki_results_downgrades_mixed_chunk_metadata(prepared_two_wiki_store, tmp_path):
+    run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot-mixed-meta",
+        chunk_size=1,
+        chunk_index=0,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+    run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot-mixed-meta",
+        chunk_size=1,
+        chunk_index=1,
+        selector_names=[CANONICAL_OVERLAP],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    second_chunk_meta_path = tmp_path / "runs" / "pilot-mixed-meta" / "chunks" / "chunk-00001" / "chunk.json"
+    second_chunk_meta = json.loads(second_chunk_meta_path.read_text(encoding="utf-8"))
+    second_chunk_meta["study_preset"] = "baseline_retest_local"
+    second_chunk_meta["selector_preset"] = "paper_recommended_local"
+    second_chunk_meta_path.write_text(json.dumps(second_chunk_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    summary, missing = merge_2wiki_results(run_dir=tmp_path / "runs" / "pilot-mixed-meta")
+
+    assert summary.total_cases == 2
+    assert missing == []
+    manifest = json.loads((tmp_path / "runs" / "pilot-mixed-meta" / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["study_preset"] is None
+    assert manifest["selector_preset"] is None
+    assert manifest["control_selector_name"] is None
+    assert manifest["resolved_selectors"] == [CANONICAL_DENSE, CANONICAL_OVERLAP]
 
 
 def test_summarize_result_records_separates_selector_model_groups():
