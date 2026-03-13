@@ -34,7 +34,7 @@ from webwalker.eval import (
 )
 from webwalker.logging import create_progress, should_render_progress
 from webwalker.reports import export_summary_report
-from webwalker.selector import available_selector_names, select_selectors
+from webwalker.selector import available_selector_names, available_selector_presets, select_selectors
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ def run_dataset_experiment(
     output_dir: str | Path,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -97,6 +98,7 @@ def run_dataset_experiment(
     cases = adapter.load_cases(questions_path, limit=limit)
     selectors = select_selectors(
         selector_names,
+        preset=selector_preset,
         include_diagnostics=selector_names is not None,
         selector_provider=selector_provider,
         selector_model=selector_model,
@@ -214,6 +216,7 @@ def run_2wiki_experiment(
     output_dir: str | Path,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -240,6 +243,7 @@ def run_2wiki_experiment(
         output_dir=output_dir,
         limit=limit,
         selector_names=selector_names,
+        selector_preset=selector_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -268,6 +272,7 @@ def run_iirc_experiment(
     output_dir: str | Path,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -294,6 +299,7 @@ def run_iirc_experiment(
         output_dir=output_dir,
         limit=limit,
         selector_names=selector_names,
+        selector_preset=selector_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -323,6 +329,7 @@ def run_hotpotqa_experiment(
     graph_records_path: str | Path | None = None,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -352,6 +359,7 @@ def run_hotpotqa_experiment(
             output_dir=output_dir,
             limit=limit,
             selector_names=selector_names,
+            selector_preset=selector_preset,
             token_budgets=token_budgets,
             budget_ratios=budget_ratios,
             selector_provider=selector_provider,
@@ -386,6 +394,7 @@ def run_hotpotqa_experiment(
     cases = load_hotpotqa_questions(questions_path, limit=limit, variant="distractor")
     selectors = select_selectors(
         selector_names,
+        preset=selector_preset,
         include_diagnostics=selector_names is not None,
         selector_provider=selector_provider,
         selector_model=selector_model,
@@ -495,6 +504,7 @@ def run_musique_experiment(
     output_dir: str | Path,
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -521,6 +531,7 @@ def run_musique_experiment(
         output_dir=output_dir,
         limit=limit,
         selector_names=selector_names,
+        selector_preset=selector_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -550,6 +561,7 @@ def run_docs_experiment(
     dataset_name: str = "docs",
     limit: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -576,6 +588,7 @@ def run_docs_experiment(
         output_dir=output_dir,
         limit=limit,
         selector_names=selector_names,
+        selector_preset=selector_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -611,6 +624,7 @@ def run_store_experiment(
     chunk_size: int | None = None,
     chunk_index: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -652,6 +666,7 @@ def run_store_experiment(
     )
     selectors = select_selectors(
         selector_names,
+        preset=selector_preset,
         include_diagnostics=selector_names is not None,
         selector_provider=selector_provider,
         selector_model=selector_model,
@@ -755,7 +770,8 @@ def run_store_experiment(
             {
                 **chunk_meta,
                 "store_uri": str(store_uri),
-                "selectors": list(selector_names or []),
+                "selectors": [selector.name for selector in selectors],
+                "selector_preset": selector_preset,
                 "token_budgets": list(token_budgets) if token_budgets is not None else None,
                 "budget_ratios": list(budget_ratios) if budget_ratios is not None else None,
                 "selector_provider": selector_provider,
@@ -801,6 +817,7 @@ def run_2wiki_store_experiment(
     chunk_size: int | None = None,
     chunk_index: int | None = None,
     selector_names: Sequence[str] | None = None,
+    selector_preset: str = "full",
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -833,6 +850,7 @@ def run_2wiki_store_experiment(
         chunk_size=chunk_size,
         chunk_index=chunk_index,
         selector_names=selector_names,
+        selector_preset=selector_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -1003,6 +1021,10 @@ def parse_token_budgets(value: str | None) -> list[int] | None:
 
 def selector_choices_help(*, include_diagnostics: bool = True) -> str:
     return ",".join(available_selector_names(include_diagnostics=include_diagnostics))
+
+
+def selector_preset_choices_help() -> str:
+    return ",".join(available_selector_presets())
 
 
 def budget_ratio_choices_help() -> str:

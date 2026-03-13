@@ -25,6 +25,7 @@ class WalkBudget:
 class StepScorerMetadata:
     scorer_kind: str
     backend: str
+    profile_name: str | None = None
     provider: str | None = None
     model: str | None = None
     prompt_version: str | None = None
@@ -137,6 +138,7 @@ class _BaseOverlapStepScorer:
         novelty_bonus: float = 0.05,
         lookahead_steps: int = 1,
         lookahead_gamma: float = 0.6,
+        profile_name: str | None = None,
     ):
         if lookahead_steps <= 0:
             raise ValueError("lookahead_steps must be positive.")
@@ -149,6 +151,7 @@ class _BaseOverlapStepScorer:
         self.metadata = StepScorerMetadata(
             scorer_kind=self.scorer_kind,
             backend="overlap",
+            profile_name=profile_name,
             provider=None,
             model=None,
             prompt_version=None,
@@ -296,17 +299,20 @@ class LinkContextOverlapStepScorer(_BaseOverlapStepScorer):
         *,
         anchor_weight: float = 0.6,
         sentence_weight: float = 0.4,
+        target_weight: float = 0.0,
         novelty_bonus: float = 0.05,
         lookahead_steps: int = 1,
         lookahead_gamma: float = 0.6,
+        profile_name: str | None = None,
     ):
         super().__init__(
             anchor_weight=anchor_weight,
             sentence_weight=sentence_weight,
-            target_weight=0.0,
+            target_weight=target_weight,
             novelty_bonus=novelty_bonus,
             lookahead_steps=lookahead_steps,
             lookahead_gamma=lookahead_gamma,
+            profile_name=profile_name,
         )
 
 
@@ -326,6 +332,7 @@ class TitleAwareOverlapStepScorer(_BaseOverlapStepScorer):
             novelty_bonus=novelty_bonus,
             lookahead_steps=1,
             lookahead_gamma=0.6,
+            profile_name="overlap_title_aware",
         )
 
 

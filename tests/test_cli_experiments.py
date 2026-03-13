@@ -130,6 +130,82 @@ def test_run_2wiki_cli_supports_no_e2e_and_no_export(two_wiki_files, tmp_path):
     assert not (output_dir / "graphrag_inputs").exists()
 
 
+def test_run_2wiki_cli_forwards_selector_preset_when_selectors_are_omitted(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "cli-preset"
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _fake_run_2wiki_experiment(**kwargs):
+        captured.update(kwargs)
+        return [], ExperimentSummary(dataset_name="2wikimultihop", total_cases=0, selector_budgets=[])
+
+    monkeypatch.setattr("webwalker_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-2wiki",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--selector-preset",
+            "paper_recommended",
+            "--token-budgets",
+            "128",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["selector_names"] is None
+    assert captured["selector_preset"] == "paper_recommended"
+
+
+def test_run_2wiki_cli_passes_explicit_selectors_alongside_selector_preset(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "cli-preset-explicit"
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _fake_run_2wiki_experiment(**kwargs):
+        captured.update(kwargs)
+        return [], ExperimentSummary(dataset_name="2wikimultihop", total_cases=0, selector_budgets=[])
+
+    monkeypatch.setattr("webwalker_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-2wiki",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--selectors",
+            CANONICAL_DENSE,
+            "--selector-preset",
+            "paper_recommended",
+            "--token-budgets",
+            "128",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["selector_names"] == [CANONICAL_DENSE]
+    assert captured["selector_preset"] == "paper_recommended"
+
+
 def test_run_2wiki_cli_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
     questions_path, graph_path = two_wiki_files
     output_dir = tmp_path / "cli-legacy-selector"

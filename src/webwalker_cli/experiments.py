@@ -33,6 +33,7 @@ from webwalker.experiments import (
     run_2wiki_experiment,
     run_2wiki_store_experiment,
     selector_choices_help,
+    selector_preset_choices_help,
     token_budget_choices_help,
 )
 from webwalker.logging import DashboardLogBuffer, DashboardProgressState, dashboard_session
@@ -42,6 +43,11 @@ experiments_app = typer.Typer(
     name="webwalker experiments",
     help="webwalker experiment runners",
     add_completion=False,
+)
+
+_SELECTOR_PRESET_HELP = (
+    f"Selector preset when --selectors is omitted. Choices: {selector_preset_choices_help()}; "
+    "--selectors takes precedence."
 )
 
 
@@ -169,6 +175,7 @@ def run_2wiki(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -198,7 +205,7 @@ def run_2wiki(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
-    ) -> None:
+) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
         token_budgets=token_budgets,
@@ -214,6 +221,7 @@ def run_2wiki(
             output_dir=output,
             limit=limit,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -233,7 +241,7 @@ def run_2wiki(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
-    ) 
+    )
     _print_summary(console, summary)
     _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
 
@@ -249,6 +257,7 @@ def run_iirc(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -278,7 +287,7 @@ def run_iirc(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
-    ) -> None:
+) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
         token_budgets=token_budgets,
@@ -294,6 +303,7 @@ def run_iirc(
             output_dir=output,
             limit=limit,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -313,7 +323,7 @@ def run_iirc(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
-    ) 
+    )
     _print_summary(console, summary)
     _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
 
@@ -329,6 +339,7 @@ def run_musique(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -374,6 +385,7 @@ def run_musique(
             output_dir=output,
             limit=limit,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -410,6 +422,7 @@ def run_hotpotqa(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -461,6 +474,7 @@ def run_hotpotqa(
             graph_records_path=graph_records,
             limit=limit,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -497,6 +511,7 @@ def run_docs(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -543,6 +558,7 @@ def run_docs(
             dataset_name=dataset_name,
             limit=limit,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -562,7 +578,7 @@ def run_docs(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
-    ) 
+    )
     _print_summary(console, summary)
     _print_direct_outputs(console=console, output=output, export_graphrag_inputs=export_graphrag_inputs)
 
@@ -584,6 +600,7 @@ def run_2wiki_store(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -635,6 +652,7 @@ def run_2wiki_store(
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -654,7 +672,7 @@ def run_2wiki_store(
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
         ),
-    ) 
+    )
     _print_summary(console, summary)
     _print_store_outputs(console=console, chunk_dir=chunk_dir, export_graphrag_inputs=export_graphrag_inputs)
 
@@ -690,6 +708,7 @@ def run_iirc_store(
     chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
     chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
     selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
     budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
@@ -727,6 +746,7 @@ def run_iirc_store(
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -762,6 +782,7 @@ def run_musique_store(
     chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
     chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
     selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
     budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
@@ -799,6 +820,7 @@ def run_musique_store(
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -834,6 +856,7 @@ def run_hotpotqa_store(
     chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
     chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
     selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
+    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
     token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
     budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
@@ -871,6 +894,7 @@ def run_hotpotqa_store(
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
+            selector_preset=selector_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,

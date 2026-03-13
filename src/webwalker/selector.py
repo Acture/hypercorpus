@@ -42,6 +42,7 @@ BudgetFillMode = Literal["score_floor", "always", "relative_drop"]
 BaselineName = Literal[
     "dense",
     "iterative_dense",
+    "mdr_light",
     "topology_neighbors",
     "anchor_neighbors",
     "link_context_neighbors",
@@ -50,11 +51,13 @@ SearchStructure = Literal["single_path_walk", "beam", "astar", "ucs", "beam_ppr"
 EdgeScorerName = Literal["link_context_overlap", "link_context_llm", "anchor_overlap", "link_context_sentence_transformer"]
 LookaheadName = Literal["lookahead_1", "lookahead_2"]
 SelectorFamily = Literal["baseline", "path_search", "diagnostic"]
+SelectorPresetName = Literal["full", "paper_recommended"]
 
 _SEED_STRATEGIES: set[str] = {"sentence_transformer", "lexical_overlap"}
 _BASELINES: set[str] = {
     "dense",
     "iterative_dense",
+    "mdr_light",
     "topology_neighbors",
     "anchor_neighbors",
     "link_context_neighbors",
@@ -71,6 +74,29 @@ _SELECTOR_PATTERN = re.compile(
     r"^top_(?P<seed_top_k>\d+)_seed__(?P<seed_strategy>sentence_transformer|lexical_overlap)__hop_(?P<hop_budget>\d+)__(?P<rest>.+)$"
 )
 _DIAGNOSTIC_SELECTORS = ("gold_support_context", "full_corpus_upper_bound")
+_OVERLAP_PROFILE_DEFAULT = "overlap_balanced"
+_SENTENCE_TRANSFORMER_PROFILE_DEFAULT = "st_balanced"
+_OVERLAP_PROFILES: dict[str, dict[str, float]] = {
+    "overlap_balanced": {"anchor": 0.60, "sentence": 0.40, "title": 0.00, "novelty": 0.05},
+    "overlap_anchor_heavy": {"anchor": 0.80, "sentence": 0.20, "title": 0.00, "novelty": 0.05},
+    "overlap_title_aware": {"anchor": 0.45, "sentence": 0.35, "title": 0.20, "novelty": 0.05},
+}
+_SENTENCE_TRANSFORMER_PROFILES: dict[str, dict[str, float]] = {
+    "st_balanced": {"direct": 0.55, "future": 0.35, "novelty": 0.10},
+    "st_direct_heavy": {"direct": 0.80, "future": 0.10, "novelty": 0.10},
+    "st_future_heavy": {"direct": 0.45, "future": 0.45, "novelty": 0.10},
+}
+_PAPER_RECOMMENDED_SELECTORS: tuple[str, ...] = (
+    "top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_title_aware__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_1__profile_st_balanced__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm__lookahead_1__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+    "gold_support_context",
+    "full_corpus_upper_bound",
+)
 
 
 class SelectionMode(StrEnum):
@@ -99,6 +125,7 @@ class SelectionTraceStep:
 class SelectorMetadata:
     scorer_kind: str
     backend: str
+    profile_name: str | None = None
     provider: str | None = None
     model: str | None = None
     seed_strategy: str | None = None
@@ -224,6 +251,7 @@ class SelectorSpec:
     canonical_name: str
     family: SelectorFamily
     base_canonical_name: str | None = None
+    profile_name: str | None = None
     seed_strategy: SeedStrategyName | None = None
     seed_top_k: int | None = None
     hop_budget: int | None = None
@@ -334,6 +362,7 @@ class SentenceTransformerStepScorer:
         direct_weight: float = 0.90,
         future_weight: float = 0.35,
         novelty_weight: float = 0.10,
+        profile_name: str | None = None,
     ):
         if lookahead_steps <= 0:
             raise ValueError("lookahead_steps must be positive.")
@@ -345,6 +374,7 @@ class SentenceTransformerStepScorer:
         self.metadata = StepScorerMetadata(
             scorer_kind=self.scorer_kind,
             backend=getattr(embedder, "backend_name", "sentence_transformer"),
+            profile_name=profile_name,
             provider=None,
             model=getattr(embedder, "model_name", None),
             prompt_version=None,
@@ -384,7 +414,7 @@ class SentenceTransformerStepScorer:
             )
             if self.lookahead_steps > 1 and remaining_steps > 1:
                 total_score = _clamp_score(
-                    0.55 * direct_similarity
+                    self.direct_weight * direct_similarity
                     + self.future_weight * future_similarity
                     + self.novelty_weight * novelty
                 )
@@ -1163,6 +1193,113 @@ class CanonicalIterativeDenseSelector(_SentenceTransformerSupport):
         return selected
 
 
+class CanonicalMDRLightSelector(CanonicalIterativeDenseSelector):
+    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+        started_at = time.perf_counter()
+        embedder = _seed_embedder(self.spec, self._get_embedder)
+        if embedder is None:
+            raise ValueError("mdr_light requires sentence-transformer seed retrieval.")
+        hop_budget = self.spec.hop_budget or 1
+        per_hop_top_k = self.spec.seed_top_k or 1
+        token_budget_limit = _runtime_budget_token_limit(graph, budget)
+
+        selected_order: list[str] = []
+        selected_set: set[str] = set()
+        node_scores: dict[str, float] = {}
+        trace: list[SelectionTraceStep] = []
+        debug_trace: list[str] = []
+
+        seed_candidates = _select_seed_candidates(
+            graph,
+            case.query,
+            per_hop_top_k,
+            seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+            embedder=embedder,
+        )
+        root_candidates = [node_id for node_id, _score in seed_candidates]
+        frontier = self._accept_candidates(
+            seed_candidates,
+            selected_order=selected_order,
+            selected_set=selected_set,
+            node_scores=node_scores,
+            trace=trace,
+            debug_trace=debug_trace,
+            hop_index=0,
+            score_reason="seed",
+        )
+
+        for hop_index in range(1, hop_budget + 1):
+            remaining_node_ids = [node_id for node_id in graph.nodes if node_id not in selected_set]
+            if not remaining_node_ids or not frontier:
+                break
+            merged_candidates: dict[str, float] = {}
+            for frontier_node_id in frontier:
+                hop_candidates = _select_seed_candidates(
+                    graph,
+                    self._expansion_query(graph, case.query, [frontier_node_id]),
+                    per_hop_top_k,
+                    seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+                    embedder=embedder,
+                    candidate_ids=remaining_node_ids,
+                )
+                if not hop_candidates:
+                    debug_trace.append(f"hop:{hop_index}:frontier:{frontier_node_id}:no_candidates")
+                    continue
+                for node_id, score in hop_candidates:
+                    debug_trace.append(
+                        f"hop:{hop_index}:frontier:{frontier_node_id}:mdr_light:{node_id}:{score:.4f}"
+                    )
+                    previous = merged_candidates.get(node_id)
+                    if previous is None or score > previous:
+                        merged_candidates[node_id] = score
+            if not merged_candidates:
+                debug_trace.append(f"hop:{hop_index}:no_candidates")
+                break
+            ranked_candidates = sorted(
+                merged_candidates.items(),
+                key=lambda item: (item[1], item[0]),
+                reverse=True,
+            )[:per_hop_top_k]
+            frontier = self._accept_candidates(
+                ranked_candidates,
+                selected_order=selected_order,
+                selected_set=selected_set,
+                node_scores=node_scores,
+                trace=trace,
+                debug_trace=debug_trace,
+                hop_index=hop_index,
+                score_reason="mdr_light",
+            )
+            if not frontier:
+                debug_trace.append(f"hop:{hop_index}:duplicates_only")
+                break
+
+        runtime_s = time.perf_counter() - started_at
+        seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
+        result = _build_corpus_selection_result(
+            selector_name=self.name,
+            graph=graph,
+            query=case.query,
+            node_scores=node_scores,
+            link_scores={},
+            budget=SelectorBudget(max_nodes=None, max_hops=hop_budget, max_tokens=token_budget_limit),
+            strategy="mdr_light",
+            mode=SelectionMode.STANDALONE,
+            debug_trace=debug_trace,
+            root_node_ids=root_candidates,
+            trace=trace,
+            selector_metadata=_baseline_selector_metadata(self.spec, seed_backend=seed_backend, seed_model=seed_model),
+            selector_usage=SelectorUsage(runtime_s=runtime_s),
+            stop_reason="mdr_light_retrieval",
+        )
+        selected_node_ids = self._trim_to_budget(graph, selected_order, token_budget_limit)
+        result.selected_node_ids = selected_node_ids
+        result.token_cost_estimate = sum(_node_token_cost(graph, node_id) for node_id in selected_node_ids)
+        selected_node_set = set(selected_node_ids)
+        result.trace = [step for step in trace if step.node_id in selected_node_set]
+        return result
+
+
 class CanonicalNeighborSelector(_SentenceTransformerSupport):
     def __init__(
         self,
@@ -1510,17 +1647,54 @@ def _split_budget_fill_suffix(name: str) -> tuple[str, BudgetFillMode | None]:
     return name, None
 
 
+def _split_profile_suffix(name: str) -> tuple[str, str | None]:
+    marker = "__profile_"
+    if marker not in name:
+        return name, None
+    base_name, profile_name = name.rsplit(marker, 1)
+    if not base_name or not profile_name:
+        return name, None
+    return base_name, profile_name
+
+
+def _resolved_profile_name(spec: SelectorSpec) -> str | None:
+    if spec.profile_name is not None:
+        return spec.profile_name
+    if spec.edge_scorer == "link_context_overlap":
+        return _OVERLAP_PROFILE_DEFAULT
+    if spec.edge_scorer == "link_context_sentence_transformer":
+        return _SENTENCE_TRANSFORMER_PROFILE_DEFAULT
+    return None
+
+
+def _validate_profile_for_spec(spec: SelectorSpec, *, raw_name: str) -> None:
+    if spec.profile_name is None:
+        return
+    if spec.family != "path_search":
+        raise ValueError(f"Unknown selector: {raw_name}")
+    if spec.edge_scorer == "link_context_overlap":
+        if spec.profile_name not in _OVERLAP_PROFILES:
+            raise ValueError(f"Unknown selector: {raw_name}")
+        return
+    if spec.edge_scorer == "link_context_sentence_transformer":
+        if spec.profile_name not in _SENTENCE_TRANSFORMER_PROFILES:
+            raise ValueError(f"Unknown selector: {raw_name}")
+        return
+    raise ValueError(f"Unknown selector: {raw_name}")
+
+
 def parse_selector_spec(name: str) -> SelectorSpec:
     base_name, budget_fill_mode = _split_budget_fill_suffix(name)
-    if base_name == "gold_support_context":
-        if budget_fill_mode is not None:
+    spec_name, profile_name = _split_profile_suffix(base_name)
+    if spec_name == "gold_support_context":
+        if budget_fill_mode is not None or profile_name is not None:
             raise ValueError(f"Unknown selector: {name}")
         return GoldSupportContextSelector.spec
-    if base_name == "full_corpus_upper_bound":
-        if budget_fill_mode is not None:
+    if spec_name == "full_corpus_upper_bound":
+        if budget_fill_mode is not None or profile_name is not None:
             raise ValueError(f"Unknown selector: {name}")
         return FullCorpusUpperBoundSelector.spec
-    match = _SELECTOR_PATTERN.fullmatch(base_name)
+    match = _SELECTOR_PATTERN.fullmatch(spec_name)
     if match is None:
         raise ValueError(f"Unknown selector: {name}")
     seed_top_k = int(match.group("seed_top_k"))
@@ -1536,12 +1710,16 @@ def parse_selector_spec(name: str) -> SelectorSpec:
             raise ValueError(f"Unknown selector: {name}")
         if baseline == "iterative_dense" and hop_budget < 1:
             raise ValueError(f"Unknown selector: {name}")
-        if baseline not in {"dense", "iterative_dense"} and hop_budget != 1:
+        if baseline == "mdr_light":
+            if seed_strategy != "sentence_transformer" or hop_budget < 1:
+                raise ValueError(f"Unknown selector: {name}")
+        if baseline not in {"dense", "iterative_dense", "mdr_light"} and hop_budget != 1:
             raise ValueError(f"Unknown selector: {name}")
-        return SelectorSpec(
+        spec = SelectorSpec(
             canonical_name=name,
-            base_canonical_name=base_name,
+            base_canonical_name=spec_name,
             family="baseline",
+            profile_name=profile_name,
             seed_strategy=seed_strategy,  # type: ignore[arg-type]
             seed_top_k=seed_top_k,
             hop_budget=hop_budget,
@@ -1551,15 +1729,18 @@ def parse_selector_spec(name: str) -> SelectorSpec:
             budget_fill_score_floor=0.05 if budget_fill_mode == "score_floor" else None,
             budget_fill_relative_drop_ratio=0.5 if budget_fill_mode == "relative_drop" else None,
         )
+        _validate_profile_for_spec(spec, raw_name=name)
+        return spec
     if len(parts) != 3:
         raise ValueError(f"Unknown selector: {name}")
     search_structure, edge_scorer, lookahead = parts
     if search_structure not in _SEARCH_STRUCTURES or edge_scorer not in _EDGE_SCORERS or lookahead not in _LOOKAHEADS:
         raise ValueError(f"Unknown selector: {name}")
-    return SelectorSpec(
+    spec = SelectorSpec(
         canonical_name=name,
-        base_canonical_name=base_name,
+        base_canonical_name=spec_name,
         family="path_search",
+        profile_name=profile_name,
         seed_strategy=seed_strategy,  # type: ignore[arg-type]
         seed_top_k=seed_top_k,
         hop_budget=hop_budget,
@@ -1571,6 +1752,8 @@ def parse_selector_spec(name: str) -> SelectorSpec:
         budget_fill_score_floor=0.05 if budget_fill_mode == "score_floor" else None,
         budget_fill_relative_drop_ratio=0.5 if budget_fill_mode == "relative_drop" else None,
     )
+    _validate_profile_for_spec(spec, raw_name=name)
+    return spec
 
 
 def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
@@ -1599,6 +1782,8 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
                 [
                     f"top_1_seed__{seed_strategy}__hop_2__iterative_dense",
                     f"top_3_seed__{seed_strategy}__hop_2__iterative_dense",
+                    f"top_1_seed__{seed_strategy}__hop_2__mdr_light",
+                    f"top_3_seed__{seed_strategy}__hop_2__mdr_light",
                 ]
             )
         for search_structure in ("beam", "astar", "ucs", "beam_ppr"):
@@ -1614,6 +1799,25 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
     if include_diagnostics:
         names.extend(_DIAGNOSTIC_SELECTORS)
     return names
+
+
+def available_selector_presets() -> list[str]:
+    return ["full", "paper_recommended"]
+
+
+def selector_names_for_preset(
+    preset: SelectorPresetName | str,
+    *,
+    include_diagnostics: bool = True,
+) -> list[str]:
+    if preset == "full":
+        return available_selector_names(include_diagnostics=include_diagnostics)
+    if preset == "paper_recommended":
+        names = list(_PAPER_RECOMMENDED_SELECTORS)
+        if include_diagnostics:
+            return names
+        return [name for name in names if name not in _DIAGNOSTIC_SELECTORS]
+    raise ValueError(f"Unknown selector preset: {preset}")
 
 
 def build_selector(
@@ -1687,6 +1891,12 @@ def _build_canonical_selector(
                 embedder_config=sentence_transformer_config,
                 embedder_factory=sentence_transformer_embedder_factory,
             )
+        if spec.baseline == "mdr_light":
+            return CanonicalMDRLightSelector(
+                spec,
+                embedder_config=sentence_transformer_config,
+                embedder_factory=sentence_transformer_embedder_factory,
+            )
         return CanonicalNeighborSelector(
             spec,
             embedder_config=sentence_transformer_config,
@@ -1713,6 +1923,7 @@ def _build_canonical_selector(
 def select_selectors(
     names: Sequence[str] | None = None,
     *,
+    preset: SelectorPresetName | str = "full",
     include_diagnostics: bool = True,
     selector_provider: Literal["openai", "anthropic", "gemini"] = "openai",
     selector_model: str | None = None,
@@ -1725,7 +1936,10 @@ def select_selectors(
     sentence_transformer_device: str | None = None,
     sentence_transformer_embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder] | None = None,
 ) -> list[CorpusSelector]:
-    selector_names = list(names) if names is not None else available_selector_names(include_diagnostics=include_diagnostics)
+    selector_names = list(names) if names is not None else selector_names_for_preset(
+        preset,
+        include_diagnostics=include_diagnostics,
+    )
     return [
         build_selector(
             name,
@@ -1767,11 +1981,31 @@ def _build_step_scorer_from_spec(
     if spec.edge_scorer == "anchor_overlap":
         return AnchorOverlapStepScorer(lookahead_steps=lookahead_steps)
     if spec.edge_scorer == "link_context_overlap":
-        return LinkContextOverlapStepScorer(lookahead_steps=lookahead_steps)
+        profile_name = _resolved_profile_name(spec)
+        assert profile_name is not None
+        profile = _OVERLAP_PROFILES[profile_name]
+        return LinkContextOverlapStepScorer(
+            anchor_weight=profile["anchor"],
+            sentence_weight=profile["sentence"],
+            target_weight=profile["title"],
+            novelty_bonus=profile["novelty"],
+            lookahead_steps=lookahead_steps,
+            profile_name=profile_name,
+        )
     if spec.edge_scorer == "link_context_sentence_transformer":
         if embedder is None:
             raise ValueError("Sentence-transformer edge scorers require an embedder.")
-        return SentenceTransformerStepScorer(embedder=embedder, lookahead_steps=lookahead_steps)
+        profile_name = _resolved_profile_name(spec)
+        assert profile_name is not None
+        profile = _SENTENCE_TRANSFORMER_PROFILES[profile_name]
+        return SentenceTransformerStepScorer(
+            embedder=embedder,
+            lookahead_steps=lookahead_steps,
+            direct_weight=profile["direct"],
+            future_weight=profile["future"],
+            novelty_weight=profile["novelty"],
+            profile_name=profile_name,
+        )
     if spec.edge_scorer == "link_context_llm":
         mode = "two_hop" if lookahead_steps == 2 else "single_hop"
         return LLMStepLinkScorer(
@@ -1930,6 +2164,7 @@ def _baseline_selector_metadata(
     return SelectorMetadata(
         scorer_kind="baseline",
         backend=backend,
+        profile_name=_resolved_profile_name(spec),
         seed_strategy=spec.seed_strategy,
         seed_backend=seed_backend,
         seed_model=seed_model,
@@ -1958,6 +2193,7 @@ def _apply_selector_metadata(
     else:
         metadata = replace(
             metadata,
+            profile_name=metadata.profile_name or _resolved_profile_name(spec),
             seed_strategy=spec.seed_strategy,
             seed_backend=seed_backend,
             seed_model=seed_model,
@@ -2395,6 +2631,7 @@ def _corpus_selection_from_walk(
             search_structure="single_path_walk",
             edge_scorer=spec.edge_scorer,
             lookahead_depth=spec.lookahead_depth,
+            profile_name=_resolved_profile_name(spec),
         ),
         selector_usage=_selector_usage_from_logs(walk.selector_logs, runtime_override=runtime_s),
         selector_logs=walk.selector_logs,
@@ -2425,6 +2662,7 @@ def _selector_metadata_from_step_scorer(
     search_structure: str | None,
     edge_scorer: str | None = None,
     lookahead_depth: int | None = None,
+    profile_name: str | None = None,
 ) -> SelectorMetadata:
     metadata: StepScorerMetadata = scorer.metadata
     derived_lookahead = lookahead_depth
@@ -2435,6 +2673,7 @@ def _selector_metadata_from_step_scorer(
     return SelectorMetadata(
         scorer_kind=metadata.scorer_kind,
         backend=metadata.backend,
+        profile_name=profile_name or metadata.profile_name,
         provider=metadata.provider,
         model=metadata.model,
         prompt_version=metadata.prompt_version,
@@ -2456,6 +2695,7 @@ def _selector_metadata_from_walk(
     search_structure: str | None,
     edge_scorer: str | None,
     lookahead_depth: int | None,
+    profile_name: str | None = None,
 ) -> SelectorMetadata:
     return _selector_metadata_from_step_scorer(
         scorer=_WalkScorerMetadataAdapter(walk.scorer_metadata),
@@ -2464,6 +2704,7 @@ def _selector_metadata_from_walk(
         search_structure=search_structure,
         edge_scorer=edge_scorer,
         lookahead_depth=lookahead_depth,
+        profile_name=profile_name,
     )
 
 
@@ -2516,7 +2757,9 @@ __all__ = [
     "SemanticPPRSelector",
     "SemanticUCSSelector",
     "available_selector_names",
+    "available_selector_presets",
     "build_selector",
     "parse_selector_spec",
+    "selector_names_for_preset",
     "select_selectors",
 ]

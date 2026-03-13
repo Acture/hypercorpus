@@ -14,6 +14,7 @@ from webwalker.experiments import (
     run_2wiki_experiment,
     run_2wiki_store_experiment,
 )
+from webwalker.selector import build_selector
 
 
 CANONICAL_DENSE = "top_1_seed__lexical_overlap__hop_0__dense"
@@ -155,6 +156,34 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert "selector_total_tokens" in rows[0]
 
 
+def test_run_2wiki_experiment_passes_selector_preset_when_selectors_are_omitted(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    observed: dict[str, object] = {}
+
+    def _fake_select_selectors(names=None, **kwargs):
+        observed["names"] = names
+        observed["preset"] = kwargs["preset"]
+        return [build_selector(CANONICAL_DENSE)]
+
+    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+
+    evaluations, summary = run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=tmp_path / "preset-run",
+        limit=1,
+        selector_names=None,
+        selector_preset="paper_recommended",
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert len(evaluations) == 1
+    assert summary.selector_budgets[0].name == CANONICAL_DENSE
+    assert observed == {"names": None, "preset": "paper_recommended"}
+
+
 def test_run_2wiki_experiment_exports_graphrag_csv(two_wiki_files, tmp_path):
     questions_path, graph_path = two_wiki_files
     output_dir = tmp_path / "csv-out"
@@ -267,6 +296,8 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
     assert (chunk_dir / "results.jsonl").exists()
     assert (chunk_dir / "summary.json").exists()
     chunk_meta = json.loads((chunk_dir / "chunk.json").read_text(encoding="utf-8"))
+    assert chunk_meta["selectors"] == [CANONICAL_OVERLAP, "gold_support_context", "full_corpus_upper_bound"]
+    assert chunk_meta["selector_preset"] == "full"
     assert chunk_meta["token_budgets"] == [128, 256]
     assert chunk_meta["budget_ratios"] is None
 

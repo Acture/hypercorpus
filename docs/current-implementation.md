@@ -32,7 +32,7 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 - Dense and lexical seed selection are both supported.
 - The current experiment runner supports fixed selector matrices plus extra diagnostic selectors outside the default study set.
 - Selector-side LLM scoring is optional and records provider, model, token usage, runtime, cache state, and fallback behavior.
-- Step-scorer composition is currently implemented as fixed profiles rather than an exposed hyperparameter surface. That includes overlap-weight mixes, sentence-transformer direct-vs-future weighting, and LLM subscore aggregation.
+- Step-scorer composition is now exposed as named profiles for overlap and sentence-transformer scorers. LLM scorer aggregation remains fixed today.
 
 ### Budgeted Evaluation
 
@@ -98,6 +98,7 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 
 - `hop_0__dense` variants answer the question: how far can plain lexical or dense seed retrieval go under the same token budget.
 - `hop_2__iterative_dense` variants provide an `MDR-style` iterative dense baseline using repeated dense retrieval over accumulated query-plus-context text under the same budget accounting.
+- `hop_2__mdr_light` variants provide a repo-native comparison point that expands each frontier node with its own dense query and then merges the hop candidates under the same token budget accounting. This is not a trained MDR reproduction.
 - `__budget_fill_relative_drop` variants test whether filling the remaining budget improves all-case evidence recovery.
 
 ### Hyperlink-Local Walk
@@ -134,7 +135,7 @@ Those conclusions should be read together with [phase-decisions.md](phase-decisi
 
 ## Current Exploration Priorities
 
-- Add direct `MDR` and stronger dense baselines before broadening the paper claim.
+- Re-test `mdr_light` and stronger dense baselines before broadening the paper claim.
 - Re-test broad search on harder datasets already supported in this repo, especially `IIRC` and `HotpotQA fullwiki`.
 - Expose scorer-composition profiles for branchy search before treating `beam` or `astar` as settled.
 - Keep `single_path_walk` as the current default operating point until a broader search family wins on a harder setting.

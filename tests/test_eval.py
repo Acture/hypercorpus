@@ -12,7 +12,7 @@ from webwalker.eval import (
     SelectionResult,
     summarize_evaluations,
 )
-from webwalker.selector import available_selector_names, parse_selector_spec, select_selectors
+from webwalker.selector import available_selector_names, parse_selector_spec, selector_names_for_preset, select_selectors
 from webwalker.selector import SelectorMetadata, SelectorUsage
 
 
@@ -21,10 +21,30 @@ def test_available_selector_names_are_canonical_only():
 
     assert "top_1_seed__lexical_overlap__hop_0__dense" in names
     assert "top_1_seed__sentence_transformer__hop_2__iterative_dense" in names
+    assert "top_1_seed__sentence_transformer__hop_2__mdr_light" in names
     assert "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2" in names
     assert "top_3_seed__lexical_overlap__hop_3__beam__link_context_llm__lookahead_2" in names
     assert "seed_rerank" not in names
     assert "seed__link_context_overlap__single_path_walk" not in names
+
+
+def test_selector_names_for_paper_recommended_preset_include_expected_profiles_and_diagnostics():
+    names = selector_names_for_preset("paper_recommended")
+
+    assert names == [
+        "top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_title_aware__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_1__profile_st_balanced__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm__lookahead_1__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+        "gold_support_context",
+        "full_corpus_upper_bound",
+    ]
+    assert selector_names_for_preset("paper_recommended", include_diagnostics=False) == names[:-2]
+    for selector_name in names[:-2]:
+        assert parse_selector_spec(selector_name).canonical_name == selector_name
 
 
 def test_parse_selector_spec_rejects_legacy_names():
@@ -80,6 +100,20 @@ def test_evaluator_runs_canonical_selectors(sample_graph):
     assert results["full_corpus_upper_bound"].metrics.compression_ratio == 1.0
     assert results["top_1_seed__lexical_overlap__hop_1__topology_neighbors"].end_to_end is not None
     assert results["top_1_seed__lexical_overlap__hop_1__topology_neighbors"].end_to_end.em == 1.0
+
+
+def test_select_selectors_prefers_explicit_names_over_preset(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    selectors = select_selectors(
+        names=["top_1_seed__lexical_overlap__hop_0__dense"],
+        preset="paper_recommended",
+        selector_provider="openai",
+        selector_model="gpt-4.1-mini",
+        selector_api_key_env="OPENAI_API_KEY",
+    )
+
+    assert [selector.name for selector in selectors] == ["top_1_seed__lexical_overlap__hop_0__dense"]
 
 
 def test_incremental_experiment_aggregator_matches_batch_summary():

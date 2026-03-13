@@ -1,3 +1,5 @@
+import pytest
+
 from webwalker.eval import EvaluationBudget, EvaluationCase
 from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
 from webwalker.selector import (
@@ -7,6 +9,7 @@ from webwalker.selector import (
     SemanticBeamSelector,
     SemanticPPRSelector,
     SemanticUCSSelector,
+    SentenceTransformerStepScorer,
     build_selector,
     parse_selector_spec,
 )
@@ -60,6 +63,37 @@ def test_parse_selector_spec_accepts_budget_fill_suffixes_and_rejects_diagnostic
         assert str(exc) == "Unknown selector: gold_support_context__budget_fill_always"
     else:
         raise AssertionError("expected diagnostic fill suffix to be rejected")
+
+
+def test_parse_selector_spec_accepts_profile_suffix_before_budget_fill():
+    spec = parse_selector_spec(
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop"
+    )
+
+    assert spec.canonical_name == (
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop"
+    )
+    assert spec.base_canonical_name == (
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2"
+    )
+    assert spec.profile_name == "st_future_heavy"
+    assert spec.budget_fill_mode == "relative_drop"
+    assert spec.budget_fill_relative_drop_ratio == 0.5
+
+
+@pytest.mark.parametrize(
+    "selector_name",
+    [
+        "top_1_seed__lexical_overlap__hop_2__mdr_light",
+        "top_1_seed__sentence_transformer__hop_0__mdr_light",
+        "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_unknown",
+    ],
+)
+def test_parse_selector_spec_rejects_invalid_mdr_light_and_profile_combinations(selector_name):
+    with pytest.raises(ValueError) as exc:
+        parse_selector_spec(selector_name)
+
+    assert str(exc.value) == f"Unknown selector: {selector_name}"
 
 
 def test_semantic_beam_returns_weighted_subgraph_contract(sample_graph):
@@ -325,6 +359,158 @@ def test_sentence_transformer_edge_scorer_records_future_edge_ids():
         for log in result.selector_logs
         for candidate in log.candidates
     )
+
+
+def test_overlap_profiles_change_selection_and_metadata():
+    graph = LinkContextGraph(
+        documents=[
+            DocumentNode("zz_root", "Launch Site Root", ("Launch site root overview.",)),
+            DocumentNode("anchor", "Anchor Evidence", ("Distractor details only.",)),
+            DocumentNode("title", "Launch Site", ("Launch site evidence lives here.",)),
+        ]
+    )
+    graph.add_link(
+        LinkContext(
+            source="zz_root",
+            target="anchor",
+            anchor_text="launch site",
+            sentence="miscellaneous filler",
+            sent_idx=0,
+        )
+    )
+    graph.add_link(
+        LinkContext(
+            source="zz_root",
+            target="title",
+            anchor_text="miscellaneous filler",
+            sentence="launch site",
+            sent_idx=0,
+        )
+    )
+    case = EvaluationCase(case_id="q-overlap-profile", query="launch site")
+    budget = EvaluationBudget(token_budget_tokens=128)
+
+    balanced = build_selector(
+        "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced"
+    )
+    title_aware = build_selector(
+        "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_title_aware"
+    )
+
+    balanced_result = balanced.select(graph, case, budget)
+    title_aware_result = title_aware.select(graph, case, budget)
+
+    assert balanced_result.selected_node_ids[:2] == ["zz_root", "anchor"]
+    assert title_aware_result.selected_node_ids[:2] == ["zz_root", "title"]
+    assert balanced_result.selector_metadata is not None
+    assert balanced_result.selector_metadata.profile_name == "overlap_balanced"
+    assert title_aware_result.selector_metadata is not None
+    assert title_aware_result.selector_metadata.profile_name == "overlap_title_aware"
+
+
+def test_sentence_transformer_profile_uses_configured_direct_weight_for_lookahead_two():
+    graph = LinkContextGraph(
+        documents=[
+            DocumentNode("root", "Root", ("Root context.",)),
+            DocumentNode("direct", "Direct", ("Direct evidence.",)),
+        ]
+    )
+    link = LinkContext(
+        source="root",
+        target="direct",
+        anchor_text="launch evidence",
+        sentence="launch evidence",
+        sent_idx=0,
+    )
+    scorer = SentenceTransformerStepScorer(
+        embedder=FakeEmbedder(
+            {
+                "launch evidence": [1.0, 0.0],
+                "launch evidence launch evidence Direct Direct evidence.": [1.0, 0.0],
+            }
+        ),
+        lookahead_steps=2,
+        direct_weight=0.80,
+        future_weight=0.10,
+        novelty_weight=0.10,
+        profile_name="st_direct_heavy",
+    )
+
+    cards = scorer.score_candidates(
+        query="launch evidence",
+        graph=graph,
+        current_node_id="root",
+        candidate_links=[link],
+        visited_nodes={"root"},
+        path_node_ids=["root"],
+        remaining_steps=2,
+    )
+
+    assert len(cards) == 1
+    assert cards[0].subscores["future_potential"] == 0.0
+    assert cards[0].total_score == pytest.approx(0.9)
+    assert scorer.metadata.profile_name == "st_direct_heavy"
+
+
+def test_mdr_light_differs_from_iterative_dense_for_multi_frontier_dense_hops():
+    graph = LinkContextGraph(
+        documents=[
+            DocumentNode("start_a", "Start Alpha", ("Start alpha context.",)),
+            DocumentNode("start_b", "Start Beta", ("Start beta context.",)),
+            DocumentNode("goal_a", "Goal Alpha", ("Goal alpha evidence.",)),
+            DocumentNode("goal_b", "Goal Beta", ("Goal beta evidence.",)),
+            DocumentNode("noise", "Noise", ("Noise distractor.",)),
+        ]
+    )
+    query = "launch answer"
+    start_a_text = "Start Alpha Start alpha context."
+    start_b_text = "Start Beta Start beta context."
+    goal_a_text = "Goal Alpha Goal alpha evidence."
+    goal_b_text = "Goal Beta Goal beta evidence."
+    noise_text = "Noise Noise distractor."
+    merged_query = "launch answer Start Alpha Start alpha context. Start Beta Start beta context."
+    merged_query_reversed = "launch answer Start Beta Start beta context. Start Alpha Start alpha context."
+    alpha_query = "launch answer Start Alpha Start alpha context."
+    beta_query = "launch answer Start Beta Start beta context."
+
+    embedder = lambda _config: FakeEmbedder(
+        {
+            query: [1.0, 0.0, 0.0, 0.0],
+            start_a_text: [0.9, 0.1, 0.0, 0.0],
+            start_b_text: [0.9, 0.2, 0.0, 0.0],
+            goal_a_text: [0.0, 1.0, 0.0, 0.0],
+            goal_b_text: [0.0, 0.0, 1.0, 0.0],
+            noise_text: [0.0, 0.0, 0.0, 1.0],
+            merged_query: [0.0, 0.0, 0.0, 1.0],
+            merged_query_reversed: [0.0, 0.0, 0.0, 1.0],
+            alpha_query: [0.0, 1.0, 0.0, 0.0],
+            beta_query: [0.0, 0.0, 1.0, 0.0],
+        }
+    )
+    budget = EvaluationBudget(token_budget_tokens=256)
+    case = EvaluationCase(case_id="q-mdr-light", query=query)
+
+    iterative = build_selector(
+        "top_2_seed__sentence_transformer__hop_1__iterative_dense",
+        sentence_transformer_embedder_factory=embedder,
+    )
+    mdr_light = build_selector(
+        "top_2_seed__sentence_transformer__hop_1__mdr_light",
+        sentence_transformer_embedder_factory=embedder,
+    )
+
+    iterative_result = iterative.select(graph, case, budget)
+    mdr_light_result = mdr_light.select(graph, case, budget)
+
+    assert "noise" in iterative_result.selected_node_ids
+    assert "goal_a" not in iterative_result.selected_node_ids
+    assert "noise" not in mdr_light_result.selected_node_ids
+    assert "goal_a" in mdr_light_result.selected_node_ids
+    assert iterative_result.selector_metadata is not None
+    assert iterative_result.selector_metadata.backend == "iterative_dense"
+    assert mdr_light_result.selector_metadata is not None
+    assert mdr_light_result.selector_metadata.backend == "mdr_light"
+    assert mdr_light_result.stop_reason == "mdr_light_retrieval"
 
 
 def test_budget_fill_variants_recover_small_nodes_and_stop_differently():
