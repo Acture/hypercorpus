@@ -33,6 +33,7 @@ from webwalker.eval import (
     summarize_evaluations,
 )
 from webwalker.logging import create_progress, should_render_progress
+from webwalker.reports import export_summary_report
 from webwalker.selector import available_selector_names, select_selectors
 
 logger = logging.getLogger(__name__)
@@ -923,10 +924,7 @@ def merge_store_results(
     with merged_selector_logs.open("w", encoding="utf-8") as handle:
         for record in selector_log_records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    (merged_dir / "summary.json").write_text(
-        json.dumps(asdict(summary), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_summary_file(summary_path=merged_dir / "summary.json", summary=summary)
 
     missing_chunks = _missing_chunk_indices(chunk_indices, total_cases=total_cases, chunk_size=chunk_size)
     logger.info(
@@ -1330,6 +1328,7 @@ def _write_summary_file(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    export_summary_report(summary, summary_path.with_name("summary_rows.csv"))
 
 
 def _selection_record(evaluation: CaseEvaluation, selection) -> dict[str, Any]:

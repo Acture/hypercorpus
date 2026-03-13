@@ -20,6 +20,7 @@ def test_available_selector_names_are_canonical_only():
     names = available_selector_names(include_diagnostics=False)
 
     assert "top_1_seed__lexical_overlap__hop_0__dense" in names
+    assert "top_1_seed__sentence_transformer__hop_2__iterative_dense" in names
     assert "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2" in names
     assert "top_3_seed__lexical_overlap__hop_3__beam__link_context_llm__lookahead_2" in names
     assert "seed_rerank" not in names

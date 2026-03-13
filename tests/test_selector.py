@@ -25,6 +25,7 @@ class FakeEmbedder:
 
 def test_parse_selector_spec_handles_canonical_forms():
     dense = parse_selector_spec("top_1_seed__lexical_overlap__hop_0__dense")
+    iterative = parse_selector_spec("top_1_seed__sentence_transformer__hop_2__iterative_dense")
     beam = parse_selector_spec("top_3_seed__sentence_transformer__hop_3__beam__link_context_llm__lookahead_2")
 
     assert dense.family == "baseline"
@@ -32,6 +33,10 @@ def test_parse_selector_spec_handles_canonical_forms():
     assert dense.seed_top_k == 1
     assert dense.hop_budget == 0
     assert dense.baseline == "dense"
+    assert iterative.family == "baseline"
+    assert iterative.seed_strategy == "sentence_transformer"
+    assert iterative.hop_budget == 2
+    assert iterative.baseline == "iterative_dense"
     assert beam.family == "path_search"
     assert beam.seed_strategy == "sentence_transformer"
     assert beam.seed_top_k == 3
@@ -212,6 +217,50 @@ def test_sentence_transformer_seed_strategy_uses_embedder_ranking():
     assert result.selector_metadata.seed_strategy == "sentence_transformer"
     assert result.selector_metadata.seed_backend == "sentence_transformer"
     assert result.selector_metadata.seed_model == "multi-qa-MiniLM-L6-cos-v1"
+
+
+def test_iterative_dense_selector_retrieves_with_expansion_context():
+    graph = LinkContextGraph(
+        documents=[
+            DocumentNode("start", "Start", ("Start discusses the launch mission.",)),
+            DocumentNode("bridge", "Bridge", ("Bridge mentions Florida launch records.",)),
+            DocumentNode("goal", "Goal", ("Goal confirms the launch state is Florida.",)),
+            DocumentNode("noise", "Noise", ("Noise is unrelated trivia.",)),
+        ]
+    )
+    query = "launch state"
+    start_text = "Start Start discusses the launch mission."
+    bridge_text = "Bridge Bridge mentions Florida launch records."
+    goal_text = "Goal Goal confirms the launch state is Florida."
+    noise_text = "Noise Noise is unrelated trivia."
+    expansion_one = "launch state Start Start discusses the launch mission."
+    expansion_two = "launch state Bridge Bridge mentions Florida launch records."
+
+    selector = build_selector(
+        "top_1_seed__sentence_transformer__hop_2__iterative_dense",
+        sentence_transformer_embedder_factory=lambda _config: FakeEmbedder(
+            {
+                query: [1.0, 0.0, 0.0],
+                expansion_one: [0.0, 1.0, 0.0],
+                expansion_two: [0.0, 0.0, 1.0],
+                start_text: [0.9, 0.1, 0.0],
+                bridge_text: [0.1, 0.95, 0.0],
+                goal_text: [0.1, 0.1, 0.95],
+                noise_text: [0.0, 0.0, 0.1],
+            }
+        ),
+    )
+
+    result = selector.select(
+        graph,
+        EvaluationCase(case_id="q-iterative", query=query),
+        EvaluationBudget(token_budget_tokens=256),
+    )
+
+    assert result.selected_node_ids == ["start", "bridge", "goal"]
+    assert result.selector_metadata is not None
+    assert result.selector_metadata.backend == "iterative_dense"
+    assert result.stop_reason == "iterative_dense_retrieval"
 
 
 def test_sentence_transformer_edge_scorer_records_future_edge_ids():

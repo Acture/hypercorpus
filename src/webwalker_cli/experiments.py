@@ -36,6 +36,7 @@ from webwalker.experiments import (
     token_budget_choices_help,
 )
 from webwalker.logging import DashboardLogBuffer, DashboardProgressState, dashboard_session
+from webwalker.reports import export_summary_report_from_file
 
 experiments_app = typer.Typer(
     name="webwalker experiments",
@@ -142,6 +143,7 @@ def _print_direct_outputs(*, console: Console, output: Path, export_graphrag_inp
     console.print(f"results.jsonl -> {output / 'results.jsonl'}")
     console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {output / 'summary.json'}")
+    console.print(f"summary_rows.csv -> {output / 'summary_rows.csv'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
 
@@ -151,6 +153,7 @@ def _print_store_outputs(*, console: Console, chunk_dir: Path, export_graphrag_i
     console.print(f"results.jsonl -> {chunk_dir / 'results.jsonl'}")
     console.print(f"selector_logs.jsonl -> {chunk_dir / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {chunk_dir / 'summary.json'}")
+    console.print(f"summary_rows.csv -> {chunk_dir / 'summary_rows.csv'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {chunk_dir / 'graphrag_inputs'}")
 
@@ -901,6 +904,7 @@ def merge_2wiki_store_results(
     _print_summary(console, summary)
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
+    console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -915,6 +919,7 @@ def merge_iirc_store_results(
     _print_summary(console, summary)
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
+    console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -929,6 +934,7 @@ def merge_musique_store_results(
     _print_summary(console, summary)
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
+    console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -943,7 +949,18 @@ def merge_hotpotqa_store_results(
     _print_summary(console, summary)
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
+    console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
+
+
+@experiments_app.command("export-summary-report")
+def export_summary_report_cli(
+    summary: Path = typer.Option(..., "--summary", exists=True, dir_okay=False, help="Path to an experiment summary.json"),
+    output: Path | None = typer.Option(None, "--output", dir_okay=False, help="Optional output CSV path"),
+) -> None:
+    console = Console()
+    report_path = export_summary_report_from_file(summary, output)
+    console.print(f"summary_rows.csv -> {report_path}")
 
 
 def _format_metric(value: float | None) -> str:

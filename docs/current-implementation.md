@@ -70,7 +70,9 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
   - `results.jsonl`
   - `selector_logs.jsonl`
   - `summary.json`
+  - `summary_rows.csv`
   - optional GraphRAG-compatible CSV slices
+- merged run directories also export the same normalized `summary_rows.csv`, which is the current thin reporting layer for tables and budget-quality curves
 
 ### Additional Benchmark Adapters and Raw Preparation
 
@@ -95,6 +97,7 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 ### Dense-Seed Baselines
 
 - `hop_0__dense` variants answer the question: how far can plain lexical or dense seed retrieval go under the same token budget.
+- `hop_2__iterative_dense` variants provide an `MDR-style` iterative dense baseline using repeated dense retrieval over accumulated query-plus-context text under the same budget accounting.
 - `__budget_fill_relative_drop` variants test whether filling the remaining budget improves all-case evidence recovery.
 
 ### Hyperlink-Local Walk
@@ -141,7 +144,7 @@ Those conclusions should be read together with [phase-decisions.md](phase-decisi
 - Full GraphRAG indexing and query execution
 - A production answer backend
 - Training or RL-based selector policies
-- Direct MDR, GraphRetriever, or HippoRAG reproductions
+- Direct trained MDR, GraphRetriever, or HippoRAG reproductions
 - Automatic raw Wikipedia dump ingestion for fullwiki-style corpora
 - Large-scale comparative studies over `IIRC`, `HotpotQA`, or `MuSiQue`
 - Open-web crawling or online serving

@@ -53,5 +53,8 @@ Chunk outputs are written under `runs/<exp-name>/chunks/<chunk-id>/` and include
 - `results.jsonl`
 - `selector_logs.jsonl`
 - `summary.json`
+- `summary_rows.csv`
+
+Merged run directories also write the same `summary_rows.csv` normalization for downstream tables and budget-quality plots.
 
 For benchmark preparation, raw dataset conversion, and non-2Wiki experiment flows, use [docs/current-implementation.md](docs/current-implementation.md) as the operational reference rather than expanding the README into a command catalog.

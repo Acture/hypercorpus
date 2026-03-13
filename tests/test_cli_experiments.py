@@ -330,6 +330,54 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
 
     assert merge_result.exit_code == 0, merge_result.stdout
     assert "missing_chunks -> [1]" in merge_result.stdout
+    assert "merged summary_rows.csv" in merge_result.stdout
+
+
+def test_export_summary_report_cli_writes_csv(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "report-cli-out"
+    runner = CliRunner()
+
+    run_result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-2wiki",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--limit",
+            "1",
+            "--selectors",
+            CANONICAL_DENSE,
+            "--token-budgets",
+            "128",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.stdout
+
+    report_path = output_dir / "custom-summary.csv"
+    export_result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "export-summary-report",
+            "--summary",
+            str(output_dir / "summary.json"),
+            "--output",
+            str(report_path),
+        ],
+    )
+
+    assert export_result.exit_code == 0, export_result.stdout
+    assert "summary_rows.csv ->" in export_result.stdout
+    assert report_path.name in export_result.stdout
+    assert report_path.exists()
 
 
 def test_print_summary_renders_main_table_only_for_non_llm_rows():

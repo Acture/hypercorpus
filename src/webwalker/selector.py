@@ -41,6 +41,7 @@ SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
 BudgetFillMode = Literal["score_floor", "always", "relative_drop"]
 BaselineName = Literal[
     "dense",
+    "iterative_dense",
     "topology_neighbors",
     "anchor_neighbors",
     "link_context_neighbors",
@@ -53,6 +54,7 @@ SelectorFamily = Literal["baseline", "path_search", "diagnostic"]
 _SEED_STRATEGIES: set[str] = {"sentence_transformer", "lexical_overlap"}
 _BASELINES: set[str] = {
     "dense",
+    "iterative_dense",
     "topology_neighbors",
     "anchor_neighbors",
     "link_context_neighbors",
@@ -1007,6 +1009,160 @@ class CanonicalDenseSelector(_SentenceTransformerSupport):
         )
 
 
+class CanonicalIterativeDenseSelector(_SentenceTransformerSupport):
+    def __init__(
+        self,
+        spec: SelectorSpec,
+        *,
+        embedder_config: SentenceTransformerSelectorConfig | None = None,
+        embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder] | None = None,
+    ):
+        super().__init__(embedder_config=embedder_config, embedder_factory=embedder_factory)
+        self.spec = spec
+        self.name = spec.canonical_name
+
+    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+        started_at = time.perf_counter()
+        embedder = _seed_embedder(self.spec, self._get_embedder)
+        hop_budget = self.spec.hop_budget or 1
+        per_hop_top_k = self.spec.seed_top_k or 1
+        token_budget_limit = _runtime_budget_token_limit(graph, budget)
+
+        selected_order: list[str] = []
+        selected_set: set[str] = set()
+        node_scores: dict[str, float] = {}
+        trace: list[SelectionTraceStep] = []
+        debug_trace: list[str] = []
+
+        seed_candidates = _select_seed_candidates(
+            graph,
+            case.query,
+            per_hop_top_k,
+            seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+            embedder=embedder,
+        )
+        root_candidates = [node_id for node_id, _score in seed_candidates]
+        frontier = self._accept_candidates(
+            seed_candidates,
+            selected_order=selected_order,
+            selected_set=selected_set,
+            node_scores=node_scores,
+            trace=trace,
+            debug_trace=debug_trace,
+            hop_index=0,
+            score_reason="seed",
+        )
+
+        for hop_index in range(1, hop_budget + 1):
+            remaining_node_ids = [node_id for node_id in graph.nodes if node_id not in selected_set]
+            if not remaining_node_ids or not frontier:
+                break
+            hop_candidates = _select_seed_candidates(
+                graph,
+                self._expansion_query(graph, case.query, frontier),
+                per_hop_top_k,
+                seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+                embedder=embedder,
+                candidate_ids=remaining_node_ids,
+            )
+            if not hop_candidates:
+                debug_trace.append(f"hop:{hop_index}:no_candidates")
+                break
+            frontier = self._accept_candidates(
+                hop_candidates,
+                selected_order=selected_order,
+                selected_set=selected_set,
+                node_scores=node_scores,
+                trace=trace,
+                debug_trace=debug_trace,
+                hop_index=hop_index,
+                score_reason="iterative_dense",
+            )
+            if not frontier:
+                debug_trace.append(f"hop:{hop_index}:duplicates_only")
+                break
+
+        runtime_s = time.perf_counter() - started_at
+        seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
+        result = _build_corpus_selection_result(
+            selector_name=self.name,
+            graph=graph,
+            query=case.query,
+            node_scores=node_scores,
+            link_scores={},
+            budget=SelectorBudget(max_nodes=None, max_hops=hop_budget, max_tokens=token_budget_limit),
+            strategy="iterative_dense",
+            mode=SelectionMode.STANDALONE,
+            debug_trace=debug_trace,
+            root_node_ids=root_candidates,
+            trace=trace,
+            selector_metadata=_baseline_selector_metadata(self.spec, seed_backend=seed_backend, seed_model=seed_model),
+            selector_usage=SelectorUsage(runtime_s=runtime_s),
+            stop_reason="iterative_dense_retrieval",
+        )
+        selected_node_ids = self._trim_to_budget(graph, selected_order, token_budget_limit)
+        result.selected_node_ids = selected_node_ids
+        result.token_cost_estimate = sum(_node_token_cost(graph, node_id) for node_id in selected_node_ids)
+        selected_node_set = set(selected_node_ids)
+        result.trace = [step for step in trace if step.node_id in selected_node_set]
+        return result
+
+    def _accept_candidates(
+        self,
+        candidates: Sequence[tuple[str, float]],
+        *,
+        selected_order: list[str],
+        selected_set: set[str],
+        node_scores: dict[str, float],
+        trace: list[SelectionTraceStep],
+        debug_trace: list[str],
+        hop_index: int,
+        score_reason: str,
+    ) -> list[str]:
+        accepted: list[str] = []
+        depth_bonus = max((self.spec.hop_budget or 1) - hop_index + 1, 1)
+        for node_id, score in candidates:
+            debug_trace.append(f"hop:{hop_index}:{score_reason}:{node_id}:{score:.4f}")
+            if node_id in selected_set:
+                continue
+            selected_order.append(node_id)
+            selected_set.add(node_id)
+            node_scores[node_id] = depth_bonus + score
+            trace.append(
+                SelectionTraceStep(
+                    index=len(trace),
+                    node_id=node_id,
+                    score=node_scores[node_id],
+                )
+            )
+            accepted.append(node_id)
+        return accepted
+
+    def _expansion_query(self, graph: LinkContextGraph, base_query: str, frontier_node_ids: Sequence[str]) -> str:
+        context = " ".join(self._frontier_context(graph, node_id) for node_id in frontier_node_ids)
+        return f"{base_query} {context}".strip()
+
+    def _frontier_context(self, graph: LinkContextGraph, node_id: str) -> str:
+        document = graph.get_document(node_id)
+        if document is None:
+            return node_id
+        lead_sentence = document.sentences[0] if document.sentences else ""
+        return f"{document.title} {lead_sentence}".strip()
+
+    def _trim_to_budget(self, graph: LinkContextGraph, selected_order: Sequence[str], token_budget_limit: int) -> list[str]:
+        if token_budget_limit <= 0:
+            return list(selected_order)
+        selected: list[str] = []
+        used_tokens = 0
+        for node_id in selected_order:
+            node_tokens = _node_token_cost(graph, node_id)
+            if used_tokens + node_tokens > token_budget_limit:
+                continue
+            selected.append(node_id)
+            used_tokens += node_tokens
+        return selected
+
+
 class CanonicalNeighborSelector(_SentenceTransformerSupport):
     def __init__(
         self,
@@ -1378,7 +1534,9 @@ def parse_selector_spec(name: str) -> SelectorSpec:
             raise ValueError(f"Unknown selector: {name}")
         if baseline == "dense" and hop_budget != 0:
             raise ValueError(f"Unknown selector: {name}")
-        if baseline != "dense" and hop_budget != 1:
+        if baseline == "iterative_dense" and hop_budget < 1:
+            raise ValueError(f"Unknown selector: {name}")
+        if baseline not in {"dense", "iterative_dense"} and hop_budget != 1:
             raise ValueError(f"Unknown selector: {name}")
         return SelectorSpec(
             canonical_name=name,
@@ -1436,6 +1594,13 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
                 f"top_3_seed__{seed_strategy}__hop_1__link_context_neighbors",
             ]
         )
+        if seed_strategy == "sentence_transformer":
+            names.extend(
+                [
+                    f"top_1_seed__{seed_strategy}__hop_2__iterative_dense",
+                    f"top_3_seed__{seed_strategy}__hop_2__iterative_dense",
+                ]
+            )
         for search_structure in ("beam", "astar", "ucs", "beam_ppr"):
             names.extend(
                 [
@@ -1512,6 +1677,12 @@ def _build_canonical_selector(
     if spec.family == "baseline":
         if spec.baseline == "dense":
             return CanonicalDenseSelector(
+                spec,
+                embedder_config=sentence_transformer_config,
+                embedder_factory=sentence_transformer_embedder_factory,
+            )
+        if spec.baseline == "iterative_dense":
+            return CanonicalIterativeDenseSelector(
                 spec,
                 embedder_config=sentence_transformer_config,
                 embedder_factory=sentence_transformer_embedder_factory,
@@ -1670,15 +1841,22 @@ def _select_seed_candidates(
     *,
     seed_strategy: SeedStrategyName,
     embedder: TextEmbedder | None,
+    candidate_ids: Sequence[str] | None = None,
 ) -> list[tuple[str, float]]:
     if top_k <= 0:
         return []
     if seed_strategy == "lexical_overlap":
-        return _lexical_seed_candidates(graph, query, top_k)
+        return _lexical_seed_candidates(graph, query, top_k, candidate_ids=candidate_ids)
     if seed_strategy == "sentence_transformer":
         if embedder is None:
             raise ValueError("Sentence-transformer seed strategy requires an embedder.")
-        return _sentence_transformer_seed_candidates(graph, query, top_k, embedder)
+        return _sentence_transformer_seed_candidates(
+            graph,
+            query,
+            top_k,
+            embedder,
+            candidate_ids=candidate_ids,
+        )
     raise ValueError(f"Unsupported seed strategy: {seed_strategy}")
 
 
@@ -1702,10 +1880,13 @@ def _lexical_seed_candidates(
     graph: LinkContextGraph,
     query: str,
     top_k: int,
+    *,
+    candidate_ids: Sequence[str] | None = None,
 ) -> list[tuple[str, float]]:
+    candidate_pool = list(candidate_ids) if candidate_ids is not None else list(graph.nodes)
     scored = [
         (node_id, normalized_token_overlap(query, _node_text(graph, node_id)))
-        for node_id in graph.nodes
+        for node_id in candidate_pool
     ]
     scored.sort(key=lambda item: (item[1], item[0]), reverse=True)
     return scored[:top_k]
@@ -1716,8 +1897,10 @@ def _sentence_transformer_seed_candidates(
     query: str,
     top_k: int,
     embedder: TextEmbedder,
+    *,
+    candidate_ids: Sequence[str] | None = None,
 ) -> list[tuple[str, float]]:
-    node_ids = list(graph.nodes)
+    node_ids = list(candidate_ids) if candidate_ids is not None else list(graph.nodes)
     if not node_ids:
         return []
     query_embedding = embedder.encode([query])[0]

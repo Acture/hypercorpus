@@ -120,8 +120,10 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
 
     results_path = output_dir / "results.jsonl"
     summary_path = output_dir / "summary.json"
+    summary_rows_path = output_dir / "summary_rows.csv"
     assert results_path.exists()
     assert summary_path.exists()
+    assert summary_rows_path.exists()
 
     lines = results_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 6
@@ -144,6 +146,13 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert "avg_budget_utilization" in eager_full
     assert "avg_empty_selection_rate" in eager_full
     assert "avg_support_f1_zero_on_empty" in eager_full
+
+    with summary_rows_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["dataset"] == "2wikimultihop"
+    assert rows[0]["budget_label"] == "tokens-128"
+    assert "support_f1_zero_on_empty" in rows[0]
+    assert "selector_total_tokens" in rows[0]
 
 
 def test_run_2wiki_experiment_exports_graphrag_csv(two_wiki_files, tmp_path):
@@ -292,6 +301,7 @@ def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared
     assert missing == []
     assert (tmp_path / "runs" / "pilot" / "results.jsonl").exists()
     assert (tmp_path / "runs" / "pilot" / "summary.json").exists()
+    assert (tmp_path / "runs" / "pilot" / "summary_rows.csv").exists()
 
 
 def test_summarize_result_records_separates_selector_model_groups():
