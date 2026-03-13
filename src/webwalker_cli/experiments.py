@@ -15,6 +15,7 @@ from rich.console import Group
 from webwalker.experiments import (
     ExperimentProgressObserver,
     ExperimentProgressUpdate,
+    study_preset_choices_help,
     budget_ratio_choices_help,
     merge_hotpotqa_results,
     merge_iirc_results,
@@ -46,9 +47,14 @@ experiments_app = typer.Typer(
 )
 
 _SELECTOR_PRESET_HELP = (
-    f"Selector preset when --selectors is omitted. Choices: {selector_preset_choices_help()}; "
+    f"Selector preset override when --selectors is omitted. Choices: {selector_preset_choices_help()}; "
     "paper_recommended requires --selector-model and --selector-api-key-env for its LLM selector; "
     "paper_recommended_local avoids LLM selector config. --selectors takes precedence."
+)
+
+_STUDY_PRESET_HELP = (
+    f"Higher-level local study preset. Choices: {study_preset_choices_help()}; "
+    "--selectors, --selector-preset, --token-budgets, and --budget-ratios override study defaults."
 )
 
 
@@ -151,6 +157,9 @@ def _print_direct_outputs(*, console: Console, output: Path, export_graphrag_inp
     console.print(f"selector_logs.jsonl -> {output / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {output / 'summary.json'}")
     console.print(f"summary_rows.csv -> {output / 'summary_rows.csv'}")
+    console.print(f"study_comparison_rows.csv -> {output / 'study_comparison_rows.csv'}")
+    console.print(f"run_manifest.json -> {output / 'run_manifest.json'}")
+    console.print(f"evaluated_case_ids.txt -> {output / 'evaluated_case_ids.txt'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {output / 'graphrag_inputs'}")
 
@@ -161,6 +170,9 @@ def _print_store_outputs(*, console: Console, chunk_dir: Path, export_graphrag_i
     console.print(f"selector_logs.jsonl -> {chunk_dir / 'selector_logs.jsonl'}")
     console.print(f"summary.json -> {chunk_dir / 'summary.json'}")
     console.print(f"summary_rows.csv -> {chunk_dir / 'summary_rows.csv'}")
+    console.print(f"study_comparison_rows.csv -> {chunk_dir / 'study_comparison_rows.csv'}")
+    console.print(f"run_manifest.json -> {chunk_dir / 'run_manifest.json'}")
+    console.print(f"evaluated_case_ids.txt -> {chunk_dir / 'evaluated_case_ids.txt'}")
     if export_graphrag_inputs:
         console.print(f"graphrag_inputs -> {chunk_dir / 'graphrag_inputs'}")
 
@@ -171,12 +183,14 @@ def run_2wiki(
     graph_records: Path = typer.Option(..., "--graph-records", exists=True, dir_okay=False, help="Path to 2Wiki paragraph hyperlink JSONL"),
     output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     selectors: str | None = typer.Option(
         None,
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -221,8 +235,10 @@ def run_2wiki(
             graph_records_path=graph_records,
             output_dir=output,
             limit=limit,
+            case_ids_file=case_ids_file,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -253,12 +269,14 @@ def run_iirc(
     graph_records: Path = typer.Option(..., "--graph-records", exists=True, dir_okay=False, help="Path to normalized IIRC graph JSON/JSONL"),
     output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     selectors: str | None = typer.Option(
         None,
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -303,8 +321,10 @@ def run_iirc(
             graph_records_path=graph_records,
             output_dir=output,
             limit=limit,
+            case_ids_file=case_ids_file,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -335,12 +355,14 @@ def run_musique(
     graph_records: Path = typer.Option(..., "--graph-records", exists=True, dir_okay=False, help="Path to normalized MuSiQue graph JSON/JSONL"),
     output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     selectors: str | None = typer.Option(
         None,
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -385,8 +407,10 @@ def run_musique(
             graph_records_path=graph_records,
             output_dir=output,
             limit=limit,
+            case_ids_file=case_ids_file,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -418,12 +442,14 @@ def run_hotpotqa(
     variant: str = typer.Option(..., "--variant", help="HotpotQA variant: distractor or fullwiki"),
     graph_records: Path | None = typer.Option(None, "--graph-records", exists=True, dir_okay=False, help="Path to normalized HotpotQA graph JSON/JSONL for fullwiki runs"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     selectors: str | None = typer.Option(
         None,
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -474,8 +500,10 @@ def run_hotpotqa(
             variant=variant,
             graph_records_path=graph_records,
             limit=limit,
+            case_ids_file=case_ids_file,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -507,12 +535,14 @@ def run_docs(
     output: Path = typer.Option(..., "--output", file_okay=False, help="Output directory"),
     dataset_name: str = typer.Option("docs", "--dataset-name", help="Dataset label for the experiment summary"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional number of questions to evaluate"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     selectors: str | None = typer.Option(
         None,
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -558,8 +588,10 @@ def run_docs(
             output_dir=output,
             dataset_name=dataset_name,
             limit=limit,
+            case_ids_file=case_ids_file,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -592,6 +624,7 @@ def run_2wiki_store(
     split: str = typer.Option("dev", "--split", help="Question split inside the prepared store"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir", file_okay=False, help="Local cache directory for remote stores"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional total number of questions to consider before slicing"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     case_start: int = typer.Option(0, "--case-start", min=0, help="Start offset after split selection"),
     case_limit: int | None = typer.Option(None, "--case-limit", min=1, help="Maximum number of questions for this run"),
     chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
@@ -601,7 +634,8 @@ def run_2wiki_store(
         "--selectors",
         help=f"Comma-separated selector names. Choices: {selector_choices_help()}",
     ),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(
         None,
         "--token-budgets",
@@ -648,12 +682,14 @@ def run_2wiki_store(
             split=split,
             cache_dir=cache_dir,
             limit=limit,
+            case_ids_file=case_ids_file,
             case_start=case_start,
             case_limit=case_limit,
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -704,12 +740,14 @@ def run_iirc_store(
     split: str = typer.Option("dev", "--split", help="Question split inside the prepared store"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir", file_okay=False, help="Local cache directory for remote stores"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional total number of questions to consider before slicing"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     case_start: int = typer.Option(0, "--case-start", min=0, help="Start offset after split selection"),
     case_limit: int | None = typer.Option(None, "--case-limit", min=1, help="Maximum number of questions for this run"),
     chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
     chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
     selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
     budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
@@ -742,12 +780,14 @@ def run_iirc_store(
             split=split,
             cache_dir=cache_dir,
             limit=limit,
+            case_ids_file=case_ids_file,
             case_start=case_start,
             case_limit=case_limit,
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -778,12 +818,14 @@ def run_musique_store(
     split: str = typer.Option("dev", "--split", help="Question split inside the prepared store"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir", file_okay=False, help="Local cache directory for remote stores"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional total number of questions to consider before slicing"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     case_start: int = typer.Option(0, "--case-start", min=0, help="Start offset after split selection"),
     case_limit: int | None = typer.Option(None, "--case-limit", min=1, help="Maximum number of questions for this run"),
     chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
     chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
     selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
     budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
@@ -816,12 +858,14 @@ def run_musique_store(
             split=split,
             cache_dir=cache_dir,
             limit=limit,
+            case_ids_file=case_ids_file,
             case_start=case_start,
             case_limit=case_limit,
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -852,12 +896,14 @@ def run_hotpotqa_store(
     split: str = typer.Option("dev", "--split", help="Question split inside the prepared store"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir", file_okay=False, help="Local cache directory for remote stores"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Optional total number of questions to consider before slicing"),
+    case_ids_file: Path | None = typer.Option(None, "--case-ids-file", exists=True, dir_okay=False, help="Optional newline-delimited case_id file for reproducible samples"),
     case_start: int = typer.Option(0, "--case-start", min=0, help="Start offset after split selection"),
     case_limit: int | None = typer.Option(None, "--case-limit", min=1, help="Maximum number of questions for this run"),
     chunk_size: int | None = typer.Option(None, "--chunk-size", min=1, help="Questions per chunk"),
     chunk_index: int | None = typer.Option(None, "--chunk-index", min=0, help="Chunk index to run"),
     selectors: str | None = typer.Option(None, "--selectors", help=f"Comma-separated selector names. Choices: {selector_choices_help()}"),
-    selector_preset: str = typer.Option("full", "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    selector_preset: str | None = typer.Option(None, "--selector-preset", help=_SELECTOR_PRESET_HELP),
+    study_preset: str | None = typer.Option(None, "--study-preset", help=_STUDY_PRESET_HELP),
     token_budgets: str | None = typer.Option(None, "--token-budgets", help=f"Comma-separated token budgets. Default: {token_budget_choices_help()}"),
     budget_ratios: str | None = typer.Option(None, "--budget-ratios", help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}"),
     selector_provider: str = typer.Option("openai", "--selector-provider", help="Selector LLM provider: openai, anthropic, or gemini"),
@@ -890,12 +936,14 @@ def run_hotpotqa_store(
             split=split,
             cache_dir=cache_dir,
             limit=limit,
+            case_ids_file=case_ids_file,
             case_start=case_start,
             case_limit=case_limit,
             chunk_size=chunk_size,
             chunk_index=chunk_index,
             selector_names=parse_selector_names(selectors),
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=resolved_token_budgets,
             budget_ratios=resolved_budget_ratios,
             selector_provider=selector_provider,
@@ -930,6 +978,7 @@ def merge_2wiki_store_results(
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
+    console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -945,6 +994,7 @@ def merge_iirc_store_results(
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
+    console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -960,6 +1010,7 @@ def merge_musique_store_results(
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
+    console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 
@@ -975,6 +1026,7 @@ def merge_hotpotqa_store_results(
     console.print(f"merged results.jsonl -> {merged_dir / 'results.jsonl'}")
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
+    console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
 
 

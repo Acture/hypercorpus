@@ -33,13 +33,22 @@ from webwalker.eval import (
     summarize_evaluations,
 )
 from webwalker.logging import create_progress, should_render_progress
-from webwalker.reports import export_summary_report
-from webwalker.selector import available_selector_names, available_selector_presets, select_selectors
+from webwalker.reports import export_study_comparison_report, export_summary_report
+from webwalker.selector import (
+    available_selector_names,
+    available_selector_presets,
+    select_selectors,
+)
 
 logger = logging.getLogger(__name__)
 
 
 ExperimentPhase = Literal["loading", "evaluating", "exporting", "finalizing", "completed"]
+StudyPresetName = Literal[
+    "single_path_edge_ablation_local",
+    "baseline_retest_local",
+    "branchy_profiles_384_512",
+]
 
 
 @dataclass(slots=True)
@@ -56,6 +65,80 @@ class ExperimentProgressUpdate:
 ExperimentProgressObserver = Callable[[ExperimentProgressUpdate], None]
 
 
+@dataclass(frozen=True, slots=True)
+class StudyPresetSpec:
+    name: str
+    description: str
+    selector_preset: str | None = None
+    selector_names: tuple[str, ...] | None = None
+    token_budgets: tuple[int, ...] | None = None
+    include_diagnostics: bool = True
+    control_selector_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedExperimentConfig:
+    selector_names: list[str] | None
+    selector_preset: str
+    include_diagnostics: bool
+    token_budgets: list[int] | None
+    budget_ratios: list[float] | None
+    study_preset: str | None
+    control_selector_name: str | None
+
+
+_SINGLE_PATH_EDGE_ABLATION_SELECTORS: tuple[str, ...] = (
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__anchor_overlap__lookahead_1__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_anchor_heavy__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_title_aware__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_1__profile_st_balanced__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_balanced__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_direct_heavy__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
+    "gold_support_context",
+    "full_corpus_upper_bound",
+)
+
+_BASELINE_RETEST_SELECTORS: tuple[str, ...] = (
+    "top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+    "top_3_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__iterative_dense__budget_fill_relative_drop",
+    "top_3_seed__sentence_transformer__hop_2__iterative_dense__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+    "top_3_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+    "gold_support_context",
+    "full_corpus_upper_bound",
+)
+
+_STUDY_PRESETS: tuple[StudyPresetSpec, ...] = (
+    StudyPresetSpec(
+        name="single_path_edge_ablation_local",
+        description="Local-only single-path scorer ablation.",
+        selector_names=_SINGLE_PATH_EDGE_ABLATION_SELECTORS,
+        token_budgets=(128, 256),
+        include_diagnostics=True,
+        control_selector_name="top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
+    ),
+    StudyPresetSpec(
+        name="baseline_retest_local",
+        description="Local-only dense, iterative_dense, and mdr_light baseline retest.",
+        selector_names=_BASELINE_RETEST_SELECTORS,
+        token_budgets=(128, 256, 384, 512),
+        include_diagnostics=True,
+        control_selector_name="top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+    ),
+    StudyPresetSpec(
+        name="branchy_profiles_384_512",
+        description="Branchy profile sweep at wider token budgets.",
+        selector_preset="branchy_profiles",
+        token_budgets=(384, 512),
+        include_diagnostics=True,
+        control_selector_name="top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced",
+    ),
+)
+
+
 def run_dataset_experiment(
     *,
     adapter: DatasetAdapter,
@@ -63,8 +146,10 @@ def run_dataset_experiment(
     graph_source: str | Path,
     output_dir: str | Path,
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -95,11 +180,19 @@ def run_dataset_experiment(
     logger.info("Loading %s graph from %s", dataset_label, graph_source)
     graph = adapter.load_graph(graph_source)
     logger.info("Loading %s questions from %s", dataset_label, questions_path)
-    cases = adapter.load_cases(questions_path, limit=limit)
+    cases = adapter.load_cases(questions_path, limit=None if case_ids_file is not None else limit)
+    selected_cases = _resolve_case_selection(cases, limit=limit, case_ids_file=case_ids_file)
+    resolved = _resolve_experiment_config(
+        selector_names=selector_names,
+        selector_preset=selector_preset,
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+        study_preset=study_preset,
+    )
     selectors = select_selectors(
-        selector_names,
-        preset=selector_preset,
-        include_diagnostics=selector_names is not None,
+        resolved.selector_names,
+        preset=resolved.selector_preset,
+        include_diagnostics=resolved.include_diagnostics,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
@@ -110,8 +203,8 @@ def run_dataset_experiment(
         sentence_transformer_device=sentence_transformer_device,
     )
     budgets = _resolve_budgets(
-        token_budgets=token_budgets,
-        budget_ratios=budget_ratios,
+        token_budgets=resolved.token_budgets,
+        budget_ratios=resolved.budget_ratios,
     )
     evaluators = _build_evaluators(
         selectors=selectors,
@@ -126,7 +219,7 @@ def run_dataset_experiment(
     logger.info(
         "Running %s experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         dataset_label,
-        len(cases),
+        len(selected_cases),
         [selector.name for selector in selectors],
         [budget.budget_label for budget in budgets],
         with_e2e,
@@ -138,7 +231,18 @@ def run_dataset_experiment(
     output_path.mkdir(parents=True, exist_ok=True)
     results_path, selector_logs_path, summary_path = _initialize_result_files(output_path)
     aggregator = IncrementalExperimentAggregator(
-        dataset_name=cases[0].dataset_name if cases else dataset_label,
+        dataset_name=selected_cases[0].dataset_name if selected_cases else dataset_label,
+    )
+    _write_run_manifest(
+        output_path,
+        dataset_name=dataset_label,
+        study_preset=resolved.study_preset,
+        selector_preset=resolved.selector_preset,
+        resolved_selectors=[selector.name for selector in selectors],
+        resolved_token_budgets=resolved.token_budgets,
+        resolved_budget_ratios=resolved.budget_ratios,
+        case_ids_file=case_ids_file,
+        total_selected_cases=len(selected_cases),
     )
 
     def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
@@ -165,7 +269,12 @@ def run_dataset_experiment(
             evaluation=evaluation,
         )
         summary = aggregator.to_summary()
-        _write_summary_file(summary_path=summary_path, summary=summary)
+        _write_summary_file(
+            summary_path=summary_path,
+            summary=summary,
+            study_preset=resolved.study_preset,
+            control_selector_name=resolved.control_selector_name,
+        )
         _notify_progress(
             progress_observer,
             dataset_name=dataset_label,
@@ -179,7 +288,7 @@ def run_dataset_experiment(
 
     evaluations = _evaluate_cases(
         graph=graph,
-        cases=cases,
+        cases=selected_cases,
         evaluators=evaluators,
         description=f"evaluate {dataset_label} cases",
         dataset_name=dataset_label,
@@ -190,17 +299,23 @@ def run_dataset_experiment(
         progress_observer,
         dataset_name=dataset_label,
         phase="finalizing",
-        total_cases=len(cases),
+        total_cases=len(selected_cases),
         completed_cases=len(evaluations),
         summary=aggregator.to_summary(),
     )
     summary = aggregator.to_summary()
-    _write_summary_file(summary_path=summary_path, summary=summary)
+    _write_summary_file(
+        summary_path=summary_path,
+        summary=summary,
+        study_preset=resolved.study_preset,
+        control_selector_name=resolved.control_selector_name,
+    )
+    _write_evaluated_case_ids(output_path, [evaluation.case for evaluation in evaluations])
     _notify_progress(
         progress_observer,
         dataset_name=dataset_label,
         phase="completed",
-        total_cases=len(cases),
+        total_cases=len(selected_cases),
         completed_cases=len(evaluations),
         summary=summary,
     )
@@ -215,8 +330,10 @@ def run_2wiki_experiment(
     graph_records_path: str | Path,
     output_dir: str | Path,
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -242,8 +359,10 @@ def run_2wiki_experiment(
         graph_source=graph_records_path,
         output_dir=output_dir,
         limit=limit,
+        case_ids_file=case_ids_file,
         selector_names=selector_names,
         selector_preset=selector_preset,
+        study_preset=study_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -271,8 +390,10 @@ def run_iirc_experiment(
     graph_records_path: str | Path,
     output_dir: str | Path,
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -298,8 +419,10 @@ def run_iirc_experiment(
         graph_source=graph_records_path,
         output_dir=output_dir,
         limit=limit,
+        case_ids_file=case_ids_file,
         selector_names=selector_names,
         selector_preset=selector_preset,
+        study_preset=study_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -328,8 +451,10 @@ def run_hotpotqa_experiment(
     variant: Literal["distractor", "fullwiki"],
     graph_records_path: str | Path | None = None,
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -358,8 +483,10 @@ def run_hotpotqa_experiment(
             graph_source=graph_records_path,
             output_dir=output_dir,
             limit=limit,
+            case_ids_file=case_ids_file,
             selector_names=selector_names,
             selector_preset=selector_preset,
+            study_preset=study_preset,
             token_budgets=token_budgets,
             budget_ratios=budget_ratios,
             selector_provider=selector_provider,
@@ -389,13 +516,28 @@ def run_hotpotqa_experiment(
         completed_cases=0,
     )
     records = load_json_records(questions_path)
-    if limit is not None:
-        records = records[:limit]
-    cases = load_hotpotqa_questions(questions_path, limit=limit, variant="distractor")
+    cases = load_hotpotqa_questions(questions_path, limit=None if case_ids_file is not None else limit, variant="distractor")
+    paired_cases = list(zip(records, cases, strict=True))
+    if case_ids_file is not None and limit is not None:
+        raise ValueError("Specify either limit or case_ids_file, not both.")
+    if case_ids_file is None:
+        if limit is not None:
+            paired_cases = paired_cases[:limit]
+    else:
+        selected_cases = _select_cases_by_id([case for _record, case in paired_cases], _load_case_ids(case_ids_file), case_ids_file=case_ids_file)
+        paired_by_id = {case.case_id: (record, case) for record, case in paired_cases}
+        paired_cases = [paired_by_id[case.case_id] for case in selected_cases]
+    resolved = _resolve_experiment_config(
+        selector_names=selector_names,
+        selector_preset=selector_preset,
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+        study_preset=study_preset,
+    )
     selectors = select_selectors(
-        selector_names,
-        preset=selector_preset,
-        include_diagnostics=selector_names is not None,
+        resolved.selector_names,
+        preset=resolved.selector_preset,
+        include_diagnostics=resolved.include_diagnostics,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
@@ -405,7 +547,7 @@ def run_hotpotqa_experiment(
         sentence_transformer_cache_path=sentence_transformer_cache_path,
         sentence_transformer_device=sentence_transformer_device,
     )
-    budgets = _resolve_budgets(token_budgets=token_budgets, budget_ratios=budget_ratios)
+    budgets = _resolve_budgets(token_budgets=resolved.token_budgets, budget_ratios=resolved.budget_ratios)
     evaluators = _build_evaluators(
         selectors=selectors,
         budgets=budgets,
@@ -420,7 +562,19 @@ def run_hotpotqa_experiment(
     output_path.mkdir(parents=True, exist_ok=True)
     results_path, selector_logs_path, summary_path = _initialize_result_files(output_path)
     aggregator = IncrementalExperimentAggregator(dataset_name=dataset_label)
-    total = len(cases)
+    total = len(paired_cases)
+    _write_run_manifest(
+        output_path,
+        dataset_name=dataset_label,
+        variant="distractor",
+        study_preset=resolved.study_preset,
+        selector_preset=resolved.selector_preset,
+        resolved_selectors=[selector.name for selector in selectors],
+        resolved_token_budgets=resolved.token_budgets,
+        resolved_budget_ratios=resolved.budget_ratios,
+        case_ids_file=case_ids_file,
+        total_selected_cases=total,
+    )
     evaluations: list[CaseEvaluation] = []
     logger.info(
         "Running hotpotqa distractor experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
@@ -438,7 +592,7 @@ def run_hotpotqa_experiment(
         total_cases=total,
         completed_cases=0,
     )
-    for index, (record, case) in enumerate(zip(records, cases, strict=True), start=1):
+    for index, (record, case) in enumerate(paired_cases, start=1):
         graph = build_hotpotqa_distractor_graph_for_case(record)
         evaluation = _evaluate_single_case(
             graph=graph,
@@ -458,13 +612,14 @@ def run_hotpotqa_experiment(
             )
             _export_case_graphrag_inputs(graph=graph, evaluation=evaluation, output_dir=output_path)
         aggregator.add_case_evaluation(evaluation)
-        _append_case_result_files(
-            results_path=results_path,
-            selector_logs_path=selector_logs_path,
-            evaluation=evaluation,
-        )
+        _append_case_result_files(results_path=results_path, selector_logs_path=selector_logs_path, evaluation=evaluation)
         summary = aggregator.to_summary()
-        _write_summary_file(summary_path=summary_path, summary=summary)
+        _write_summary_file(
+            summary_path=summary_path,
+            summary=summary,
+            study_preset=resolved.study_preset,
+            control_selector_name=resolved.control_selector_name,
+        )
         _notify_progress(
             progress_observer,
             dataset_name=dataset_label,
@@ -485,7 +640,13 @@ def run_hotpotqa_experiment(
         summary=aggregator.to_summary(),
     )
     summary = aggregator.to_summary()
-    _write_summary_file(summary_path=summary_path, summary=summary)
+    _write_summary_file(
+        summary_path=summary_path,
+        summary=summary,
+        study_preset=resolved.study_preset,
+        control_selector_name=resolved.control_selector_name,
+    )
+    _write_evaluated_case_ids(output_path, [evaluation.case for evaluation in evaluations])
     _notify_progress(
         progress_observer,
         dataset_name=dataset_label,
@@ -503,8 +664,10 @@ def run_musique_experiment(
     graph_records_path: str | Path,
     output_dir: str | Path,
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -530,8 +693,10 @@ def run_musique_experiment(
         graph_source=graph_records_path,
         output_dir=output_dir,
         limit=limit,
+        case_ids_file=case_ids_file,
         selector_names=selector_names,
         selector_preset=selector_preset,
+        study_preset=study_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -560,8 +725,10 @@ def run_docs_experiment(
     output_dir: str | Path,
     dataset_name: str = "docs",
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -587,8 +754,10 @@ def run_docs_experiment(
         graph_source=docs_source,
         output_dir=output_dir,
         limit=limit,
+        case_ids_file=case_ids_file,
         selector_names=selector_names,
         selector_preset=selector_preset,
+        study_preset=study_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -619,12 +788,14 @@ def run_store_experiment(
     split: str = "dev",
     cache_dir: str | Path | None = None,
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     case_start: int = 0,
     case_limit: int | None = None,
     chunk_size: int | None = None,
     chunk_index: int | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -655,6 +826,10 @@ def run_store_experiment(
     )
     logger.info("Loading %s split questions from sharded store", split)
     cases = store.load_questions(split)
+    if case_ids_file is not None and limit is not None:
+        raise ValueError("Specify either limit or case_ids_file, not both.")
+    if case_ids_file is not None:
+        cases = _select_cases_by_id(cases, _load_case_ids(case_ids_file), case_ids_file=case_ids_file)
     selected_cases, chunk_meta = _slice_cases(
         cases,
         split=split,
@@ -664,10 +839,17 @@ def run_store_experiment(
         chunk_size=chunk_size,
         chunk_index=chunk_index,
     )
+    resolved = _resolve_experiment_config(
+        selector_names=selector_names,
+        selector_preset=selector_preset,
+        token_budgets=token_budgets,
+        budget_ratios=budget_ratios,
+        study_preset=study_preset,
+    )
     selectors = select_selectors(
-        selector_names,
-        preset=selector_preset,
-        include_diagnostics=selector_names is not None,
+        resolved.selector_names,
+        preset=resolved.selector_preset,
+        include_diagnostics=resolved.include_diagnostics,
         selector_provider=selector_provider,
         selector_model=selector_model,
         selector_api_key_env=selector_api_key_env,
@@ -678,8 +860,8 @@ def run_store_experiment(
         sentence_transformer_device=sentence_transformer_device,
     )
     budgets = _resolve_budgets(
-        token_budgets=token_budgets,
-        budget_ratios=budget_ratios,
+        token_budgets=resolved.token_budgets,
+        budget_ratios=resolved.budget_ratios,
     )
     evaluators = _build_evaluators(
         selectors=selectors,
@@ -709,6 +891,18 @@ def run_store_experiment(
     aggregator = IncrementalExperimentAggregator(
         dataset_name=selected_cases[0].dataset_name if selected_cases else resolved_dataset_name,
     )
+    _write_run_manifest(
+        chunk_dir,
+        dataset_name=resolved_dataset_name,
+        split=split,
+        study_preset=resolved.study_preset,
+        selector_preset=resolved.selector_preset,
+        resolved_selectors=[selector.name for selector in selectors],
+        resolved_token_budgets=resolved.token_budgets,
+        resolved_budget_ratios=resolved.budget_ratios,
+        case_ids_file=case_ids_file,
+        total_selected_cases=len(selected_cases),
+    )
 
     def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
         if export_graphrag_inputs:
@@ -734,7 +928,12 @@ def run_store_experiment(
             evaluation=evaluation,
         )
         summary = aggregator.to_summary()
-        _write_summary_file(summary_path=summary_path, summary=summary)
+        _write_summary_file(
+            summary_path=summary_path,
+            summary=summary,
+            study_preset=resolved.study_preset,
+            control_selector_name=resolved.control_selector_name,
+        )
         _notify_progress(
             progress_observer,
             dataset_name=resolved_dataset_name,
@@ -764,16 +963,24 @@ def run_store_experiment(
         summary=aggregator.to_summary(),
     )
     summary = aggregator.to_summary()
-    _write_summary_file(summary_path=summary_path, summary=summary)
+    _write_summary_file(
+        summary_path=summary_path,
+        summary=summary,
+        study_preset=resolved.study_preset,
+        control_selector_name=resolved.control_selector_name,
+    )
+    _write_evaluated_case_ids(chunk_dir, [evaluation.case for evaluation in evaluations])
     (chunk_dir / "chunk.json").write_text(
         json.dumps(
             {
                 **chunk_meta,
                 "store_uri": str(store_uri),
                 "selectors": [selector.name for selector in selectors],
-                "selector_preset": selector_preset,
-                "token_budgets": list(token_budgets) if token_budgets is not None else None,
-                "budget_ratios": list(budget_ratios) if budget_ratios is not None else None,
+                "study_preset": resolved.study_preset,
+                "selector_preset": resolved.selector_preset,
+                "token_budgets": resolved.token_budgets,
+                "budget_ratios": resolved.budget_ratios,
+                "case_ids_file": str(case_ids_file) if case_ids_file is not None else None,
                 "selector_provider": selector_provider,
                 "selector_model": selector_model,
                 "selector_api_key_env": selector_api_key_env,
@@ -812,12 +1019,14 @@ def run_2wiki_store_experiment(
     split: str = "dev",
     cache_dir: str | Path | None = None,
     limit: int | None = None,
+    case_ids_file: str | Path | None = None,
     case_start: int = 0,
     case_limit: int | None = None,
     chunk_size: int | None = None,
     chunk_index: int | None = None,
     selector_names: Sequence[str] | None = None,
-    selector_preset: str = "full",
+    selector_preset: str | None = None,
+    study_preset: str | None = None,
     token_budgets: Sequence[int] | None = None,
     budget_ratios: Sequence[float] | None = None,
     selector_provider: str = "openai",
@@ -845,12 +1054,14 @@ def run_2wiki_store_experiment(
         split=split,
         cache_dir=cache_dir,
         limit=limit,
+        case_ids_file=case_ids_file,
         case_start=case_start,
         case_limit=case_limit,
         chunk_size=chunk_size,
         chunk_index=chunk_index,
         selector_names=selector_names,
         selector_preset=selector_preset,
+        study_preset=study_preset,
         token_budgets=token_budgets,
         budget_ratios=budget_ratios,
         selector_provider=selector_provider,
@@ -904,6 +1115,7 @@ def merge_store_results(
     chunk_indices: list[int] = []
     total_cases: int | None = None
     chunk_size: int | None = None
+    study_presets: set[str] = set()
 
     for chunk_dir in _iterate_with_optional_progress(chunk_dirs, description="merge chunk results"):
         chunk_meta_path = chunk_dir / "chunk.json"
@@ -915,6 +1127,8 @@ def merge_store_results(
                 total_cases = int(chunk_meta["total_cases"])
             if chunk_meta.get("chunk_size") is not None:
                 chunk_size = int(chunk_meta["chunk_size"])
+            if chunk_meta.get("study_preset"):
+                study_presets.add(str(chunk_meta["study_preset"]))
         results_path = chunk_dir / "results.jsonl"
         if not results_path.exists():
             continue
@@ -942,7 +1156,18 @@ def merge_store_results(
     with merged_selector_logs.open("w", encoding="utf-8") as handle:
         for record in selector_log_records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    _write_summary_file(summary_path=merged_dir / "summary.json", summary=summary)
+    merged_study_preset = next(iter(study_presets)) if len(study_presets) == 1 else None
+    merged_control_selector = (
+        resolve_study_preset(merged_study_preset).control_selector_name
+        if merged_study_preset is not None
+        else None
+    )
+    _write_summary_file(
+        summary_path=merged_dir / "summary.json",
+        summary=summary,
+        study_preset=merged_study_preset,
+        control_selector_name=merged_control_selector,
+    )
 
     missing_chunks = _missing_chunk_indices(chunk_indices, total_cases=total_cases, chunk_size=chunk_size)
     logger.info(
@@ -1019,12 +1244,27 @@ def parse_token_budgets(value: str | None) -> list[int] | None:
     return budgets
 
 
+def available_study_presets() -> list[str]:
+    return [preset.name for preset in _STUDY_PRESETS]
+
+
+def resolve_study_preset(name: StudyPresetName | str) -> StudyPresetSpec:
+    for preset in _STUDY_PRESETS:
+        if preset.name == name:
+            return preset
+    raise ValueError(f"Unknown study preset: {name}")
+
+
 def selector_choices_help(*, include_diagnostics: bool = True) -> str:
     return ",".join(available_selector_names(include_diagnostics=include_diagnostics))
 
 
 def selector_preset_choices_help() -> str:
     return ",".join(available_selector_presets())
+
+
+def study_preset_choices_help() -> str:
+    return ",".join(available_study_presets())
 
 
 def budget_ratio_choices_help() -> str:
@@ -1041,6 +1281,126 @@ def store_budget_ratio_choices_help() -> str:
 
 def store_token_budget_choices_help() -> str:
     return token_budget_choices_help()
+
+
+def _resolve_experiment_config(
+    *,
+    selector_names: Sequence[str] | None,
+    selector_preset: str | None,
+    token_budgets: Sequence[int] | None,
+    budget_ratios: Sequence[float] | None,
+    study_preset: str | None,
+) -> _ResolvedExperimentConfig:
+    study = resolve_study_preset(study_preset) if study_preset is not None else None
+    resolved_selector_names: list[str] | None = list(selector_names) if selector_names is not None else None
+    resolved_selector_preset = selector_preset or "full"
+    include_diagnostics = selector_names is not None
+
+    if resolved_selector_names is None and selector_preset is None and study is not None:
+        if study.selector_names is not None:
+            resolved_selector_names = list(study.selector_names)
+            resolved_selector_preset = study.selector_preset or "full"
+        elif study.selector_preset is not None:
+            resolved_selector_preset = study.selector_preset
+            include_diagnostics = study.include_diagnostics
+
+    resolved_token_budgets = list(token_budgets) if token_budgets is not None else None
+    if resolved_token_budgets is None and budget_ratios is None and study is not None and study.token_budgets is not None:
+        resolved_token_budgets = list(study.token_budgets)
+    resolved_budget_ratios = list(budget_ratios) if budget_ratios is not None else None
+
+    return _ResolvedExperimentConfig(
+        selector_names=resolved_selector_names,
+        selector_preset=resolved_selector_preset,
+        include_diagnostics=include_diagnostics,
+        token_budgets=resolved_token_budgets,
+        budget_ratios=resolved_budget_ratios,
+        study_preset=study.name if study is not None else None,
+        control_selector_name=study.control_selector_name if study is not None else None,
+    )
+
+
+def _load_case_ids(case_ids_file: str | Path) -> list[str]:
+    path = Path(case_ids_file)
+    seen: set[str] = set()
+    case_ids: list[str] = []
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        case_id = raw_line.strip()
+        if not case_id:
+            continue
+        if case_id in seen:
+            raise ValueError(f"Duplicate case_id '{case_id}' in {path} at line {line_number}.")
+        seen.add(case_id)
+        case_ids.append(case_id)
+    return case_ids
+
+
+def _select_cases_by_id(cases: Sequence[Any], case_ids: Sequence[str], *, case_ids_file: str | Path) -> list[Any]:
+    indexed: dict[str, Any] = {}
+    for case in cases:
+        case_id = str(case.case_id)
+        if case_id in indexed:
+            raise ValueError(f"Duplicate case_id '{case_id}' found in loaded cases.")
+        indexed[case_id] = case
+    missing = [case_id for case_id in case_ids if case_id not in indexed]
+    if missing:
+        preview = ", ".join(missing[:5])
+        raise ValueError(f"Unknown case_ids in {case_ids_file}: {preview}")
+    return [indexed[case_id] for case_id in case_ids]
+
+
+def _resolve_case_selection(
+    cases: Sequence[Any],
+    *,
+    limit: int | None,
+    case_ids_file: str | Path | None,
+) -> list[Any]:
+    if case_ids_file is not None and limit is not None:
+        raise ValueError("Specify either limit or case_ids_file, not both.")
+    if case_ids_file is None:
+        return list(cases[:limit]) if limit is not None else list(cases)
+    case_ids = _load_case_ids(case_ids_file)
+    return _select_cases_by_id(cases, case_ids, case_ids_file=case_ids_file)
+
+
+def _write_evaluated_case_ids(output_dir: Path, cases: Sequence[Any]) -> None:
+    lines = [str(case.case_id) for case in cases]
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+    (output_dir / "evaluated_case_ids.txt").write_text(content, encoding="utf-8")
+
+
+def _write_run_manifest(
+    output_dir: Path,
+    *,
+    dataset_name: str,
+    study_preset: str | None,
+    selector_preset: str | None,
+    resolved_selectors: Sequence[str],
+    resolved_token_budgets: Sequence[int] | None,
+    resolved_budget_ratios: Sequence[float] | None,
+    case_ids_file: str | Path | None,
+    total_selected_cases: int,
+    split: str | None = None,
+    variant: str | None = None,
+) -> None:
+    payload = {
+        "dataset_name": dataset_name,
+        "split": split,
+        "variant": variant,
+        "study_preset": study_preset,
+        "selector_preset": selector_preset,
+        "resolved_selectors": list(resolved_selectors),
+        "resolved_token_budgets": list(resolved_token_budgets) if resolved_token_budgets is not None else None,
+        "resolved_budget_ratios": list(resolved_budget_ratios) if resolved_budget_ratios is not None else None,
+        "case_ids_file": str(case_ids_file) if case_ids_file is not None else None,
+        "total_selected_cases": total_selected_cases,
+    }
+    (output_dir / "run_manifest.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _build_evaluators(
@@ -1345,12 +1705,20 @@ def _write_summary_file(
     *,
     summary_path: Path,
     summary: ExperimentSummary,
+    study_preset: str | None = None,
+    control_selector_name: str | None = None,
 ) -> None:
     summary_path.write_text(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     export_summary_report(summary, summary_path.with_name("summary_rows.csv"))
+    export_study_comparison_report(
+        summary,
+        summary_path.with_name("study_comparison_rows.csv"),
+        study_preset=study_preset,
+        control_selector_name=control_selector_name,
+    )
 
 
 def _selection_record(evaluation: CaseEvaluation, selection) -> dict[str, Any]:

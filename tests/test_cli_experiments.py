@@ -167,6 +167,45 @@ def test_run_2wiki_cli_forwards_selector_preset_when_selectors_are_omitted(two_w
     assert captured["selector_preset"] == "paper_recommended_local"
 
 
+def test_run_2wiki_cli_forwards_study_preset_and_case_ids_file(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "cli-study"
+    case_ids_path = tmp_path / "case-ids.txt"
+    case_ids_path.write_text("q1\n", encoding="utf-8")
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _fake_run_2wiki_experiment(**kwargs):
+        captured.update(kwargs)
+        return [], ExperimentSummary(dataset_name="2wikimultihop", total_cases=0, selector_budgets=[])
+
+    monkeypatch.setattr("webwalker_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-2wiki",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--study-preset",
+            "baseline_retest_local",
+            "--case-ids-file",
+            str(case_ids_path),
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["study_preset"] == "baseline_retest_local"
+    assert captured["case_ids_file"] == case_ids_path
+
+
 def test_run_2wiki_cli_help_mentions_new_presets():
     runner = CliRunner()
 
@@ -175,8 +214,12 @@ def test_run_2wiki_cli_help_mentions_new_presets():
     assert result.exit_code == 0, result.stdout
     assert "paper_recommended_local" in result.stdout
     assert "branchy_profiles" in result.stdout
+    assert "single_path_edge_ablation_local" in result.stdout
+    assert "baseline_retest_local" in result.stdout
+    assert "--study-preset" in result.stdout
+    assert "--case-ids-file" in result.stdout
     assert "requires --selector-model" in result.stdout
-    assert "avoids LLM selector config" in result.stdout
+    assert "avoids LLM selector" in result.stdout
 
 
 def test_run_2wiki_cli_rejects_paper_recommended_without_llm_config(two_wiki_files, tmp_path, monkeypatch):
@@ -450,6 +493,7 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
     assert merge_result.exit_code == 0, merge_result.stdout
     assert "missing_chunks -> [1]" in merge_result.stdout
     assert "merged summary_rows.csv" in merge_result.stdout
+    assert "merged study_comparison_rows.csv" in merge_result.stdout
 
 
 def test_export_summary_report_cli_writes_csv(two_wiki_files, tmp_path):

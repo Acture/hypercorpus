@@ -5,17 +5,19 @@ import pytest
 
 from webwalker.experiments import (
     _summarize_result_records,
+    available_study_presets,
     merge_2wiki_results,
     parse_budget_ratios,
     parse_selector_names,
     parse_token_budgets,
+    resolve_study_preset,
     run_docs_experiment,
     run_iirc_experiment,
     run_2wiki_experiment,
     run_2wiki_store_experiment,
 )
 from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
-from webwalker.reports import SUMMARY_REPORT_FIELDNAMES, summary_report_rows
+from webwalker.reports import STUDY_COMPARISON_FIELDNAMES, SUMMARY_REPORT_FIELDNAMES, study_comparison_rows, summary_report_rows
 from webwalker.selector import build_selector
 
 
@@ -43,6 +45,32 @@ def test_parse_token_budgets_handles_empty_values():
     assert parse_token_budgets(None) is None
     assert parse_token_budgets("") is None
     assert parse_token_budgets("128,256") == [128, 256]
+
+
+def test_available_study_presets_are_fixed():
+    assert available_study_presets() == [
+        "single_path_edge_ablation_local",
+        "baseline_retest_local",
+        "branchy_profiles_384_512",
+    ]
+
+
+def test_resolve_study_preset_returns_expected_selectors_and_defaults():
+    single_path = resolve_study_preset("single_path_edge_ablation_local")
+    baseline = resolve_study_preset("baseline_retest_local")
+    branchy = resolve_study_preset("branchy_profiles_384_512")
+
+    assert single_path.token_budgets == (128, 256)
+    assert single_path.selector_names is not None
+    assert "link_context_llm" not in "\n".join(single_path.selector_names)
+    assert single_path.control_selector_name == (
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop"
+    )
+    assert baseline.token_budgets == (128, 256, 384, 512)
+    assert baseline.selector_names is not None
+    assert branchy.selector_preset == "branchy_profiles"
+    assert branchy.token_budgets == (384, 512)
+    assert branchy.selector_names is None
 
 
 def test_run_2wiki_experiment_rejects_conflicting_budget_inputs(two_wiki_files, tmp_path):
@@ -124,9 +152,15 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     results_path = output_dir / "results.jsonl"
     summary_path = output_dir / "summary.json"
     summary_rows_path = output_dir / "summary_rows.csv"
+    comparison_rows_path = output_dir / "study_comparison_rows.csv"
+    manifest_path = output_dir / "run_manifest.json"
+    evaluated_ids_path = output_dir / "evaluated_case_ids.txt"
     assert results_path.exists()
     assert summary_path.exists()
     assert summary_rows_path.exists()
+    assert comparison_rows_path.exists()
+    assert manifest_path.exists()
+    assert evaluated_ids_path.exists()
 
     lines = results_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 6
@@ -157,6 +191,78 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     assert "support_f1_zero_on_empty" in rows[0]
     assert "selector_total_tokens" in rows[0]
 
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["dataset_name"] == "2wikimultihop"
+    assert manifest["selector_preset"] == "full"
+    assert manifest["resolved_selectors"] == [CANONICAL_OVERLAP, "gold_support_context", "full_corpus_upper_bound"]
+    assert evaluated_ids_path.read_text(encoding="utf-8") == "q1\n"
+
+
+def test_run_2wiki_experiment_filters_cases_by_case_ids_file(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    case_ids_path = tmp_path / "case-ids.txt"
+    case_ids_path.write_text("q2\nq1\n", encoding="utf-8")
+
+    evaluations, summary = run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=tmp_path / "case-ids-run",
+        case_ids_file=case_ids_path,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert [evaluation.case.case_id for evaluation in evaluations] == ["q2", "q1"]
+    assert summary.total_cases == 2
+    assert (tmp_path / "case-ids-run" / "evaluated_case_ids.txt").read_text(encoding="utf-8") == "q2\nq1\n"
+
+
+def test_run_2wiki_experiment_rejects_invalid_case_id_inputs(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    duplicate_ids_path = tmp_path / "duplicate-case-ids.txt"
+    duplicate_ids_path.write_text("q1\nq1\n", encoding="utf-8")
+    missing_ids_path = tmp_path / "missing-case-ids.txt"
+    missing_ids_path.write_text("missing\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="either limit or case_ids_file"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=tmp_path / "conflicting-case-ids",
+            limit=1,
+            case_ids_file=duplicate_ids_path,
+            selector_names=[CANONICAL_DENSE],
+            token_budgets=[128],
+            with_e2e=False,
+            export_graphrag_inputs=False,
+        )
+
+    with pytest.raises(ValueError, match="Duplicate case_id"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=tmp_path / "duplicate-case-ids-run",
+            case_ids_file=duplicate_ids_path,
+            selector_names=[CANONICAL_DENSE],
+            token_budgets=[128],
+            with_e2e=False,
+            export_graphrag_inputs=False,
+        )
+
+    with pytest.raises(ValueError, match="Unknown case_ids"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=tmp_path / "missing-case-ids-run",
+            case_ids_file=missing_ids_path,
+            selector_names=[CANONICAL_DENSE],
+            token_budgets=[128],
+            with_e2e=False,
+            export_graphrag_inputs=False,
+        )
+
 
 def test_run_2wiki_experiment_passes_selector_preset_when_selectors_are_omitted(two_wiki_files, tmp_path, monkeypatch):
     questions_path, graph_path = two_wiki_files
@@ -184,6 +290,87 @@ def test_run_2wiki_experiment_passes_selector_preset_when_selectors_are_omitted(
     assert len(evaluations) == 1
     assert summary.selector_budgets[0].name == CANONICAL_DENSE
     assert observed == {"names": None, "preset": "paper_recommended"}
+
+
+def test_run_2wiki_experiment_uses_study_preset_defaults(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    observed: dict[str, object] = {}
+
+    def _fake_select_selectors(names=None, **kwargs):
+        observed["names"] = names
+        observed["preset"] = kwargs["preset"]
+        observed["include_diagnostics"] = kwargs["include_diagnostics"]
+        return [build_selector(CANONICAL_DENSE)]
+
+    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+
+    evaluations, summary = run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=tmp_path / "study-preset-run",
+        limit=1,
+        study_preset="branchy_profiles_384_512",
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert len(evaluations) == 1
+    assert [row.budget_label for row in summary.selector_budgets] == ["tokens-384", "tokens-512"]
+    assert observed["names"] is None
+    assert observed["preset"] == "branchy_profiles"
+    assert observed["include_diagnostics"] is True
+
+
+def test_run_2wiki_experiment_explicit_selector_preset_overrides_study_selector_defaults(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    observed: dict[str, object] = {}
+
+    def _fake_select_selectors(names=None, **kwargs):
+        observed["names"] = names
+        observed["preset"] = kwargs["preset"]
+        return [build_selector(CANONICAL_DENSE)]
+
+    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+
+    run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=tmp_path / "study-selector-override",
+        limit=1,
+        selector_preset="paper_recommended_local",
+        study_preset="baseline_retest_local",
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert observed == {"names": None, "preset": "paper_recommended_local"}
+
+
+def test_run_2wiki_experiment_explicit_selectors_override_study_selector_defaults(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    observed: dict[str, object] = {}
+
+    def _fake_select_selectors(names=None, **kwargs):
+        observed["names"] = names
+        observed["preset"] = kwargs["preset"]
+        return [build_selector(CANONICAL_DENSE)]
+
+    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+
+    run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=tmp_path / "study-explicit-selectors",
+        limit=1,
+        selector_names=[CANONICAL_DENSE],
+        study_preset="baseline_retest_local",
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert observed == {"names": [CANONICAL_DENSE], "preset": "full"}
 
 
 def test_summary_report_rows_include_profile_and_budget_fill_fields():
@@ -277,6 +464,101 @@ def test_summary_report_rows_include_profile_and_budget_fill_fields():
     assert rows[1]["profile_name"] is None
     assert rows[1]["budget_fill_mode"] is None
     assert rows[1]["budget_fill_pool_k"] is None
+
+
+def test_study_comparison_rows_include_rank_and_control_deltas():
+    summary = ExperimentSummary(
+        dataset_name="2wikimultihop",
+        total_cases=1,
+        selector_budgets=[
+            SelectorBudgetSummary(
+                name="control",
+                selector_provider=None,
+                selector_model=None,
+                budget_mode="tokens",
+                budget_value=128,
+                budget_label="tokens-128",
+                token_budget_ratio=None,
+                token_budget_tokens=128,
+                num_cases=1,
+                avg_start_hit=None,
+                avg_support_recall=0.4,
+                avg_support_precision=0.5,
+                avg_support_f1=0.45,
+                avg_path_hit=0.0,
+                avg_selected_nodes=1.0,
+                avg_selected_token_estimate=32.0,
+                avg_compression_ratio=0.1,
+                avg_budget_adherence=1.0,
+                avg_budget_utilization=0.25,
+                avg_empty_selection_rate=0.0,
+                avg_selection_runtime_s=0.01,
+                avg_support_f1_zero_on_empty=0.45,
+                avg_selector_prompt_tokens=None,
+                avg_selector_completion_tokens=None,
+                avg_selector_total_tokens=None,
+                avg_selector_runtime_s=None,
+                avg_selector_llm_calls=None,
+                avg_selector_fallback_rate=None,
+                avg_selector_parse_failure_rate=None,
+                avg_answer_em=None,
+                avg_answer_f1=None,
+            ),
+            SelectorBudgetSummary(
+                name="candidate",
+                selector_provider=None,
+                selector_model=None,
+                budget_mode="tokens",
+                budget_value=128,
+                budget_label="tokens-128",
+                token_budget_ratio=None,
+                token_budget_tokens=128,
+                num_cases=1,
+                avg_start_hit=None,
+                avg_support_recall=0.6,
+                avg_support_precision=0.7,
+                avg_support_f1=0.65,
+                avg_path_hit=1.0,
+                avg_selected_nodes=2.0,
+                avg_selected_token_estimate=64.0,
+                avg_compression_ratio=0.2,
+                avg_budget_adherence=1.0,
+                avg_budget_utilization=0.5,
+                avg_empty_selection_rate=0.0,
+                avg_selection_runtime_s=0.02,
+                avg_support_f1_zero_on_empty=0.65,
+                avg_selector_prompt_tokens=None,
+                avg_selector_completion_tokens=None,
+                avg_selector_total_tokens=None,
+                avg_selector_runtime_s=None,
+                avg_selector_llm_calls=None,
+                avg_selector_fallback_rate=None,
+                avg_selector_parse_failure_rate=None,
+                avg_answer_em=None,
+                avg_answer_f1=None,
+            ),
+        ],
+    )
+
+    assert STUDY_COMPARISON_FIELDNAMES[:5] == [
+        "study_preset",
+        "dataset_name",
+        "selector_name",
+        "budget_label",
+        "control_selector_name",
+    ]
+    rows = study_comparison_rows(
+        summary,
+        study_preset="baseline_retest_local",
+        control_selector_name="control",
+    )
+
+    assert rows[0]["selector_name"] == "candidate"
+    assert rows[0]["rank_within_budget"] == 1
+    assert rows[0]["delta_support_f1_vs_control"] == 0.20
+    assert rows[1]["selector_name"] == "control"
+    assert rows[1]["rank_within_budget"] == 2
+    assert rows[1]["delta_support_precision_vs_control"] == 0.0
 
 
 def test_run_2wiki_experiment_exports_graphrag_csv(two_wiki_files, tmp_path):
@@ -390,11 +672,34 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
     assert chunk_dir == tmp_path / "runs" / "pilot" / "chunks" / "chunk-00000"
     assert (chunk_dir / "results.jsonl").exists()
     assert (chunk_dir / "summary.json").exists()
+    assert (chunk_dir / "study_comparison_rows.csv").exists()
+    assert (chunk_dir / "run_manifest.json").exists()
+    assert (chunk_dir / "evaluated_case_ids.txt").exists()
     chunk_meta = json.loads((chunk_dir / "chunk.json").read_text(encoding="utf-8"))
     assert chunk_meta["selectors"] == [CANONICAL_OVERLAP, "gold_support_context", "full_corpus_upper_bound"]
     assert chunk_meta["selector_preset"] == "full"
     assert chunk_meta["token_budgets"] == [128, 256]
     assert chunk_meta["budget_ratios"] is None
+
+
+def test_run_2wiki_store_experiment_filters_cases_by_case_ids_file(prepared_two_wiki_store, tmp_path):
+    case_ids_path = tmp_path / "store-case-ids.txt"
+    case_ids_path.write_text("q2\n", encoding="utf-8")
+
+    evaluations, summary, chunk_dir = run_2wiki_store_experiment(
+        store_uri=prepared_two_wiki_store.root,
+        output_root=tmp_path / "runs",
+        exp_name="pilot-case-ids",
+        case_ids_file=case_ids_path,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert [evaluation.case.case_id for evaluation in evaluations] == ["q2"]
+    assert summary.total_cases == 1
+    assert (chunk_dir / "evaluated_case_ids.txt").read_text(encoding="utf-8") == "q2\n"
 
 
 def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared_two_wiki_store, tmp_path):
@@ -428,6 +733,7 @@ def test_merge_2wiki_results_rebuilds_summary_and_checks_missing_chunks(prepared
     assert (tmp_path / "runs" / "pilot" / "results.jsonl").exists()
     assert (tmp_path / "runs" / "pilot" / "summary.json").exists()
     assert (tmp_path / "runs" / "pilot" / "summary_rows.csv").exists()
+    assert (tmp_path / "runs" / "pilot" / "study_comparison_rows.csv").exists()
 
 
 def test_summarize_result_records_separates_selector_model_groups():

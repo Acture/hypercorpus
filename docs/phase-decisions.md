@@ -107,12 +107,12 @@ These systems should not be described as beaten or matched by the current phase.
 
 ### Next Experiments
 
-- Add a clean edge-scorer ablation for `top_1 + sentence_transformer + hop_2 + single_path`.
-- Run the existing `dense top-k` and repo-native `mdr_light` baselines on broader phase samples; direct trained `MDR` remains unimplemented.
+- Use `single_path_edge_ablation_local` as the clean edge-scorer ablation for `top_1 + sentence_transformer + hop_2 + single_path`.
+- Use `baseline_retest_local` to re-test the existing `dense top-k` and repo-native `mdr_light` baselines on broader phase samples; direct trained `MDR` remains unimplemented.
 - Repeat the current selector family on a larger phase sample before elevating claims beyond the present operating-point story.
 - Expand broad-search evaluation to harder datasets that already exist in this repo, with `IIRC` first and `HotpotQA fullwiki` next.
 - Re-test `beam`, `astar`, `ucs`, and `beam_ppr` under looser budgets such as `384` and `512` before declaring the family unpromising.
-- Run `branchy_profiles` on `384` and `512` budgets to test whether the exposed overlap/ST profiles recover precision for broad search.
+- Run `branchy_profiles_384_512` to test whether the exposed overlap/ST profiles recover precision for broad search.
 - Treat limited LLM scorer profile experiments as later work, after the non-LLM branchy matrix is understood.
 - Treat further `beam` and `astar` work as conditional on one of two outcomes:
   - a harder dataset shows a real gain over single-path
@@ -125,4 +125,5 @@ The current repo should treat broad-search follow-up as a targeted exploration t
 - The `2Wiki` result only shows that broad search is a poor operating point under the current budget and scorer setup.
 - `IIRC` is the best next place to test broad search because the task itself rewards natural hyperlink expansion over incomplete information.
 - `HotpotQA fullwiki` is the next-best stress test because start retrieval is harder and broad search has more room to recover missing support pages.
+- Broader phase samples should be replayed from `evaluated_case_ids.txt`, not re-created ad hoc from `--limit`.
 - Overlap and sentence-transformer scorer composition are now exposed as named profiles, but search-heavy selectors should still not be judged final until those profiles are tested explicitly. LLM scorer profile tuning remains open.

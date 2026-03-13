@@ -51,6 +51,22 @@ SUMMARY_REPORT_FIELDNAMES = [
     "answer_f1",
 ]
 
+STUDY_COMPARISON_FIELDNAMES = [
+    "study_preset",
+    "dataset_name",
+    "selector_name",
+    "budget_label",
+    "control_selector_name",
+    "avg_support_f1",
+    "avg_support_precision",
+    "avg_support_recall",
+    "avg_path_hit",
+    "rank_within_budget",
+    "delta_support_f1_vs_control",
+    "delta_support_precision_vs_control",
+    "delta_support_recall_vs_control",
+]
+
 
 def load_experiment_summary(summary_path: str | Path) -> ExperimentSummary:
     payload = json.loads(Path(summary_path).read_text(encoding="utf-8"))
@@ -86,6 +102,84 @@ def export_summary_report_from_file(summary_path: str | Path, output_path: str |
     summary = load_experiment_summary(summary_file)
     destination = Path(output_path) if output_path is not None else summary_file.with_name("summary_rows.csv")
     return export_summary_report(summary, destination)
+
+
+def study_comparison_rows(
+    summary: ExperimentSummary,
+    *,
+    study_preset: str | None = None,
+    control_selector_name: str | None = None,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[SelectorBudgetSummary]] = {}
+    ordered_budget_labels: list[str] = []
+    for selector_budget in summary.selector_budgets:
+        budget_label = selector_budget.budget_label
+        if budget_label not in grouped:
+            grouped[budget_label] = []
+            ordered_budget_labels.append(budget_label)
+        grouped[budget_label].append(selector_budget)
+
+    rows: list[dict[str, Any]] = []
+    for budget_label in ordered_budget_labels:
+        selector_budgets = grouped[budget_label]
+        ranked = sorted(
+            selector_budgets,
+            key=lambda selector_budget: (
+                selector_budget.avg_support_f1 is None,
+                -(selector_budget.avg_support_f1 or float("-inf")),
+                selector_budget.name,
+            ),
+        )
+        control = next(
+            (selector_budget for selector_budget in selector_budgets if selector_budget.name == control_selector_name),
+            None,
+        )
+        for rank, selector_budget in enumerate(ranked, start=1):
+            rows.append(
+                {
+                    "study_preset": study_preset,
+                    "dataset_name": summary.dataset_name,
+                    "selector_name": selector_budget.name,
+                    "budget_label": budget_label,
+                    "control_selector_name": control_selector_name,
+                    "avg_support_f1": selector_budget.avg_support_f1,
+                    "avg_support_precision": selector_budget.avg_support_precision,
+                    "avg_support_recall": selector_budget.avg_support_recall,
+                    "avg_path_hit": selector_budget.avg_path_hit,
+                    "rank_within_budget": rank,
+                    "delta_support_f1_vs_control": _delta(selector_budget.avg_support_f1, control.avg_support_f1 if control is not None else None),
+                    "delta_support_precision_vs_control": _delta(
+                        selector_budget.avg_support_precision,
+                        control.avg_support_precision if control is not None else None,
+                    ),
+                    "delta_support_recall_vs_control": _delta(
+                        selector_budget.avg_support_recall,
+                        control.avg_support_recall if control is not None else None,
+                    ),
+                }
+            )
+    return rows
+
+
+def export_study_comparison_report(
+    summary: ExperimentSummary,
+    output_path: str | Path,
+    *,
+    study_preset: str | None = None,
+    control_selector_name: str | None = None,
+) -> Path:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rows = study_comparison_rows(
+        summary,
+        study_preset=study_preset,
+        control_selector_name=control_selector_name,
+    )
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=STUDY_COMPARISON_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+    return output
 
 
 def _selector_budget_report_row(dataset_name: str, selector_budget: SelectorBudgetSummary) -> dict[str, Any]:
@@ -156,3 +250,9 @@ def _selector_spec_details(selector_name: str) -> dict[str, Any]:
         "budget_fill_score_floor": spec_dict["budget_fill_score_floor"],
         "budget_fill_relative_drop_ratio": spec_dict["budget_fill_relative_drop_ratio"],
     }
+
+
+def _delta(value: float | None, baseline: float | None) -> float | None:
+    if value is None or baseline is None:
+        return None
+    return value - baseline
