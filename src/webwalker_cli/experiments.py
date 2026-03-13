@@ -47,7 +47,8 @@ experiments_app = typer.Typer(
 
 _SELECTOR_PRESET_HELP = (
     f"Selector preset when --selectors is omitted. Choices: {selector_preset_choices_help()}; "
-    "--selectors takes precedence."
+    "paper_recommended requires --selector-model and --selector-api-key-env for its LLM selector; "
+    "paper_recommended_local avoids LLM selector config. --selectors takes precedence."
 )
 
 

@@ -154,7 +154,7 @@ def test_run_2wiki_cli_forwards_selector_preset_when_selectors_are_omitted(two_w
             "--output",
             str(output_dir),
             "--selector-preset",
-            "paper_recommended",
+            "paper_recommended_local",
             "--token-budgets",
             "128",
             "--no-e2e",
@@ -164,7 +164,50 @@ def test_run_2wiki_cli_forwards_selector_preset_when_selectors_are_omitted(two_w
 
     assert result.exit_code == 0, result.stdout
     assert captured["selector_names"] is None
-    assert captured["selector_preset"] == "paper_recommended"
+    assert captured["selector_preset"] == "paper_recommended_local"
+
+
+def test_run_2wiki_cli_help_mentions_new_presets():
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["experiments", "run-2wiki", "--help"], env={"COLUMNS": "240"})
+
+    assert result.exit_code == 0, result.stdout
+    assert "paper_recommended_local" in result.stdout
+    assert "branchy_profiles" in result.stdout
+    assert "requires --selector-model" in result.stdout
+    assert "avoids LLM selector config" in result.stdout
+
+
+def test_run_2wiki_cli_rejects_paper_recommended_without_llm_config(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "cli-paper-recommended"
+    runner = CliRunner()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "experiments",
+            "run-2wiki",
+            "--questions",
+            str(questions_path),
+            "--graph-records",
+            str(graph_path),
+            "--output",
+            str(output_dir),
+            "--selector-preset",
+            "paper_recommended",
+            "--token-budgets",
+            "128",
+            "--no-e2e",
+            "--no-export-graphrag-inputs",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert str(result.exception) == "Missing API key in environment variable OPENAI_API_KEY"
 
 
 def test_run_2wiki_cli_passes_explicit_selectors_alongside_selector_preset(two_wiki_files, tmp_path, monkeypatch):

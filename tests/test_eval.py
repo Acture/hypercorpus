@@ -47,6 +47,55 @@ def test_selector_names_for_paper_recommended_preset_include_expected_profiles_a
         assert parse_selector_spec(selector_name).canonical_name == selector_name
 
 
+def test_selector_names_for_paper_recommended_local_preset_exclude_llm_and_keep_diagnostics():
+    names = selector_names_for_preset("paper_recommended_local")
+
+    assert names == [
+        "top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_title_aware__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_1__profile_st_balanced__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
+        "top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+        "gold_support_context",
+        "full_corpus_upper_bound",
+    ]
+    assert all("link_context_llm" not in name for name in names)
+    assert selector_names_for_preset("paper_recommended_local", include_diagnostics=False) == names[:-2]
+
+
+def test_selector_names_for_branchy_profiles_preset_are_fixed_and_parseable():
+    names = selector_names_for_preset("branchy_profiles")
+
+    assert names == [
+        "top_3_seed__sentence_transformer__hop_3__beam__link_context_overlap__lookahead_1__profile_overlap_balanced",
+        "top_3_seed__sentence_transformer__hop_3__beam__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+        "top_3_seed__sentence_transformer__hop_3__beam__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+        "top_3_seed__sentence_transformer__hop_3__beam__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+        "top_3_seed__sentence_transformer__hop_3__astar__link_context_overlap__lookahead_1__profile_overlap_balanced",
+        "top_3_seed__sentence_transformer__hop_3__astar__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+        "top_3_seed__sentence_transformer__hop_3__astar__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+        "top_3_seed__sentence_transformer__hop_3__astar__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+        "top_3_seed__sentence_transformer__hop_3__ucs__link_context_overlap__lookahead_1__profile_overlap_balanced",
+        "top_3_seed__sentence_transformer__hop_3__ucs__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+        "top_3_seed__sentence_transformer__hop_3__ucs__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+        "top_3_seed__sentence_transformer__hop_3__ucs__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+        "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_overlap__lookahead_1__profile_overlap_balanced",
+        "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+        "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+        "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced",
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+        "top_1_seed__sentence_transformer__hop_2__mdr_light",
+        "top_1_seed__sentence_transformer__hop_0__dense",
+        "gold_support_context",
+        "full_corpus_upper_bound",
+    ]
+    assert selector_names_for_preset("branchy_profiles", include_diagnostics=False) == names[:-2]
+    for selector_name in names[:-2]:
+        assert parse_selector_spec(selector_name).canonical_name == selector_name
+
+
 def test_parse_selector_spec_rejects_legacy_names():
     with pytest.raises(ValueError, match="Unknown selector: seed_rerank"):
         parse_selector_spec("seed_rerank")
@@ -114,6 +163,19 @@ def test_select_selectors_prefers_explicit_names_over_preset(monkeypatch):
     )
 
     assert [selector.name for selector in selectors] == ["top_1_seed__lexical_overlap__hop_0__dense"]
+
+
+def test_select_selectors_accepts_paper_recommended_local_without_llm_config():
+    selectors = select_selectors(preset="paper_recommended_local")
+
+    assert [selector.name for selector in selectors] == selector_names_for_preset("paper_recommended_local")
+
+
+def test_select_selectors_rejects_paper_recommended_without_llm_api_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="Missing API key in environment variable OPENAI_API_KEY"):
+        select_selectors(preset="paper_recommended")
 
 
 def test_incremental_experiment_aggregator_matches_batch_summary():

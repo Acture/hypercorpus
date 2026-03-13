@@ -14,6 +14,8 @@ from webwalker.experiments import (
     run_2wiki_experiment,
     run_2wiki_store_experiment,
 )
+from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
+from webwalker.reports import SUMMARY_REPORT_FIELDNAMES, summary_report_rows
 from webwalker.selector import build_selector
 
 
@@ -182,6 +184,99 @@ def test_run_2wiki_experiment_passes_selector_preset_when_selectors_are_omitted(
     assert len(evaluations) == 1
     assert summary.selector_budgets[0].name == CANONICAL_DENSE
     assert observed == {"names": None, "preset": "paper_recommended"}
+
+
+def test_summary_report_rows_include_profile_and_budget_fill_fields():
+    summary = ExperimentSummary(
+        dataset_name="2wikimultihop",
+        total_cases=1,
+        selector_budgets=[
+            SelectorBudgetSummary(
+                name="top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
+                selector_provider=None,
+                selector_model=None,
+                budget_mode="tokens",
+                budget_value=128,
+                budget_label="tokens-128",
+                token_budget_ratio=None,
+                token_budget_tokens=128,
+                num_cases=1,
+                avg_start_hit=None,
+                avg_support_recall=0.5,
+                avg_support_precision=0.5,
+                avg_support_f1=0.5,
+                avg_path_hit=None,
+                avg_selected_nodes=2.0,
+                avg_selected_token_estimate=64.0,
+                avg_compression_ratio=0.1,
+                avg_budget_adherence=1.0,
+                avg_budget_utilization=0.5,
+                avg_empty_selection_rate=0.0,
+                avg_selection_runtime_s=0.01,
+                avg_support_f1_zero_on_empty=0.5,
+                avg_selector_prompt_tokens=None,
+                avg_selector_completion_tokens=None,
+                avg_selector_total_tokens=None,
+                avg_selector_runtime_s=None,
+                avg_selector_llm_calls=None,
+                avg_selector_fallback_rate=None,
+                avg_selector_parse_failure_rate=None,
+                avg_answer_em=None,
+                avg_answer_f1=None,
+            ),
+            SelectorBudgetSummary(
+                name="gold_support_context",
+                selector_provider=None,
+                selector_model=None,
+                budget_mode="tokens",
+                budget_value=128,
+                budget_label="tokens-128",
+                token_budget_ratio=None,
+                token_budget_tokens=128,
+                num_cases=1,
+                avg_start_hit=None,
+                avg_support_recall=1.0,
+                avg_support_precision=1.0,
+                avg_support_f1=1.0,
+                avg_path_hit=None,
+                avg_selected_nodes=2.0,
+                avg_selected_token_estimate=64.0,
+                avg_compression_ratio=0.1,
+                avg_budget_adherence=1.0,
+                avg_budget_utilization=0.5,
+                avg_empty_selection_rate=0.0,
+                avg_selection_runtime_s=0.01,
+                avg_support_f1_zero_on_empty=1.0,
+                avg_selector_prompt_tokens=None,
+                avg_selector_completion_tokens=None,
+                avg_selector_total_tokens=None,
+                avg_selector_runtime_s=None,
+                avg_selector_llm_calls=None,
+                avg_selector_fallback_rate=None,
+                avg_selector_parse_failure_rate=None,
+                avg_answer_em=None,
+                avg_answer_f1=None,
+            ),
+        ],
+    )
+
+    assert SUMMARY_REPORT_FIELDNAMES[12:17] == [
+        "profile_name",
+        "budget_fill_mode",
+        "budget_fill_pool_k",
+        "budget_fill_score_floor",
+        "budget_fill_relative_drop_ratio",
+    ]
+    rows = summary_report_rows(summary)
+
+    assert rows[0]["profile_name"] == "overlap_balanced"
+    assert rows[0]["budget_fill_mode"] == "relative_drop"
+    assert rows[0]["budget_fill_pool_k"] == 64
+    assert rows[0]["budget_fill_score_floor"] is None
+    assert rows[0]["budget_fill_relative_drop_ratio"] == 0.5
+    assert rows[1]["profile_name"] is None
+    assert rows[1]["budget_fill_mode"] is None
+    assert rows[1]["budget_fill_pool_k"] is None
 
 
 def test_run_2wiki_experiment_exports_graphrag_csv(two_wiki_files, tmp_path):

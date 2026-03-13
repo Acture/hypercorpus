@@ -93,11 +93,11 @@ These points are suggested by current results but are not isolated enough to cla
 - Whether `link_context_llm` is better than overlap or sentence-transformer edge scoring within the same `top_1 + sentence_transformer + hop_2 + single_path` family.
 - Whether the current gains persist at larger token budgets or different sample slices.
 - Whether broad `beam` and `astar` search are genuinely weak, or only weak on `2Wiki` under a `256`-token budget with the current scorer calibration.
-- Whether the current fixed scorer compositions are well calibrated for branchy search, especially for `beam`, `astar`, `ucs`, and `beam_ppr`.
+- Whether the exposed overlap/ST scorer profiles are well calibrated for branchy search, especially for `beam`, `astar`, `ucs`, and `beam_ppr`.
 
 ### Not Yet Compared
 
-- `MDR`
+- direct trained `MDR` still not compared; repo-native `mdr_light` now exists
 - `GraphRetriever`
 - `HippoRAG`
 - direct iterative reranking baselines
@@ -108,14 +108,12 @@ These systems should not be described as beaten or matched by the current phase.
 ### Next Experiments
 
 - Add a clean edge-scorer ablation for `top_1 + sentence_transformer + hop_2 + single_path`.
-- Add direct `dense top-k` and `MDR` style baselines under the same token-budget accounting.
+- Run the existing `dense top-k` and repo-native `mdr_light` baselines on broader phase samples; direct trained `MDR` remains unimplemented.
 - Repeat the current selector family on a larger phase sample before elevating claims beyond the present operating-point story.
 - Expand broad-search evaluation to harder datasets that already exist in this repo, with `IIRC` first and `HotpotQA fullwiki` next.
 - Re-test `beam`, `astar`, `ucs`, and `beam_ppr` under looser budgets such as `384` and `512` before declaring the family unpromising.
-- Explore scorer-composition profiles before adding more search depth:
-  - overlap profiles that vary anchor-vs-sentence-vs-title weighting
-  - sentence-transformer profiles that vary direct-vs-future-vs-novelty weighting
-  - only after that, limited LLM scorer profile experiments
+- Run `branchy_profiles` on `384` and `512` budgets to test whether the exposed overlap/ST profiles recover precision for broad search.
+- Treat limited LLM scorer profile experiments as later work, after the non-LLM branchy matrix is understood.
 - Treat further `beam` and `astar` work as conditional on one of two outcomes:
   - a harder dataset shows a real gain over single-path
   - scorer-profile tuning fixes the current precision collapse
@@ -127,4 +125,4 @@ The current repo should treat broad-search follow-up as a targeted exploration t
 - The `2Wiki` result only shows that broad search is a poor operating point under the current budget and scorer setup.
 - `IIRC` is the best next place to test broad search because the task itself rewards natural hyperlink expansion over incomplete information.
 - `HotpotQA fullwiki` is the next-best stress test because start retrieval is harder and broad search has more room to recover missing support pages.
-- Scorer composition is currently a fixed profile, not a tuned component. Search-heavy selectors should not be judged final until scorer calibration is tested explicitly.
+- Overlap and sentence-transformer scorer composition are now exposed as named profiles, but search-heavy selectors should still not be judged final until those profiles are tested explicitly. LLM scorer profile tuning remains open.

@@ -30,7 +30,8 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 
 - Start policies return ranked node lists through a stable `StartPolicy.select_start(...)` contract.
 - Dense and lexical seed selection are both supported.
-- The current experiment runner supports fixed selector matrices plus extra diagnostic selectors outside the default study set.
+- The current experiment runner supports named selector presets, including `paper_recommended`, `paper_recommended_local`, and `branchy_profiles`, plus extra diagnostic selectors outside the default study set.
+- `paper_recommended` is the full paper-facing preset and requires explicit selector LLM configuration. `paper_recommended_local` is the local-only variant that avoids `link_context_llm`.
 - Selector-side LLM scoring is optional and records provider, model, token usage, runtime, cache state, and fallback behavior.
 - Step-scorer composition is now exposed as named profiles for overlap and sentence-transformer scorers. LLM scorer aggregation remains fixed today.
 
@@ -137,7 +138,7 @@ Those conclusions should be read together with [phase-decisions.md](phase-decisi
 
 - Re-test `mdr_light` and stronger dense baselines before broadening the paper claim.
 - Re-test broad search on harder datasets already supported in this repo, especially `IIRC` and `HotpotQA fullwiki`.
-- Expose scorer-composition profiles for branchy search before treating `beam` or `astar` as settled.
+- Run `branchy_profiles` on `384` and `512` token budgets before treating `beam` or `astar` as settled.
 - Keep `single_path_walk` as the current default operating point until a broader search family wins on a harder setting.
 
 ## What Is Still Not Implemented

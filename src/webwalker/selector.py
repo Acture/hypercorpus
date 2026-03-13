@@ -51,7 +51,7 @@ SearchStructure = Literal["single_path_walk", "beam", "astar", "ucs", "beam_ppr"
 EdgeScorerName = Literal["link_context_overlap", "link_context_llm", "anchor_overlap", "link_context_sentence_transformer"]
 LookaheadName = Literal["lookahead_1", "lookahead_2"]
 SelectorFamily = Literal["baseline", "path_search", "diagnostic"]
-SelectorPresetName = Literal["full", "paper_recommended"]
+SelectorPresetName = Literal["full", "paper_recommended", "paper_recommended_local", "branchy_profiles"]
 
 _SEED_STRATEGIES: set[str] = {"sentence_transformer", "lexical_overlap"}
 _BASELINES: set[str] = {
@@ -94,6 +94,40 @@ _PAPER_RECOMMENDED_SELECTORS: tuple[str, ...] = (
     "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
     "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm__lookahead_1__budget_fill_relative_drop",
     "top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+    "gold_support_context",
+    "full_corpus_upper_bound",
+)
+_PAPER_RECOMMENDED_LOCAL_SELECTORS: tuple[str, ...] = (
+    "top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_title_aware__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_1__profile_st_balanced__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
+    "top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+    "gold_support_context",
+    "full_corpus_upper_bound",
+)
+_BRANCHY_PROFILE_SELECTORS: tuple[str, ...] = (
+    "top_3_seed__sentence_transformer__hop_3__beam__link_context_overlap__lookahead_1__profile_overlap_balanced",
+    "top_3_seed__sentence_transformer__hop_3__beam__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+    "top_3_seed__sentence_transformer__hop_3__beam__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+    "top_3_seed__sentence_transformer__hop_3__beam__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+    "top_3_seed__sentence_transformer__hop_3__astar__link_context_overlap__lookahead_1__profile_overlap_balanced",
+    "top_3_seed__sentence_transformer__hop_3__astar__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+    "top_3_seed__sentence_transformer__hop_3__astar__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+    "top_3_seed__sentence_transformer__hop_3__astar__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+    "top_3_seed__sentence_transformer__hop_3__ucs__link_context_overlap__lookahead_1__profile_overlap_balanced",
+    "top_3_seed__sentence_transformer__hop_3__ucs__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+    "top_3_seed__sentence_transformer__hop_3__ucs__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+    "top_3_seed__sentence_transformer__hop_3__ucs__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+    "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_overlap__lookahead_1__profile_overlap_balanced",
+    "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_overlap__lookahead_1__profile_overlap_title_aware",
+    "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_sentence_transformer__lookahead_1__profile_st_balanced",
+    "top_3_seed__sentence_transformer__hop_3__beam_ppr__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced",
+    "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy",
+    "top_1_seed__sentence_transformer__hop_2__mdr_light",
+    "top_1_seed__sentence_transformer__hop_0__dense",
     "gold_support_context",
     "full_corpus_upper_bound",
 )
@@ -1802,7 +1836,7 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
 
 
 def available_selector_presets() -> list[str]:
-    return ["full", "paper_recommended"]
+    return ["full", "paper_recommended", "paper_recommended_local", "branchy_profiles"]
 
 
 def selector_names_for_preset(
@@ -1814,6 +1848,16 @@ def selector_names_for_preset(
         return available_selector_names(include_diagnostics=include_diagnostics)
     if preset == "paper_recommended":
         names = list(_PAPER_RECOMMENDED_SELECTORS)
+        if include_diagnostics:
+            return names
+        return [name for name in names if name not in _DIAGNOSTIC_SELECTORS]
+    if preset == "paper_recommended_local":
+        names = list(_PAPER_RECOMMENDED_LOCAL_SELECTORS)
+        if include_diagnostics:
+            return names
+        return [name for name in names if name not in _DIAGNOSTIC_SELECTORS]
+    if preset == "branchy_profiles":
+        names = list(_BRANCHY_PROFILE_SELECTORS)
         if include_diagnostics:
             return names
         return [name for name in names if name not in _DIAGNOSTIC_SELECTORS]

@@ -23,6 +23,11 @@ SUMMARY_REPORT_FIELDNAMES = [
     "search_structure",
     "edge_scorer",
     "lookahead_depth",
+    "profile_name",
+    "budget_fill_mode",
+    "budget_fill_pool_k",
+    "budget_fill_score_floor",
+    "budget_fill_relative_drop_ratio",
     "budget_mode",
     "budget_value",
     "budget_label",
@@ -129,6 +134,11 @@ def _selector_spec_details(selector_name: str) -> dict[str, Any]:
             "search_structure": None,
             "edge_scorer": None,
             "lookahead_depth": None,
+            "profile_name": None,
+            "budget_fill_mode": None,
+            "budget_fill_pool_k": None,
+            "budget_fill_score_floor": None,
+            "budget_fill_relative_drop_ratio": None,
         }
     spec_dict = asdict(spec)
     return {
@@ -140,4 +150,9 @@ def _selector_spec_details(selector_name: str) -> dict[str, Any]:
         "search_structure": spec_dict["search_structure"],
         "edge_scorer": spec_dict["edge_scorer"],
         "lookahead_depth": spec_dict["lookahead_depth"],
+        "profile_name": spec_dict["profile_name"],
+        "budget_fill_mode": spec_dict["budget_fill_mode"],
+        "budget_fill_pool_k": spec_dict["budget_fill_pool_k"],
+        "budget_fill_score_floor": spec_dict["budget_fill_score_floor"],
+        "budget_fill_relative_drop_ratio": spec_dict["budget_fill_relative_drop_ratio"],
     }
