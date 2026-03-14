@@ -261,6 +261,66 @@ Hand-shaped bonuses can become dataset-specific heuristics that look clever on o
 
 It becomes worth building if failure analysis on `IIRC` or later fullwiki runs shows repeated misses at useful bridge pages or repeated semantic wandering among homogeneous pages that are not literal graph cycles.
 
+## Global Semantic PPR
+
+### Algorithm Analogy
+
+This is the classic graph-prior reading of semantic PPR: use a query-conditioned personalization vector, score or weight transitions broadly across the graph, run propagation, and then rank nodes by resulting stationary mass.
+
+### What It Would Mean In WebWalker
+
+This would make semantic PPR a first-class graph-prior baseline or alternate retrieval family. The method would behave less like a local committed walk and more like a global query-conditioned importance computation over the hyperlink graph, followed by budgeted evidence selection from the resulting node ranking.
+
+### Why It Fits Or Conflicts With The Current Stack
+
+It only partially fits the current stack. The repo already has a partial scaffold for this idea through `SemanticPPRSelector` and `beam_ppr`, so the design is not foreign. But as a paper story it conflicts with the current local-walk framing because the search behavior is no longer "follow one promising path" but "compute a soft relevance field over a broader graph." It also weakens the interpretation of token budget if the propagation stage itself is broad.
+
+### Expected Benefit
+
+A strong query-conditioned graph-prior comparator that can test whether smooth propagation over natural links is enough to recover support without path commitment.
+
+### Main Risk
+
+If the propagation is effectively broad or graph-wide, token budget becomes only an output budget and stops reflecting the real search-time cost of the method. That makes comparisons against local walk methods easier to challenge.
+
+### Recommended Status
+
+`P2 comparator, not current core story`
+
+### What Evidence Would Justify Building It
+
+It becomes worth building if the goal is to establish a serious PPR-based comparator against `single_path_walk`, especially for harder settings where the question is whether local commitment beats graph-prior smoothing under the same evidence budget.
+
+## Local Semantic PPR
+
+### Algorithm Analogy
+
+This is a seeded, radius-limited, or frontier-limited semantic PPR. Instead of diffusing across a large graph indiscriminately, propagation stays near query-selected starts or within a local candidate-induced subgraph.
+
+### What It Would Mean In WebWalker
+
+This would treat semantic PPR as a local propagation controller rather than a global graph prior. Seeds would come from the same query-time start policies as the current selectors, propagation would stay inside a bounded neighborhood, and the final node ranking would still be trimmed by the same evidence token budget used elsewhere.
+
+### Why It Fits Or Conflicts With The Current Stack
+
+This fits the current stack much better than the global version. It preserves the local-search flavor, keeps token budget meaningful as an evidence budget, and can coexist with the current selector-first evaluation without forcing a total story change. It still shifts the narrative away from strict path commitment, but not so far that the method becomes a completely different retrieval paradigm.
+
+### Expected Benefit
+
+A cleaner graph-propagation alternative that remains local, budget-aware, and plausibly comparable to `single_path_walk` on the same tasks.
+
+### Main Risk
+
+If the local frontier is too small, the method collapses into a noisy reranking trick; if it is too large, it starts inheriting the same cost and fairness problems as the global version.
+
+### Recommended Status
+
+`P1 conditional if the story pivots toward local propagation`
+
+### What Evidence Would Justify Building It
+
+It becomes worth building if the project wants a more serious semantic-PPR direction without giving up local-budget discipline, or if `single_path_walk` and bounded recovery variants still underperform while a local diffusion prior looks likely to improve recall without destroying precision.
+
 ## Prioritization
 
 - `P0`: early reduce
@@ -268,7 +328,9 @@ It becomes worth building if failure analysis on `IIRC` or later fullwiki runs s
 - `P1`: bounded backtracking
 - `P1`: low-cost lookahead token
 - `P1`: reward shaping
+- `P1`: local semantic PPR, if the method story pivots from strict walk to local propagation
 - `P2`: scout fork
+- `P2`: global semantic PPR as a comparator
 - `P2`: semantic pheromone
 - `P2`: UCB-style exploration control
 
