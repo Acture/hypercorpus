@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import urllib.parse
 
 import typer
 from rich.console import Console
@@ -441,14 +443,11 @@ def _print_normalized_layout(console: Console, layout) -> None:
         console.print(f"graph -> {layout.graph_path} ({_format_path_size(layout.graph_path)})")
     if layout.manifest_path is not None:
         console.print(f"conversion-manifest.json -> {layout.manifest_path}")
-    if layout.graph_path is not None:
-        console.print("prepare store:")
-        console.print(
-            "uv run webwalker-cli datasets prepare-musique-store "
-            f"--output-dir {layout.output_dir.parent / 'store'} "
-            f"--questions-source {layout.output_dir / 'questions'} "
-            f"--graph-source {layout.graph_path}"
-        )
+    follow_up = _normalized_follow_up_command(layout)
+    if follow_up is not None:
+        label, command = follow_up
+        console.print(label)
+        console.print(command)
 
 
 def _source_manifest_for(raw_dir: Path) -> Path | None:
@@ -462,6 +461,198 @@ def _source_manifest_for(raw_dir: Path) -> Path | None:
     return None
 
 
+def _normalized_follow_up_command(layout) -> tuple[str, str] | None:
+    if layout.graph_path is None:
+        return None
+    questions_path = layout.output_dir / "questions"
+    store_root = layout.output_dir.parent / "store"
+    if layout.dataset_name == "iirc":
+        return (
+            "prepare store:",
+            "uv run webwalker-cli datasets prepare-iirc-store "
+            f"--output-dir {store_root} "
+            f"--questions-source {questions_path} "
+            f"--graph-source {layout.graph_path}",
+        )
+    if layout.dataset_name == "musique":
+        return (
+            "prepare store:",
+            "uv run webwalker-cli datasets prepare-musique-store "
+            f"--output-dir {store_root} "
+            f"--questions-source {questions_path} "
+            f"--graph-source {layout.graph_path}",
+        )
+    if layout.dataset_name == "hotpotqa-fullwiki":
+        return (
+            "prepare store:",
+            "uv run webwalker-cli datasets prepare-hotpotqa-store "
+            f"--output-dir {store_root} "
+            f"--questions-source {questions_path} "
+            f"--graph-source {layout.graph_path}",
+        )
+    if layout.dataset_name == "hotpotqa-distractor":
+        default_question = layout.question_paths.get("dev")
+        if default_question is None and layout.question_paths:
+            default_question = next(iter(layout.question_paths.values()))
+        if default_question is not None:
+            return (
+                "run:",
+                "uv run webwalker-cli experiments run-hotpotqa "
+                f"--questions {default_question} "
+                f"--graph-records {layout.graph_path} "
+                "--output /tmp/webwalker-hotpotqa-run "
+                "--variant distractor",
+            )
+    return None
+
+
+def _normalized_manifest_dataset_name(source: str) -> tuple[str | None, Path | None]:
+    parsed = urllib.parse.urlparse(source)
+    if parsed.scheme and parsed.scheme != "file":
+        return None, None
+    if parsed.scheme == "file":
+        resolved = Path(urllib.parse.unquote(parsed.path))
+    else:
+        resolved = Path(source)
+    if not resolved.exists():
+        return None, None
+    candidate_roots = [resolved]
+    if resolved.is_file():
+        candidate_roots.extend(resolved.parents[:2])
+    else:
+        candidate_roots.extend(resolved.parents[:1])
+    for root in candidate_roots:
+        manifest_path = root / "conversion-manifest.json"
+        if not manifest_path.exists():
+            continue
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        dataset_name = payload.get("dataset_name")
+        if dataset_name is None:
+            continue
+        return str(dataset_name), manifest_path
+    return None, None
+
+
+def _resolved_local_path(source: str) -> Path | None:
+    parsed = urllib.parse.urlparse(source)
+    if parsed.scheme and parsed.scheme != "file":
+        return None
+    if parsed.scheme == "file":
+        resolved = Path(urllib.parse.unquote(parsed.path))
+    else:
+        resolved = Path(source)
+    return resolved if resolved.exists() else None
+
+
+def _infer_dataset_name_from_questions_source(source: str) -> str | None:
+    resolved = _resolved_local_path(source)
+    if resolved is None:
+        return None
+    candidate = resolved
+    if resolved.is_dir():
+        json_paths = sorted(resolved.glob("*.json"))
+        if not json_paths:
+            return None
+        candidate = json_paths[0]
+    if candidate.suffix.lower() not in {".json", ".jsonl"}:
+        return None
+    if candidate.suffix.lower() == ".jsonl":
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            dataset_name = payload.get("dataset_name")
+            return str(dataset_name) if dataset_name is not None else None
+        return None
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    if isinstance(payload, list) and payload:
+        dataset_name = payload[0].get("dataset_name")
+        return str(dataset_name) if dataset_name is not None else None
+    if isinstance(payload, dict):
+        for key in ("questions", "items", "records"):
+            value = payload.get(key)
+            if isinstance(value, list) and value:
+                dataset_name = value[0].get("dataset_name")
+                return str(dataset_name) if dataset_name is not None else None
+    return None
+
+
+def _infer_dataset_name_from_graph_source(source: str) -> str | None:
+    resolved = _resolved_local_path(source)
+    if resolved is None or not resolved.is_file():
+        return None
+    if resolved.suffix.lower() != ".jsonl":
+        return None
+    with resolved.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict):
+                dataset_name = payload.get("dataset_name")
+                if dataset_name is not None:
+                    return str(dataset_name)
+                metadata = payload.get("metadata")
+                if isinstance(metadata, dict) and metadata.get("dataset") is not None:
+                    return str(metadata["dataset"])
+            return None
+    return None
+
+
+def _store_command_for_dataset(dataset_name: str) -> str | None:
+    if dataset_name == "iirc":
+        return "prepare-iirc-store"
+    if dataset_name == "musique":
+        return "prepare-musique-store"
+    if dataset_name == "hotpotqa-fullwiki":
+        return "prepare-hotpotqa-store"
+    return None
+
+
+def _validate_normalized_inputs_match_dataset(
+    *,
+    dataset_name: str,
+    questions_source: str,
+    graph_source: str,
+) -> None:
+    seen_mismatches: list[tuple[str, Path]] = []
+    for source in (questions_source, graph_source):
+        source_dataset, manifest_path = _normalized_manifest_dataset_name(source)
+        if source_dataset is None or manifest_path is None or source_dataset == dataset_name:
+            continue
+        seen_mismatches.append((source_dataset, manifest_path))
+    if seen_mismatches:
+        source_dataset, manifest_path = seen_mismatches[0]
+        expected_command = _store_command_for_dataset(source_dataset)
+        message = (
+            f"Normalized inputs look like dataset '{source_dataset}' based on {manifest_path}, "
+            f"but this command prepares a '{dataset_name}' store."
+        )
+        if expected_command is not None:
+            message += f" Use '{expected_command}' instead."
+        raise typer.BadParameter(message)
+
+    inferred_names = {
+        name
+        for name in (
+            _infer_dataset_name_from_questions_source(questions_source),
+            _infer_dataset_name_from_graph_source(graph_source),
+        )
+        if name is not None
+    }
+    inferred_names.discard(dataset_name)
+    if inferred_names:
+        source_dataset = sorted(inferred_names)[0]
+        expected_command = _store_command_for_dataset(source_dataset)
+        message = (
+            f"Normalized inputs look like dataset '{source_dataset}', "
+            f"but this command prepares a '{dataset_name}' store."
+        )
+        if expected_command is not None:
+            message += f" Use '{expected_command}' instead."
+        raise typer.BadParameter(message)
+
+
 @datasets_app.command("prepare-iirc-store")
 def prepare_iirc_store_cli(
     output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for the prepared sharded store"),
@@ -472,6 +663,11 @@ def prepare_iirc_store_cli(
     min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
 ) -> None:
     console = Console()
+    _validate_normalized_inputs_match_dataset(
+        dataset_name="iirc",
+        questions_source=questions_source,
+        graph_source=graph_source,
+    )
     _prepare_generic_store(
         console=console,
         dataset_name="iirc",
@@ -503,6 +699,11 @@ def prepare_musique_store_cli(
     min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
 ) -> None:
     console = Console()
+    _validate_normalized_inputs_match_dataset(
+        dataset_name="musique",
+        questions_source=questions_source,
+        graph_source=graph_source,
+    )
     _prepare_generic_store(
         console=console,
         dataset_name="musique",
@@ -537,6 +738,11 @@ def prepare_hotpotqa_store_cli(
     if variant != "fullwiki":
         raise typer.BadParameter("HotpotQA distractor runs are direct-only; use --variant fullwiki for prepared stores.")
     console = Console()
+    _validate_normalized_inputs_match_dataset(
+        dataset_name="hotpotqa-fullwiki",
+        questions_source=questions_source,
+        graph_source=graph_source,
+    )
     _prepare_generic_store(
         console=console,
         dataset_name="hotpotqa-fullwiki",
