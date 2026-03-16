@@ -10,28 +10,28 @@ This document is the working experiment plan. Keep completed, paper-facing decis
 
 ## Headline Policy Shift
 
-The main experiment story now shifts from repo-native baselines to published methods.
+The main experiment story now shifts from "walk versus dense" to `dense-started constrained subgraph selection`.
 
-- Headline baselines:
-  - `MDR`
-  - `HippoRAG`
-  - `GraphRetriever` only after the first two
-- Internal checks only:
+- Shared stage-1 prior and control:
   - `dense`
+- Main repo-native comparison class:
   - `iterative_dense`
   - `mdr_light`
+- Future external comparison class:
+  - `MDR`
+  - `GraphRetriever`
+  - `HippoRAG`
 
 Interpretation rule:
 
-- winning over repo-native dense is no longer sufficient for the paper story; the next headline comparator is `MDR`
-- beating `dense` only shows the method is not obviously broken
-- beating `MDR` is the first threshold for a paper-level method claim
-- until `MDR` is connected, all current results should be treated as pre-headline evidence
+- `dense` remains mandatory because it is both the seed prior and the simplest strong control
+- the current method claim is not "replace dense", but "improve dense-seeded evidence assembly under the same token budget"
+- until a direct external baseline is wired in, all headline decisions stay on repo-native baselines plus harder-dataset transfer
 
-The fixed judgment rule for the current paper direction is:
+The fixed judgment rule for the current phase is:
 
-- if `webwalker` only beats repo-native `dense` but does not beat `MDR`, the current paper story does not hold
-- if `webwalker` stably beats `MDR` on a harder dataset, `dense` can move to appendix / sanity-check status
+- the method must beat the shared `dense` control and `mdr_light` on at least one harder-dataset operating point
+- `MDR` remains a desired future external comparison, but it is not a blocking prerequisite for the current internal phase
 
 ## Current 2Wiki Execution State
 
@@ -143,14 +143,15 @@ uv run webwalker-cli experiments merge-2wiki-results \
 
 ## 2Wiki Wrap-Up Only
 
-`2Wiki` is no longer the main decision surface. It is now only a wrap-up and calibration stage.
+`2Wiki` is no longer the main decision surface. It is now only a wrap-up and calibration stage for dense-seeded selector behavior.
 
 Required remaining work:
 
 1. Finish and merge `runs/2wiki-baseline-retest-s100-v1`.
-2. Record the current best `single_path` operating point.
+2. Record the current best dense-anchored selector operating point.
 3. Record the current repo-native baseline ordering.
 4. Record the delta between the current `single_path` winner and the best repo-native baseline.
+5. Export subset-aware comparison rows so harder-case signals are visible separately from all-case averages.
 
 Explicitly out of scope on `2Wiki`:
 
@@ -158,11 +159,31 @@ Explicitly out of scope on `2Wiki`:
 - do not expand the `2Wiki` sample to chase small gains
 - do not use `2Wiki` as the main evidence for whether broad walk is the paper story
 
+Current dense-anchored control:
+
+- `top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop`
+
+Current best `single_path` winner:
+
+- `top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop`
+
+Current semantic-controller lane to develop next:
+
+- `top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2`
+- `top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2`
+
+Current `2Wiki` baseline retest recovery status:
+
+- run: `runs/2wiki-baseline-retest-s100-v1`
+- completed chunks: `chunk-00000`, `chunk-00001`, `chunk-00002`
+- partial and must rerun: `chunk-00003`
+- not started: `chunk-00004`
+- do not merge until `chunk-00003` and `chunk-00004` are completed and the run is merged cleanly
 After `2Wiki` wrap-up, the only internal conclusions to carry forward are:
 
-- the current best `single_path` selector
+- the current best dense-anchored selector
 - the repo-native baseline ordering on the retest sample
-- the delta between `single_path winner` and best repo-native baseline, but this delta is not a headline acceptance criterion
+- subset-aware deltas against the dense control
 
 Immediate next actions:
 
@@ -187,8 +208,10 @@ Execution order is fixed.
 
 Do not run the full study preset first. Run only this shortlist:
 
-- `single_path winner` from `2Wiki`
-- best repo-native baseline from the completed `2Wiki` baseline retest
+- `top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop`
+- `top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop`
+- current best `single_path` selector from `2Wiki`
+- current best `constrained_multipath` controller selector
 - `gold_support_context`
 - `full_corpus_upper_bound`
 
@@ -198,32 +221,34 @@ Budgets are fixed to:
 - `384`
 - `512`
 
-### 3. IIRC MDR Run
+### 3. IIRC Judgment Rule
 
-The `MDR` run must use the exact same `case_ids_file` as the `IIRC` webwalker shortlist.
+The shortlist must use the exact same `case_ids_file` across all selectors.
 
 The comparison must land on the same evidence-budget frame, using:
 
 - `support_f1_zero_on_empty`
 - `support_precision`
 - `support_recall`
+- `avg_path_hit`
 
 The first required questions on `IIRC` are:
 
-- does `webwalker` beat `MDR`
-- is the absolute gain at least `0.03`
+- does the semantic-controller selector beat the dense control
+- does it also beat `mdr_light`
+- are gains concentrated on harder subsets rather than only easy all-case averages
 - does precision collapse while recall rises
 
 ## Conditional Branchy Lane On IIRC
 
 Branchy search is no longer a default next step. It is conditional.
 
-Only add a branchy lane on `IIRC` if the `single_path winner` is still only slightly above the best repo-native baseline.
+Only add a branchy lane on `IIRC` if the controller-based `single_path` lane is still only slightly above the best repo-native baseline.
 
 If triggered, run at most two candidates:
 
-- `beam + ST lookahead_2 + st_future_heavy`
-- `ucs + ST lookahead_2 + st_future_heavy`
+- `constrained_multipath + llm_controller`
+- one diagnostic `beam` or `ucs` comparator only if needed
 
 This branchy lane is for method diagnosis, not the default headline path.
 
@@ -235,8 +260,8 @@ It enters the mainline only if both conditions hold:
 
 1. the normalized graph bundle is ready
 2. `IIRC` shows at least one positive signal:
-   - `webwalker single_path winner` beats `MDR` by absolute `>= 0.03`
-   - or a branchy candidate beats the `single_path winner` by absolute `>= 0.02`
+   - a semantic-controller selector beats both `dense` and `mdr_light` by absolute `>= 0.02`
+   - or `constrained_multipath` beats the best `single_path` controller by absolute `>= 0.02`
 
 If `IIRC` does not show that signal, do not invest in a long `HotpotQA fullwiki` run yet. Return first to the baseline / method story problem.
 
@@ -245,8 +270,8 @@ If `HotpotQA fullwiki` is unlocked, only run:
 - webwalker shortlist:
   - `single_path winner`
   - at most one branchy winner, and only if `IIRC` showed a real gain
-- published baseline shortlist:
-  - `MDR`
+- external baseline shortlist:
+  - `MDR`, only if connected by then
   - `HippoRAG` only if already connected and still worth the extra run cost
 
 ## Backup Benchmark Candidates
@@ -277,7 +302,7 @@ The current adapters and normalized dataset format expect a graph plus per-case 
 ## Documentation Rules
 
 - `phase-decisions.md`: completed, paper-facing phase decisions only
-- `next-phase-experiments.md`: active plan, sequencing, local status, and recovery commands
+- `next-phase-experiments.md`: active plan, dense-anchored sequencing, local status, and recovery commands
 - run directories under `runs/`: artifacts only, not separate human-written status notes
 
 ## Minimum Completion Standards
@@ -286,17 +311,18 @@ The current adapters and normalized dataset format expect a graph plus per-case 
 
 - `runs/2wiki-baseline-retest-s100-v1` is fully merged
 - best repo-native baseline is explicitly identified
-- the delta between `single_path winner` and best repo-native baseline is explicitly written down
-- this delta is not used as headline acceptance
+- dense-control subset deltas are explicitly written down
+- this delta is not used as headline acceptance by itself
 
 ### IIRC
 
 - a shared `evaluated_case_ids.txt` exists for `IIRC`
-- `webwalker shortlist` and `MDR` use the same sample
+- all shortlist selectors use the same sample
 - both sides report evidence metrics on the same budget definition
 - the run answers:
-  - whether `webwalker` beats `MDR`
-  - whether the gain is `>= 0.03`
+  - whether a semantic-controller selector beats `dense`
+  - whether it also beats `mdr_light`
+  - whether the gain is `>= 0.02`
   - whether precision collapses
 
 ### HotpotQA Fullwiki

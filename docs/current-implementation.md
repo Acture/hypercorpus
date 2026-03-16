@@ -18,7 +18,8 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 - The headline metric is `support_f1_zero_on_empty`.
 - `answer_em` and `answer_f1` are secondary reviewer-facing sanity checks.
 - The full-corpus comparison is a GraphRAG proxy, not a full GraphRAG integration.
-- The current version is intentionally lightweight, training-free, and budget-aware.
+- The current method story is `dense-started constrained subgraph selection`, not "walk instead of dense".
+- The current version is intentionally lightweight, zero-shot where possible, and budget-aware.
 - The current implementation supports an algorithmic discovery paper more directly than an answerer-first NLP paper.
 
 ## What Is Implemented
@@ -38,6 +39,7 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 - The experiment runner also supports local-only study presets, including `single_path_edge_ablation_local`, `baseline_retest_local`, and `branchy_profiles_384_512`, which bundle selector defaults and token budgets for planned experiments.
 - `paper_recommended` is the full paper-facing preset and requires explicit selector LLM configuration. `paper_recommended_local` is the local-only variant that avoids `link_context_llm`.
 - Each run now writes `run_manifest.json`, `evaluated_case_ids.txt`, and `study_comparison_rows.csv`, so broader phase samples can be replayed exactly without relying on `--limit`.
+- Each run also writes `subset_comparison_rows.csv`, so harder-case and path-aware slices can be compared against the dense control without reprocessing raw logs.
 - Selector-side LLM scoring is optional and records provider, model, token usage, runtime, cache state, and fallback behavior.
 - Step-scorer composition is now exposed as named profiles for overlap and sentence-transformer scorers. LLM scorer aggregation remains fixed today.
 
@@ -104,6 +106,7 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 ### Dense-Seed Baselines
 
 - `hop_0__dense` variants answer the question: how far can plain lexical or dense seed retrieval go under the same token budget.
+- In the current story, `hop_0__dense` is both a stage-1 seed prior and the main flat control.
 - `hop_2__iterative_dense` variants provide an `MDR-style` iterative dense baseline using repeated dense retrieval over accumulated query-plus-context text under the same budget accounting.
 - `hop_2__mdr_light` variants provide a repo-native comparison point that expands each frontier node with its own dense query and then merges the hop candidates under the same token budget accounting. This is not a trained MDR reproduction.
 - `__budget_fill_relative_drop` variants test whether filling the remaining budget improves all-case evidence recovery.
@@ -112,7 +115,14 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 
 - `single_path_walk` variants start from a seed and expand over natural hyperlinks.
 - `link_context_*` scorers use anchor text and surrounding sentence context as the local decision unit.
+- `link_context_llm_controller` adds a zero-shot semantic controller that chooses actions (`stop`, `choose_one`, `choose_two`) rather than only emitting per-edge scores.
 - These are the current core selector family for the paper-facing story.
+
+### Constrained Multi-Path Controller
+
+- `constrained_multipath` is a controller-guided branchy family with at most two live branches and one scout fork.
+- It is designed as a dense-anchored selector, not a general beam-search replacement.
+- It keeps branch count, backtracking, and budget pacing explicitly bounded so precision collapse is measurable rather than hidden inside a broad search frontier.
 
 ### Broad Search Variants
 
@@ -136,7 +146,8 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 
 - Full GraphRAG indexing and query execution
 - A production answer backend
-- Training or RL-based selector policies
+- Per-dataset fine-tuned selector policies
+- Unified controller distillation and offline bandit calibration
 - Direct trained MDR, GraphRetriever, or HippoRAG reproductions
 - Automatic raw Wikipedia dump ingestion for fullwiki-style corpora
 - Large-scale comparative studies over `IIRC`, `HotpotQA`, or `MuSiQue`
@@ -153,15 +164,15 @@ The repo uses fast synthetic tests instead of requiring the real corpora for bas
 
 ### Selector and Walker Tests
 
-- `test_selector.py` covers exploratory selector-family behavior, search variants, and budget handling.
+- `test_selector.py` covers exploratory selector-family behavior, search variants, controller parsing, and budget handling.
 - `test_walker.py` covers greedy walk behavior, cycle avoidance, and stop conditions.
 
 ### Evaluation and Experiment Tests
 
 - `test_eval.py` verifies selector registries, budget adherence, GraphRAG proxy selection, and optional secondary end-to-end attachment.
-- `test_experiments.py` verifies selector-by-budget outputs, grouped summaries, CSV export, chunked runs, and merged summaries.
+- `test_experiments.py` verifies selector-by-budget outputs, grouped summaries, subset-aware CSV export, chunked runs, and merged summaries.
 - `test_cli_experiments.py` verifies the Typer CLI on tiny samples.
-- `test_selector_llm.py` verifies multi-backend selector configuration, mocked token accounting, parsing, caching, and fallback behavior.
+- `test_selector_llm.py` verifies multi-backend selector configuration, controller actions, mocked token accounting, parsing, caching, and fallback behavior.
 
 ### Dataset and Storage Tests
 

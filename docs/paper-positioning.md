@@ -22,7 +22,7 @@ Three stable pressures motivate the project:
 
 ## One-Sentence Thesis
 
-For naturally linked corpora, a lightweight, training-free, budget-aware discovery algorithm can recover better compact evidence sets than flat dense top-k baselines, without requiring eager graph construction or a learned retrieval policy.
+For naturally linked corpora, a lightweight dense-started semantic controller can recover better compact evidence sets than flat dense evidence assembly and repo-native iterative dense baselines, without requiring eager graph construction or per-dataset fine-tuning.
 
 ## Paper Form
 
@@ -30,7 +30,7 @@ Write the project as an algorithmic discovery paper.
 
 - Primary output: a selected corpus or induced subgraph under an explicit token budget.
 - Primary objective: evidence discovery quality before downstream reasoning.
-- Primary comparison class: dense and iterative retrieval baselines, not full answer-generation systems.
+- Primary comparison class: dense control plus repo-native iterative dense baselines, not full answer-generation systems.
 - QA remains an evaluation context, not the core identity of the method.
 
 ## Stable Research Questions
@@ -47,7 +47,7 @@ These are the durable questions that should survive changes in the current opera
 These claims are currently `supported on phase-decision-30`, a completed `2Wiki dev / 30 cases / token budget 256 / no-e2e` phase-decision run.
 
 - Budgeted subgraph/corpus discovery over natural hyperlinks is a coherent problem formulation for pre-RAG retrieval.
-- In the current phase sample, a dense-seeded hyperlink-local walk outperforms flat dense top-k selection on all-case support F1.
+- In the current phase sample, dense-seeded hyperlink-local selection is a coherent operating point and the right level of comparison against flat dense evidence assembly.
 - Under a fixed `256`-token budget, wider and deeper graph search can hurt the operating point by collapsing precision.
 - Budget-aware fill is an effective component in the current system and should be treated as a real part of the paper contribution.
 
@@ -55,10 +55,10 @@ These claims are currently `supported on phase-decision-30`, a completed `2Wiki 
 
 These claims are not supported by current evidence and should stay out of the main paper story for now.
 
-- We do not yet outperform `MDR`.
+- We do not yet compare directly against trained `MDR`.
 - We do not yet outperform `GraphRetriever`.
 - We do not yet outperform `HippoRAG`.
-- We cannot yet claim that LLM edge scoring is the main source of the gain.
+- We cannot yet claim that zero-shot semantic control is the main source of the gain.
 - We cannot yet claim end-to-end QA superiority.
 - We cannot yet claim the current result generalizes beyond this task, budget, or sample size.
 
@@ -66,11 +66,11 @@ These claims are not supported by current evidence and should stay out of the ma
 
 ### MDR
 
-`MDR` is the main strong baseline to compare against next. It represents iterative dense retrieval without relying on natural hyperlink structure. If `webwalker` cannot beat or clearly complement this family, the paper story remains incomplete.
+`MDR` remains an important future external comparator because it represents iterative dense retrieval without relying on natural hyperlink structure. It is not yet wired into the current repo, so the near-term internal judgment surface is `dense` plus repo-native `mdr_light`.
 
 ### GraphRetriever
 
-`GraphRetriever` is the closest learned ancestor in spirit. It is a trained reasoning-path retriever over a paragraph graph. `webwalker` differs by targeting a training-free, query-time selector over natural hyperlinks rather than a learned graph retriever. It is not a drop-in backend for the current framework.
+`GraphRetriever` is the closest learned ancestor in spirit. It is a trained reasoning-path retriever over a paragraph graph. `webwalker` differs by targeting a dense-started, query-time selector over natural hyperlinks rather than a task-specific learned graph retriever. It is not a drop-in backend for the current framework.
 
 ### HippoRAG
 
@@ -90,9 +90,9 @@ These should be written as established ingredients, not as paper novelty.
 
 ### Current Effective Core Combination
 
-- natural hyperlink link-context selection
+- dense-started natural hyperlink link-context selection
 - fixed-budget corpus assembly
-- selector-first evaluation with all-case evidence metrics
+- selector-first evaluation with all-case and subset-aware evidence metrics
 
 This combination is the current strongest candidate for the paper's main algorithmic systems contribution.
 
@@ -104,6 +104,6 @@ This is the cleanest candidate for a named new component because it is both dist
 
 ### Candidate But Not Yet Isolated
 
-- structured LLM edge scorer
+- structured semantic controller over hyperlink decisions
 
 This is promising as a modular design, but current experiments do not isolate it cleanly enough to claim it as the main source of the observed gain.
