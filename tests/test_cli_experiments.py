@@ -494,6 +494,7 @@ def test_merge_2wiki_results_cli_reports_missing_chunks(prepared_two_wiki_store,
     assert "missing_chunks -> [1]" in merge_result.stdout
     assert "merged summary_rows.csv" in merge_result.stdout
     assert "merged study_comparison_rows.csv" in merge_result.stdout
+    assert "merged subset_comparison_rows.csv" in merge_result.stdout
     assert "merged run_manifest.json" in merge_result.stdout
     assert "merged evaluated_case_ids.txt" in merge_result.stdout
 
@@ -542,11 +543,15 @@ def test_export_summary_report_cli_writes_csv(two_wiki_files, tmp_path):
     assert export_result.exit_code == 0, export_result.stdout
     assert "summary_rows.csv ->" in export_result.stdout
     assert "study_comparison_rows.csv ->" in export_result.stdout
+    assert "subset_comparison_rows.csv ->" in export_result.stdout
     assert report_path.name in export_result.stdout
     assert report_path.exists()
     default_comparison_path = report_path.parent / "study_comparison_rows.csv"
+    default_subset_path = report_path.parent / "subset_comparison_rows.csv"
     assert default_comparison_path.name in export_result.stdout
     assert default_comparison_path.exists()
+    assert default_subset_path.name in export_result.stdout
+    assert default_subset_path.exists()
 
     comparison_path = tmp_path / "exports-2" / "custom-comparison.csv"
     export_with_custom_comparison = runner.invoke(

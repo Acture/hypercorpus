@@ -5,10 +5,16 @@ import pytest
 from webwalker.eval import EvaluationBudget, EvaluationCase
 from webwalker.selector import build_selector, select_selectors
 from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
-from webwalker.selector_llm import AnthropicBackendAdapter, BackendCompletion, SelectorLLMConfig
+from webwalker.selector_llm import AnthropicBackendAdapter, BackendCompletion
 
 SINGLE_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_1"
 TWO_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_2"
+CONTROLLER_SINGLE_PATH = (
+    "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm_controller__lookahead_2"
+)
+CONTROLLER_MULTIPATH = (
+    "top_1_seed__lexical_overlap__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2"
+)
 
 
 class FakeBackend:
@@ -65,6 +71,35 @@ class FakeTextBackend:
             completion_tokens=self.completion_tokens,
             total_tokens=self.prompt_tokens + self.completion_tokens,
             raw_response=self.raw_response,
+        )
+
+
+class FakeSequenceBackend:
+    def __init__(self, payloads: list[dict], *, prompt_tokens: int = 17, completion_tokens: int = 9):
+        self.payloads = payloads
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.call_count = 0
+
+    def complete_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        response_schema=None,
+    ) -> BackendCompletion:
+        del model, system_prompt, user_prompt, temperature, response_schema
+        payload = self.payloads[min(self.call_count, len(self.payloads) - 1)]
+        self.call_count += 1
+        return BackendCompletion(
+            text=json.dumps(payload, ensure_ascii=False),
+            payload=payload,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            total_tokens=self.prompt_tokens + self.completion_tokens,
+            raw_response=json.dumps({"payload": payload}, ensure_ascii=False),
         )
 
 
@@ -370,6 +405,157 @@ def test_single_hop_selector_preserves_usage_on_response_failures(sample_graph, 
     assert result.selector_logs[0].raw_response == '{"id":"mock-failure"}'
 
 
+def test_controller_single_path_records_decision_and_backtrack(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    backend = FakeSequenceBackend(
+        [
+            {
+                "action": "choose_one",
+                "primary_edge_id": "0",
+                "secondary_edge_id": "1",
+                "backup_edge_id": "1",
+                "stop_score": 0.20,
+                "evidence_cluster_confidence": 0.42,
+                "candidates": [
+                    {
+                        "edge_id": "0",
+                        "utility": 0.91,
+                        "direct_support": 0.80,
+                        "bridge_potential": 0.15,
+                        "future_potential": 0.10,
+                        "redundancy_risk": 0.10,
+                        "rationale": "Try the flashy edge first.",
+                    },
+                    {
+                        "edge_id": "1",
+                        "utility": 0.83,
+                        "direct_support": 0.65,
+                        "bridge_potential": 0.95,
+                        "future_potential": 1.00,
+                        "redundancy_risk": 0.15,
+                        "rationale": "Keep the bridge as backup.",
+                    },
+                ],
+            },
+            {
+                "action": "choose_one",
+                "primary_edge_id": "0",
+                "secondary_edge_id": "",
+                "backup_edge_id": "",
+                "stop_score": 0.10,
+                "evidence_cluster_confidence": 0.86,
+                "candidates": [
+                    {
+                        "edge_id": "0",
+                        "utility": 0.86,
+                        "direct_support": 0.72,
+                        "bridge_potential": 0.98,
+                        "future_potential": 0.94,
+                        "redundancy_risk": 0.08,
+                        "rationale": "This finishes the bridge path.",
+                    }
+                ],
+            },
+        ]
+    )
+    selector = build_selector(
+        CONTROLLER_SINGLE_PATH,
+        selector_provider="openai",
+        selector_model="gpt-test-mini",
+        selector_api_key_env="OPENAI_API_KEY",
+        selector_backend_factory=lambda _config: backend,
+    )
+    case = EvaluationCase(case_id="q-controller", query="harbor root evidence")
+    budget = EvaluationBudget(token_budget_tokens=128)
+
+    result = selector.select(_build_backtrack_graph(), case, budget)
+
+    assert result.selected_node_ids[0] == "root"
+    assert "bridge" in result.selected_node_ids
+    assert "answer" in result.selected_node_ids
+    assert "bait" not in result.selected_node_ids
+    assert backend.call_count == 2
+    assert result.selector_usage is not None
+    assert result.selector_usage.llm_calls == 2
+    assert result.selector_usage.controller_backtrack_actions == 1
+    assert result.selector_usage.controller_calls == 2
+    assert any(log.decision_action == "backtrack" for log in result.selector_logs)
+    assert result.selector_logs[0].backup_edge_id == "1"
+
+
+def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    backend = FakeSequenceBackend(
+        [
+            {
+                "action": "choose_two",
+                "primary_edge_id": "1",
+                "secondary_edge_id": "0",
+                "backup_edge_id": "0",
+                "stop_score": 0.18,
+                "evidence_cluster_confidence": 0.78,
+                "candidates": [
+                    {
+                        "edge_id": "0",
+                        "utility": 0.79,
+                        "direct_support": 0.35,
+                        "bridge_potential": 0.40,
+                        "future_potential": 0.20,
+                        "redundancy_risk": 0.85,
+                        "rationale": "This is the weaker flashy branch.",
+                    },
+                    {
+                        "edge_id": "1",
+                        "utility": 0.84,
+                        "direct_support": 0.60,
+                        "bridge_potential": 0.96,
+                        "future_potential": 1.00,
+                        "redundancy_risk": 0.12,
+                        "rationale": "This is the bridge branch to keep.",
+                    },
+                ],
+            },
+            {
+                "action": "choose_one",
+                "primary_edge_id": "0",
+                "secondary_edge_id": "",
+                "backup_edge_id": "",
+                "stop_score": 0.12,
+                "evidence_cluster_confidence": 0.90,
+                "candidates": [
+                    {
+                        "edge_id": "0",
+                        "utility": 0.92,
+                        "direct_support": 0.78,
+                        "bridge_potential": 0.98,
+                        "future_potential": 0.96,
+                        "redundancy_risk": 0.05,
+                        "rationale": "Take the answer edge.",
+                    }
+                ],
+            },
+        ]
+    )
+    selector = build_selector(
+        CONTROLLER_MULTIPATH,
+        selector_provider="openai",
+        selector_model="gpt-test-mini",
+        selector_api_key_env="OPENAI_API_KEY",
+        selector_backend_factory=lambda _config: backend,
+    )
+    case = EvaluationCase(case_id="q-multipath", query="launch navigation root")
+    budget = EvaluationBudget(token_budget_tokens=128)
+
+    result = selector.select(_build_bridge_graph(), case, budget)
+
+    assert "bridge" in result.selected_node_ids
+    assert "answer" in result.selected_node_ids
+    assert result.selector_usage is not None
+    assert result.selector_usage.controller_fork_actions == 1
+    assert result.selector_usage.controller_backtrack_actions == 0
+    assert any(log.decision_action == "choose_two" for log in result.selector_logs)
+
+
 def _build_bridge_graph() -> LinkContextGraph:
     graph = LinkContextGraph(
         documents=[
@@ -403,6 +589,45 @@ def _build_bridge_graph() -> LinkContextGraph:
             target="answer",
             anchor_text="harbor location",
             sentence="harbor location",
+            sent_idx=0,
+        )
+    )
+    return graph
+
+
+def _build_backtrack_graph() -> LinkContextGraph:
+    graph = LinkContextGraph(
+        documents=[
+            DocumentNode("root", "Harbor Root", ("Harbor Root is the place to start the evidence search.",)),
+            DocumentNode("bait", "Flashy Harbor", ("Flashy Harbor sounds relevant but dead ends.",)),
+            DocumentNode("bridge", "Bridge Record", ("Bridge Record leads to the real harbor answer.",)),
+            DocumentNode("answer", "Answer State", ("Answer State contains the final harbor evidence.",)),
+        ]
+    )
+    graph.add_link(
+        LinkContext(
+            source="root",
+            target="bait",
+            anchor_text="harbor shortcut",
+            sentence="A flashy harbor shortcut looks tempting.",
+            sent_idx=0,
+        )
+    )
+    graph.add_link(
+        LinkContext(
+            source="root",
+            target="bridge",
+            anchor_text="bridge evidence",
+            sentence="Bridge evidence points onward to the answer state.",
+            sent_idx=0,
+        )
+    )
+    graph.add_link(
+        LinkContext(
+            source="bridge",
+            target="answer",
+            anchor_text="answer state",
+            sentence="Bridge evidence reaches the answer state.",
             sent_idx=0,
         )
     )

@@ -55,9 +55,14 @@ from webwalker.resume import (
     build_config_fingerprint,
     build_selection_key,
 )
-from webwalker.reports import export_study_comparison_report, export_summary_report
+from webwalker.reports import (
+    export_study_comparison_report,
+    export_subset_comparison_report,
+    export_summary_report,
+)
 from webwalker.selector import (
     BudgetFillSelector,
+    CanonicalConstrainedMultipathSelector,
     CanonicalIterativeDenseSelector,
     CanonicalMDRLightSelector,
     CanonicalSearchSelector,
@@ -1017,6 +1022,7 @@ def merge_store_results(
         summary=summary,
         study_preset=merged_study_preset,
         control_selector_name=merged_control_selector,
+        results_path=merged_results,
     )
     _write_evaluated_case_ids(merged_dir, _ordered_case_ids_from_records(records))
     _write_run_manifest(
@@ -1292,6 +1298,8 @@ def _case_id_value(case: Any) -> str:
 def _selection_family(selector: Any) -> str:
     if isinstance(selector, BudgetFillSelector):
         return "budget_fill"
+    if isinstance(selector, CanonicalConstrainedMultipathSelector):
+        return "controller_multipath"
     if isinstance(selector, CanonicalSinglePathSelector):
         return "dynamic_walk"
     if isinstance(selector, CanonicalSearchSelector):
@@ -1573,12 +1581,14 @@ def _rebuild_public_outputs(
             summary=summary,
             study_preset=study_preset,
             control_selector_name=control_selector_name,
+            results_path=output_dir / "results.jsonl",
         )
     else:
         for path in (
             output_dir / "summary.json",
             output_dir / "summary_rows.csv",
             output_dir / "study_comparison_rows.csv",
+            output_dir / "subset_comparison_rows.csv",
         ):
             path.unlink(missing_ok=True)
         summary = ExperimentSummary(dataset_name=dataset_name, total_cases=0, selector_budgets=[])
@@ -1609,6 +1619,7 @@ def _clear_run_artifacts(output_dir: Path, checkpoint_store: CheckpointStore) ->
         output_dir / "summary.json",
         output_dir / "summary_rows.csv",
         output_dir / "study_comparison_rows.csv",
+        output_dir / "subset_comparison_rows.csv",
         output_dir / "run_manifest.json",
         output_dir / "evaluated_case_ids.txt",
         output_dir / "chunk.json",
@@ -1736,6 +1747,15 @@ def _execute_selector_body_raw(
     stop_callback: Callable[[], None] | None,
 ) -> CorpusSelectionResult:
     if family == "dynamic_walk" and isinstance(selector, CanonicalSinglePathSelector):
+        return selector.select(
+            graph,
+            case,
+            budget,
+            resume_state=resume_payload,
+            checkpoint_callback=checkpoint_callback,
+            stop_callback=stop_callback,
+        )
+    if family == "controller_multipath" and isinstance(selector, CanonicalConstrainedMultipathSelector):
         return selector.select(
             graph,
             case,
@@ -2625,6 +2645,7 @@ def _write_summary_file(
     summary: ExperimentSummary,
     study_preset: str | None = None,
     control_selector_name: str | None = None,
+    results_path: Path | None = None,
 ) -> None:
     summary_path.write_text(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
@@ -2637,6 +2658,13 @@ def _write_summary_file(
         study_preset=study_preset,
         control_selector_name=control_selector_name,
     )
+    if results_path is not None:
+        export_subset_comparison_report(
+            results_path,
+            summary_path.with_name("subset_comparison_rows.csv"),
+            study_preset=study_preset,
+            control_selector_name=control_selector_name,
+        )
 
 
 def _selection_record(evaluation: CaseEvaluation, selection) -> dict[str, Any]:

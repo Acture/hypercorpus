@@ -158,6 +158,7 @@ def _print_direct_outputs(*, console: Console, output: Path, export_graphrag_inp
     console.print(f"summary.json -> {output / 'summary.json'}")
     console.print(f"summary_rows.csv -> {output / 'summary_rows.csv'}")
     console.print(f"study_comparison_rows.csv -> {output / 'study_comparison_rows.csv'}")
+    console.print(f"subset_comparison_rows.csv -> {output / 'subset_comparison_rows.csv'}")
     console.print(f"run_manifest.json -> {output / 'run_manifest.json'}")
     console.print(f"evaluated_case_ids.txt -> {output / 'evaluated_case_ids.txt'}")
     if export_graphrag_inputs:
@@ -171,6 +172,7 @@ def _print_store_outputs(*, console: Console, chunk_dir: Path, export_graphrag_i
     console.print(f"summary.json -> {chunk_dir / 'summary.json'}")
     console.print(f"summary_rows.csv -> {chunk_dir / 'summary_rows.csv'}")
     console.print(f"study_comparison_rows.csv -> {chunk_dir / 'study_comparison_rows.csv'}")
+    console.print(f"subset_comparison_rows.csv -> {chunk_dir / 'subset_comparison_rows.csv'}")
     console.print(f"run_manifest.json -> {chunk_dir / 'run_manifest.json'}")
     console.print(f"evaluated_case_ids.txt -> {chunk_dir / 'evaluated_case_ids.txt'}")
     if export_graphrag_inputs:
@@ -1015,6 +1017,7 @@ def merge_2wiki_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged subset_comparison_rows.csv -> {merged_dir / 'subset_comparison_rows.csv'}")
     console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
     console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
@@ -1033,6 +1036,7 @@ def merge_iirc_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged subset_comparison_rows.csv -> {merged_dir / 'subset_comparison_rows.csv'}")
     console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
     console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
@@ -1051,6 +1055,7 @@ def merge_musique_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged subset_comparison_rows.csv -> {merged_dir / 'subset_comparison_rows.csv'}")
     console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
     console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
@@ -1069,6 +1074,7 @@ def merge_hotpotqa_store_results(
     console.print(f"merged summary.json -> {merged_dir / 'summary.json'}")
     console.print(f"merged summary_rows.csv -> {merged_dir / 'summary_rows.csv'}")
     console.print(f"merged study_comparison_rows.csv -> {merged_dir / 'study_comparison_rows.csv'}")
+    console.print(f"merged subset_comparison_rows.csv -> {merged_dir / 'subset_comparison_rows.csv'}")
     console.print(f"merged run_manifest.json -> {merged_dir / 'run_manifest.json'}")
     console.print(f"merged evaluated_case_ids.txt -> {merged_dir / 'evaluated_case_ids.txt'}")
     console.print(f"missing_chunks -> {missing_chunks if missing_chunks else '[]'}")
@@ -1084,15 +1090,23 @@ def export_summary_report_cli(
         dir_okay=False,
         help="Optional output CSV path for study_comparison_rows.csv",
     ),
+    subset_output: Path | None = typer.Option(
+        None,
+        "--subset-output",
+        dir_okay=False,
+        help="Optional output CSV path for subset_comparison_rows.csv",
+    ),
 ) -> None:
     console = Console()
     bundle = export_report_bundle_from_file(
         summary,
         summary_rows_output_path=output,
         study_comparison_output_path=comparison_output,
+        subset_comparison_output_path=subset_output,
     )
     console.print(f"summary_rows.csv -> {bundle.summary_rows_path}")
     console.print(f"study_comparison_rows.csv -> {bundle.study_comparison_rows_path}")
+    console.print(f"subset_comparison_rows.csv -> {bundle.subset_comparison_rows_path}")
 
 
 def _format_metric(value: float | None) -> str:

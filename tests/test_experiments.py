@@ -20,10 +20,12 @@ from webwalker.experiments import (
 from webwalker.resume import StopRequested
 from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
 from webwalker.reports import (
+    SUBSET_COMPARISON_FIELDNAMES,
     STUDY_COMPARISON_FIELDNAMES,
     SUMMARY_REPORT_FIELDNAMES,
     export_report_bundle_from_file,
     study_comparison_rows,
+    subset_comparison_rows,
     summary_report_rows,
 )
 from webwalker.selector import build_selector
@@ -161,12 +163,14 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
     summary_path = output_dir / "summary.json"
     summary_rows_path = output_dir / "summary_rows.csv"
     comparison_rows_path = output_dir / "study_comparison_rows.csv"
+    subset_rows_path = output_dir / "subset_comparison_rows.csv"
     manifest_path = output_dir / "run_manifest.json"
     evaluated_ids_path = output_dir / "evaluated_case_ids.txt"
     assert results_path.exists()
     assert summary_path.exists()
     assert summary_rows_path.exists()
     assert comparison_rows_path.exists()
+    assert subset_rows_path.exists()
     assert manifest_path.exists()
     assert evaluated_ids_path.exists()
 
@@ -859,6 +863,7 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store
     assert (chunk_dir / "results.jsonl").exists()
     assert (chunk_dir / "summary.json").exists()
     assert (chunk_dir / "study_comparison_rows.csv").exists()
+    assert (chunk_dir / "subset_comparison_rows.csv").exists()
     assert (chunk_dir / "run_manifest.json").exists()
     assert (chunk_dir / "evaluated_case_ids.txt").exists()
     chunk_meta = json.loads((chunk_dir / "chunk.json").read_text(encoding="utf-8"))
@@ -971,6 +976,8 @@ def test_export_report_bundle_from_file_uses_manifest_study_context(two_wiki_fil
     assert bundle.summary_rows_path.exists()
     assert bundle.study_comparison_rows_path == output_dir / "exports" / "study_comparison_rows.csv"
     assert bundle.study_comparison_rows_path.exists()
+    assert bundle.subset_comparison_rows_path == output_dir / "exports" / "subset_comparison_rows.csv"
+    assert bundle.subset_comparison_rows_path.exists()
 
     with bundle.study_comparison_rows_path.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -1010,6 +1017,8 @@ def test_export_report_bundle_from_file_without_manifest_still_writes_comparison
     assert bundle.summary_rows_path.exists()
     assert bundle.study_comparison_rows_path == output_dir / "exports" / "comparison.csv"
     assert bundle.study_comparison_rows_path.exists()
+    assert bundle.subset_comparison_rows_path == output_dir / "subset_comparison_rows.csv"
+    assert bundle.subset_comparison_rows_path.exists()
 
     with bundle.study_comparison_rows_path.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -1017,6 +1026,94 @@ def test_export_report_bundle_from_file_without_manifest_still_writes_comparison
     assert rows[0]["study_preset"] == ""
     assert rows[0]["control_selector_name"] == ""
     assert rows[0]["delta_support_f1_vs_control"] == ""
+
+
+def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
+    records = [
+        {
+            "dataset_name": "2wikimultihop",
+            "selector": "control",
+            "budget_label": "tokens-256",
+            "gold_support_nodes": ["a", "b"],
+            "gold_start_nodes": ["a", "b"],
+            "gold_path_nodes": None,
+            "selection": {
+                "metrics": {
+                    "support_f1_zero_on_empty": 0.40,
+                    "support_precision": 0.50,
+                    "support_recall": 0.35,
+                    "path_hit": None,
+                },
+                "selector_usage": {
+                    "controller_calls": 0,
+                    "controller_stop_actions": 0,
+                    "controller_fork_actions": 0,
+                    "controller_backtrack_actions": 0,
+                    "controller_prefiltered_candidates": 0,
+                },
+            },
+        },
+        {
+            "dataset_name": "2wikimultihop",
+            "selector": "candidate",
+            "budget_label": "tokens-256",
+            "gold_support_nodes": ["a", "b"],
+            "gold_start_nodes": ["a", "b"],
+            "gold_path_nodes": None,
+            "selection": {
+                "metrics": {
+                    "support_f1_zero_on_empty": 0.55,
+                    "support_precision": 0.60,
+                    "support_recall": 0.50,
+                    "path_hit": None,
+                },
+                "selector_usage": {
+                    "controller_calls": 2,
+                    "controller_stop_actions": 1,
+                    "controller_fork_actions": 0,
+                    "controller_backtrack_actions": 0,
+                    "controller_prefiltered_candidates": 12,
+                },
+            },
+        },
+    ]
+
+    assert SUBSET_COMPARISON_FIELDNAMES[:5] == [
+        "study_preset",
+        "dataset_name",
+        "subset_label",
+        "selector_name",
+        "budget_label",
+    ]
+    rows = subset_comparison_rows(
+        records,
+        study_preset="baseline_retest_local",
+        control_selector_name="control",
+    )
+
+    assert {row["subset_label"] for row in rows} == {
+        "all_cases",
+        "support_count_ge_4",
+        "has_gold_path",
+        "start_not_equal_support",
+    }
+    control_all = next(
+        row for row in rows if row["subset_label"] == "all_cases" and row["selector_name"] == "control"
+    )
+    candidate_all = next(
+        row for row in rows if row["subset_label"] == "all_cases" and row["selector_name"] == "candidate"
+    )
+    hard_subset = next(
+        row for row in rows if row["subset_label"] == "has_gold_path" and row["selector_name"] == "control"
+    )
+
+    assert control_all["delta_support_f1_vs_dense_control"] == 0.0
+    assert candidate_all["delta_support_f1_vs_dense_control"] == pytest.approx(0.15)
+    assert candidate_all["avg_stop_rate"] == pytest.approx(0.5)
+    assert candidate_all["avg_controller_calls"] == pytest.approx(2.0)
+    assert hard_subset["num_cases"] == 0
+    assert hard_subset["avg_path_hit"] is None
+    assert hard_subset["delta_support_f1_vs_dense_control"] == 0.0
 
 
 def test_run_2wiki_store_experiment_filters_cases_by_case_ids_file(prepared_two_wiki_store, tmp_path):

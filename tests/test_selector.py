@@ -31,6 +31,12 @@ def test_parse_selector_spec_handles_canonical_forms():
     dense = parse_selector_spec("top_1_seed__lexical_overlap__hop_0__dense")
     iterative = parse_selector_spec("top_1_seed__sentence_transformer__hop_2__iterative_dense")
     beam = parse_selector_spec("top_3_seed__sentence_transformer__hop_3__beam__link_context_llm__lookahead_2")
+    controller = parse_selector_spec(
+        "top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2"
+    )
+    multipath = parse_selector_spec(
+        "top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2"
+    )
 
     assert dense.family == "baseline"
     assert dense.seed_strategy == "lexical_overlap"
@@ -48,6 +54,26 @@ def test_parse_selector_spec_handles_canonical_forms():
     assert beam.search_structure == "beam"
     assert beam.edge_scorer == "link_context_llm"
     assert beam.lookahead_depth == 2
+    assert controller.search_structure == "single_path_walk"
+    assert controller.edge_scorer == "link_context_llm_controller"
+    assert controller.lookahead_depth == 2
+    assert multipath.search_structure == "constrained_multipath"
+    assert multipath.edge_scorer == "link_context_llm_controller"
+
+
+@pytest.mark.parametrize(
+    "selector_name",
+    [
+        "top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_overlap__lookahead_2",
+        "top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_1",
+        "top_1_seed__sentence_transformer__hop_2__beam__link_context_llm_controller__lookahead_2",
+    ],
+)
+def test_parse_selector_spec_rejects_invalid_controller_search_combinations(selector_name):
+    with pytest.raises(ValueError) as exc:
+        parse_selector_spec(selector_name)
+
+    assert str(exc.value) == f"Unknown selector: {selector_name}"
 
 
 def test_parse_selector_spec_accepts_budget_fill_suffixes_and_rejects_diagnostics():
