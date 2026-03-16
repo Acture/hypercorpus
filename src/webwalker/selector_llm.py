@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, Sequence
 
@@ -43,6 +43,14 @@ class SelectorLLMConfig:
     prompt_version: str = "v1"
     candidate_prefilter_top_n: int = 8
     two_hop_prefilter_top_n: int = 4
+    controller_prompt_version: str = "controller_v2"
+    controller_prefilter_top_n: int = 6
+    controller_future_top_n: int = 2
+    enable_stop: bool = True
+    enable_backtrack: bool = True
+    enable_scout_fork: bool = True
+    max_scout_branches: int = 2
+    max_backtracks_per_case: int = 1
 
     def __post_init__(self) -> None:
         if self.model is None:
@@ -53,6 +61,47 @@ class SelectorLLMConfig:
             raise ValueError("candidate_prefilter_top_n must be positive.")
         if self.two_hop_prefilter_top_n <= 0:
             raise ValueError("two_hop_prefilter_top_n must be positive.")
+        if self.controller_prefilter_top_n <= 0:
+            raise ValueError("controller_prefilter_top_n must be positive.")
+        if self.controller_future_top_n <= 0:
+            raise ValueError("controller_future_top_n must be positive.")
+        if self.max_scout_branches <= 0:
+            raise ValueError("max_scout_branches must be positive.")
+        if self.max_backtracks_per_case < 0:
+            raise ValueError("max_backtracks_per_case must be non-negative.")
+
+
+ControllerAction = Literal["stop", "choose_one", "choose_two"]
+
+
+@dataclass(slots=True)
+class ControllerCandidate:
+    edge_id: str
+    utility: float
+    direct_support: float
+    bridge_potential: float
+    future_potential: float | None = None
+    redundancy_risk: float = 0.0
+    rationale: str | None = None
+
+
+@dataclass(slots=True)
+class ControllerDecision:
+    action: ControllerAction
+    primary_edge_id: str | None
+    secondary_edge_id: str | None = None
+    backup_edge_id: str | None = None
+    stop_score: float = 0.0
+    evidence_cluster_confidence: float = 0.0
+    candidates: list[ControllerCandidate] = field(default_factory=list)
+    text: str | None = None
+    raw_response: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    latency_s: float = 0.0
+    cache_hit: bool | None = None
+    fallback_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -639,6 +688,496 @@ class LLMStepLinkScorer:
         return cards
 
 
+class LLMController:
+    def __init__(
+        self,
+        *,
+        config: SelectorLLMConfig,
+        mode: Literal["single_hop", "two_hop"],
+        prefilter_scorer: StepLinkScorer | None = None,
+        fallback_scorer: StepLinkScorer | None = None,
+        backend_factory: Callable[[SelectorLLMConfig], BackendAdapter] | None = None,
+    ):
+        self.config = config
+        self.mode = mode
+        self.prefilter_scorer = prefilter_scorer or LinkContextOverlapStepScorer()
+        self.fallback_scorer = fallback_scorer or LinkContextOverlapStepScorer()
+        self.backend_factory = backend_factory or _default_backend_factory
+        self._cache = JsonlSelectorCache(config.cache_path) if config.cache_path is not None else None
+        self._backend: BackendAdapter | None = None
+
+    def validate_environment(self) -> None:
+        api_key = os.environ.get(self.config.api_key_env or "")
+        if not api_key:
+            raise ValueError(f"Missing API key in environment variable {self.config.api_key_env}")
+
+    def decide(
+        self,
+        *,
+        query: str,
+        graph: LinkContextGraph,
+        current_node_id: str,
+        candidate_links: Sequence[LinkContext],
+        visited_nodes: set[str],
+        path_node_ids: Sequence[str],
+        remaining_steps: int,
+        current_depth: int,
+        forks_used: int = 0,
+        backtracks_used: int = 0,
+    ) -> ControllerDecision:
+        fallback_cards = self.fallback_scorer.score_candidates(
+            query=query,
+            graph=graph,
+            current_node_id=current_node_id,
+            candidate_links=candidate_links,
+            visited_nodes=visited_nodes,
+            path_node_ids=path_node_ids,
+            remaining_steps=remaining_steps,
+        )
+        prefilter_cards = self.prefilter_scorer.score_candidates(
+            query=query,
+            graph=graph,
+            current_node_id=current_node_id,
+            candidate_links=candidate_links,
+            visited_nodes=visited_nodes,
+            path_node_ids=path_node_ids,
+            remaining_steps=remaining_steps,
+        )
+        if not fallback_cards or not prefilter_cards:
+            return self._fallback_decision(
+                fallback_cards=fallback_cards,
+                prefiltered_indices=[],
+                current_depth=current_depth,
+                forks_used=forks_used,
+                backtracks_used=backtracks_used,
+                fallback_reason="empty_candidates",
+            )
+
+        prefiltered_indices = _prefilter_indices(
+            prefilter_cards,
+            top_n=min(self.config.controller_prefilter_top_n, len(prefilter_cards)),
+        )
+        bundle = _candidate_bundle(
+            graph=graph,
+            candidate_links=candidate_links,
+            prefiltered_indices=prefiltered_indices,
+            query=query,
+            current_node_id=current_node_id,
+            path_node_ids=path_node_ids,
+            visited_nodes=visited_nodes,
+            mode=self.mode,
+            future_top_n=self.config.controller_future_top_n,
+        )
+        cache_key = _selector_cache_key(
+            selector_name=f"link_context_llm_controller_{self.mode}",
+            provider=self.config.provider,
+            model=self.config.model or "",
+            base_url=self.config.base_url,
+            prompt_version=self.config.controller_prompt_version,
+            query=query,
+            path_node_ids=path_node_ids,
+            bundle=bundle,
+        )
+
+        cached = self._cache.get(cache_key) if self._cache is not None else None
+        if cached is not None:
+            try:
+                cached_text = _maybe_text(cached.get("response_text"))
+                cached_payload = _cached_payload(cached)
+                payload = cached_payload if cached_payload is not None else _parse_completion_payload(cached_text or "")
+                return self._decision_from_payload(
+                    payload=payload,
+                    text=cached_text,
+                    raw_response=str(cached.get("raw_response", "")) or None,
+                    prompt_tokens=_maybe_int(cached.get("prompt_tokens")),
+                    completion_tokens=_maybe_int(cached.get("completion_tokens")),
+                    total_tokens=_maybe_int(cached.get("total_tokens")),
+                    latency_s=0.0,
+                    cache_hit=True,
+                    prefiltered_indices=prefiltered_indices,
+                    fallback_cards=fallback_cards,
+                    current_depth=current_depth,
+                    forks_used=forks_used,
+                    backtracks_used=backtracks_used,
+                )
+            except Exception as exc:  # pragma: no cover - cache corruption path
+                return self._fallback_decision(
+                    fallback_cards=fallback_cards,
+                    prefiltered_indices=prefiltered_indices,
+                    current_depth=current_depth,
+                    forks_used=forks_used,
+                    backtracks_used=backtracks_used,
+                    fallback_reason=f"cache_parse_error:{_compact_error_detail(str(exc))}",
+                    text=str(cached.get("response_text", "")) or None,
+                    raw_response=str(cached.get("raw_response", "")) or None,
+                    prompt_tokens=_maybe_int(cached.get("prompt_tokens")),
+                    completion_tokens=_maybe_int(cached.get("completion_tokens")),
+                    total_tokens=_maybe_int(cached.get("total_tokens")),
+                    cache_hit=True,
+                )
+
+        started_at = time.perf_counter()
+        response: BackendCompletion | None = None
+        try:
+            self.validate_environment()
+            response = self._get_backend().complete_json(
+                model=self.config.model or "",
+                system_prompt=_controller_system_prompt(self.mode),
+                user_prompt=_controller_user_prompt(query=query, bundle=bundle),
+                temperature=self.config.temperature,
+                response_schema=_controller_response_schema(self.mode),
+            )
+        except Exception as exc:
+            latency_s = time.perf_counter() - started_at
+            return self._fallback_decision(
+                fallback_cards=fallback_cards,
+                prefiltered_indices=prefiltered_indices,
+                current_depth=current_depth,
+                forks_used=forks_used,
+                backtracks_used=backtracks_used,
+                fallback_reason=f"provider_error:{_compact_error_detail(str(exc))}",
+                latency_s=latency_s,
+                text=response.text if response is not None else None,
+                raw_response=response.raw_response if response is not None else None,
+                prompt_tokens=response.prompt_tokens if response is not None else None,
+                completion_tokens=response.completion_tokens if response is not None else None,
+                total_tokens=response.total_tokens if response is not None else None,
+            )
+
+        latency_s = time.perf_counter() - started_at
+        assert response is not None
+        try:
+            payload = response.payload if response.payload is not None else _parse_completion_payload(response.text)
+            decision = self._decision_from_payload(
+                payload=payload,
+                text=response.text,
+                raw_response=response.raw_response,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                total_tokens=response.total_tokens,
+                latency_s=latency_s,
+                cache_hit=False,
+                prefiltered_indices=prefiltered_indices,
+                fallback_cards=fallback_cards,
+                current_depth=current_depth,
+                forks_used=forks_used,
+                backtracks_used=backtracks_used,
+            )
+        except SelectorLLMResponseError as exc:
+            return self._fallback_decision(
+                fallback_cards=fallback_cards,
+                prefiltered_indices=prefiltered_indices,
+                current_depth=current_depth,
+                forks_used=forks_used,
+                backtracks_used=backtracks_used,
+                fallback_reason=exc.fallback_reason,
+                latency_s=latency_s,
+                text=response.text,
+                raw_response=response.raw_response,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                total_tokens=response.total_tokens,
+            )
+
+        if self._cache is not None:
+            self._cache.put(
+                cache_key,
+                {
+                    "provider": self.config.provider,
+                    "model": self.config.model,
+                    "response_payload": payload,
+                    "response_text": json.dumps(payload, ensure_ascii=False),
+                    "raw_response": response.raw_response,
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "total_tokens": response.total_tokens,
+                },
+            )
+        return decision
+
+    def _get_backend(self) -> BackendAdapter:
+        if self._backend is not None:
+            return self._backend
+        self._backend = self.backend_factory(self.config)
+        return self._backend
+
+    def _decision_from_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        text: str | None,
+        raw_response: str | None,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+        total_tokens: int | None,
+        latency_s: float,
+        cache_hit: bool,
+        prefiltered_indices: Sequence[int],
+        fallback_cards: Sequence[StepScoreCard],
+        current_depth: int,
+        forks_used: int,
+        backtracks_used: int,
+    ) -> ControllerDecision:
+        entries = payload.get("candidates")
+        if not isinstance(entries, list):
+            raise SelectorLLMResponseError("schema_error", "missing_candidates_list")
+        parsed_candidates: list[ControllerCandidate] = []
+        prefiltered_set = {str(index) for index in prefiltered_indices}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            edge_id = str(entry.get("edge_id", "")).strip()
+            if not edge_id or edge_id not in prefiltered_set:
+                continue
+            parsed_candidates.append(
+                ControllerCandidate(
+                    edge_id=edge_id,
+                    utility=_clamp_score(entry.get("utility")),
+                    direct_support=_clamp_score(entry.get("direct_support")),
+                    bridge_potential=_clamp_score(entry.get("bridge_potential")),
+                    future_potential=(
+                        None if self.mode == "single_hop" else _clamp_score(entry.get("future_potential"))
+                    ),
+                    redundancy_risk=_clamp_score(entry.get("redundancy_risk")),
+                    rationale=_maybe_text(entry.get("rationale")),
+                )
+            )
+        if not parsed_candidates:
+            raise SelectorLLMResponseError("schema_error", "no_prefiltered_candidates")
+        action = str(payload.get("action", "")).strip()
+        if action not in {"stop", "choose_one", "choose_two"}:
+            raise SelectorLLMResponseError("schema_error", "invalid_action")
+        decision = ControllerDecision(
+            action=action,  # type: ignore[arg-type]
+            primary_edge_id=_maybe_text(payload.get("primary_edge_id")),
+            secondary_edge_id=_maybe_text(payload.get("secondary_edge_id")),
+            backup_edge_id=_maybe_text(payload.get("backup_edge_id")),
+            stop_score=_clamp_score(payload.get("stop_score")),
+            evidence_cluster_confidence=_clamp_score(payload.get("evidence_cluster_confidence")),
+            candidates=parsed_candidates,
+            text=text,
+            raw_response=raw_response,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            latency_s=latency_s,
+            cache_hit=cache_hit,
+        )
+        return self._normalize_decision(
+            decision,
+            fallback_cards=fallback_cards,
+            prefiltered_indices=prefiltered_indices,
+            current_depth=current_depth,
+            forks_used=forks_used,
+            backtracks_used=backtracks_used,
+        )
+
+    def _fallback_decision(
+        self,
+        *,
+        fallback_cards: Sequence[StepScoreCard],
+        prefiltered_indices: Sequence[int],
+        current_depth: int,
+        forks_used: int,
+        backtracks_used: int,
+        fallback_reason: str,
+        latency_s: float = 0.0,
+        text: str | None = None,
+        raw_response: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        cache_hit: bool | None = None,
+    ) -> ControllerDecision:
+        candidates = [
+            _controller_candidate_from_card(fallback_cards[index], edge_id=str(index), two_hop=self.mode == "two_hop")
+            for index in prefiltered_indices
+            if index < len(fallback_cards)
+        ]
+        if not candidates and fallback_cards:
+            candidates = [
+                _controller_candidate_from_card(card, edge_id=card.edge_id, two_hop=self.mode == "two_hop")
+                for card in fallback_cards
+            ]
+        candidates.sort(key=lambda item: (item.utility, item.edge_id), reverse=True)
+        best = candidates[0] if candidates else None
+        second = candidates[1] if len(candidates) > 1 else None
+        action: ControllerAction = "choose_one"
+        stop_score = _clamp_score(1.0 - (best.utility if best is not None else 0.0))
+        if self.config.enable_stop and current_depth >= 2 and stop_score >= 0.80:
+            action = "stop"
+        elif _allow_choose_two(
+            config=self.config,
+            candidates=candidates,
+            primary=best,
+            secondary=second,
+            forks_used=forks_used,
+        ):
+            action = "choose_two"
+        decision = ControllerDecision(
+            action=action,
+            primary_edge_id=best.edge_id if best is not None else None,
+            secondary_edge_id=second.edge_id if action == "choose_two" and second is not None else None,
+            backup_edge_id=(
+                second.edge_id
+                if self.config.enable_backtrack
+                and backtracks_used < self.config.max_backtracks_per_case
+                and second is not None
+                else None
+            ),
+            stop_score=stop_score,
+            evidence_cluster_confidence=best.utility if best is not None else 0.0,
+            candidates=candidates,
+            text=text,
+            raw_response=raw_response,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            latency_s=latency_s,
+            cache_hit=cache_hit,
+            fallback_reason=fallback_reason,
+        )
+        return self._normalize_decision(
+            decision,
+            fallback_cards=fallback_cards,
+            prefiltered_indices=prefiltered_indices,
+            current_depth=current_depth,
+            forks_used=forks_used,
+            backtracks_used=backtracks_used,
+        )
+
+    def _normalize_decision(
+        self,
+        decision: ControllerDecision,
+        *,
+        fallback_cards: Sequence[StepScoreCard],
+        prefiltered_indices: Sequence[int],
+        current_depth: int,
+        forks_used: int,
+        backtracks_used: int,
+    ) -> ControllerDecision:
+        candidates_by_id = {candidate.edge_id: candidate for candidate in decision.candidates}
+        if not candidates_by_id:
+            for index in prefiltered_indices:
+                if index < len(fallback_cards):
+                    card = fallback_cards[index]
+                    candidates_by_id[str(index)] = _controller_candidate_from_card(
+                        card,
+                        edge_id=str(index),
+                        two_hop=self.mode == "two_hop",
+                    )
+            decision.candidates = list(candidates_by_id.values())
+        ranked = sorted(candidates_by_id.values(), key=lambda item: (item.utility, item.edge_id), reverse=True)
+        if decision.primary_edge_id not in candidates_by_id:
+            decision.primary_edge_id = ranked[0].edge_id if ranked else None
+        if decision.action == "stop":
+            if not self.config.enable_stop or current_depth < 2 or decision.stop_score < 0.65:
+                decision.action = "choose_one"
+        if decision.action == "choose_two":
+            secondary = candidates_by_id.get(decision.secondary_edge_id or "")
+            if not _allow_choose_two(
+                config=self.config,
+                candidates=ranked,
+                primary=candidates_by_id.get(decision.primary_edge_id or ""),
+                secondary=secondary if secondary is not None else (ranked[1] if len(ranked) > 1 else None),
+                forks_used=forks_used,
+            ):
+                decision.action = "choose_one"
+                decision.secondary_edge_id = None
+            elif decision.secondary_edge_id not in candidates_by_id:
+                decision.secondary_edge_id = ranked[1].edge_id if len(ranked) > 1 else None
+        else:
+            decision.secondary_edge_id = None
+        if (
+            not self.config.enable_backtrack
+            or backtracks_used >= self.config.max_backtracks_per_case
+            or decision.backup_edge_id not in candidates_by_id
+            or decision.backup_edge_id == decision.primary_edge_id
+            or decision.backup_edge_id == decision.secondary_edge_id
+        ):
+            fallback_backup = next(
+                (
+                    candidate.edge_id
+                    for candidate in ranked
+                    if candidate.edge_id not in {decision.primary_edge_id, decision.secondary_edge_id}
+                ),
+                None,
+            )
+            decision.backup_edge_id = fallback_backup if self.config.enable_backtrack else None
+        decision.evidence_cluster_confidence = _clamp_score(decision.evidence_cluster_confidence)
+        decision.stop_score = _clamp_score(decision.stop_score)
+        return decision
+
+
+class LLMControllerStepScorer:
+    scorer_kind = "llm_controller"
+
+    def __init__(
+        self,
+        *,
+        controller: LLMController,
+        config: SelectorLLMConfig,
+        mode: Literal["single_hop", "two_hop"],
+        fallback_scorer: StepLinkScorer | None = None,
+    ):
+        self.controller = controller
+        self.config = config
+        self.mode = mode
+        self.fallback_scorer = fallback_scorer or LinkContextOverlapStepScorer()
+        self.metadata = StepScorerMetadata(
+            scorer_kind=self.scorer_kind,
+            backend=self.config.provider,
+            provider=self.config.provider,
+            model=self.config.model,
+            prompt_version=self.config.controller_prompt_version,
+            candidate_prefilter_top_n=self.config.controller_prefilter_top_n,
+            two_hop_prefilter_top_n=self.config.controller_future_top_n if self.mode == "two_hop" else None,
+            controller_prompt_version=self.config.controller_prompt_version,
+            controller_prefilter_top_n=self.config.controller_prefilter_top_n,
+            controller_future_top_n=self.config.controller_future_top_n if self.mode == "two_hop" else None,
+        )
+
+    def score_candidates(
+        self,
+        *,
+        query: str,
+        graph: LinkContextGraph,
+        current_node_id: str,
+        candidate_links: Sequence[LinkContext],
+        visited_nodes: set[str],
+        path_node_ids: Sequence[str],
+        remaining_steps: int,
+    ) -> list[StepScoreCard]:
+        fallback_cards = self.fallback_scorer.score_candidates(
+            query=query,
+            graph=graph,
+            current_node_id=current_node_id,
+            candidate_links=candidate_links,
+            visited_nodes=visited_nodes,
+            path_node_ids=path_node_ids,
+            remaining_steps=remaining_steps,
+        )
+        decision = self.controller.decide(
+            query=query,
+            graph=graph,
+            current_node_id=current_node_id,
+            candidate_links=candidate_links,
+            visited_nodes=visited_nodes,
+            path_node_ids=path_node_ids,
+            remaining_steps=remaining_steps,
+            current_depth=max(len(path_node_ids) - 1, 0),
+        )
+        return _decision_to_cards(
+            decision=decision,
+            fallback_cards=fallback_cards,
+            candidate_links=candidate_links,
+            provider=self.config.provider,
+            model=self.config.model,
+            mode=self.mode,
+            prefilter_top_n=self.config.controller_prefilter_top_n,
+        )
+
+
 def _default_backend_factory(config: SelectorLLMConfig) -> BackendAdapter:
     api_key = os.environ.get(config.api_key_env or "")
     if not api_key:
@@ -780,6 +1319,57 @@ def _response_schema(mode: str) -> dict[str, Any]:
     }
 
 
+def _controller_response_schema(mode: str) -> dict[str, Any]:
+    candidate_properties: dict[str, Any] = {
+        "edge_id": {"type": "string"},
+        "utility": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "direct_support": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "bridge_potential": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "redundancy_risk": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rationale": {"type": "string"},
+    }
+    required = [
+        "edge_id",
+        "utility",
+        "direct_support",
+        "bridge_potential",
+        "redundancy_risk",
+        "rationale",
+    ]
+    if mode == "two_hop":
+        candidate_properties["future_potential"] = {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        required.append("future_potential")
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["stop", "choose_one", "choose_two"]},
+            "primary_edge_id": {"type": "string"},
+            "secondary_edge_id": {"type": "string"},
+            "backup_edge_id": {"type": "string"},
+            "stop_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "evidence_cluster_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "candidates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": candidate_properties,
+                    "required": required,
+                },
+            },
+        },
+        "required": [
+            "action",
+            "primary_edge_id",
+            "backup_edge_id",
+            "stop_score",
+            "evidence_cluster_confidence",
+            "candidates",
+        ],
+    }
+
+
 def _system_prompt(mode: str) -> str:
     if mode == "single_hop":
         return (
@@ -796,6 +1386,24 @@ def _system_prompt(mode: str) -> str:
     )
 
 
+def _controller_system_prompt(mode: str) -> str:
+    if mode == "single_hop":
+        return (
+            "You are controlling a budgeted hyperlink retriever. "
+            "Pick the next retrieval action, not just per-edge scores. "
+            "Favor high support coverage, low redundancy, and avoiding precision collapse. "
+            "Return exactly one JSON object with an action and candidate utilities. "
+            "Only use choose_two when two options are genuinely tied."
+        )
+    return (
+        "You are controlling a budgeted hyperlink retriever with limited lookahead. "
+        "Pick the next retrieval action, not just per-edge scores. "
+        "Favor high support coverage, bridge discovery, and low redundancy under a token budget. "
+        "Return exactly one JSON object with an action and candidate utilities. "
+        "Only use choose_two for near-ties that justify a short scout branch."
+    )
+
+
 def _user_prompt(*, query: str, bundle: dict[str, Any]) -> str:
     return (
         f"Question:\n{query}\n\n"
@@ -803,6 +1411,18 @@ def _user_prompt(*, query: str, bundle: dict[str, Any]) -> str:
         f"{json.dumps(bundle, ensure_ascii=False, indent=2)}\n\n"
         "Return JSON as {\"scores\": [{\"edge_id\": \"...\", ...}]}. "
         "Do not add markdown or extra prose."
+    )
+
+
+def _controller_user_prompt(*, query: str, bundle: dict[str, Any]) -> str:
+    return (
+        f"Question:\n{query}\n\n"
+        "Retriever context:\n"
+        f"{json.dumps(bundle, ensure_ascii=False, indent=2)}\n\n"
+        "Choose the next retrieval action under a budget. "
+        "Use stop only if the current evidence cluster already looks strong enough or further expansion is likely redundant. "
+        "Use choose_two only for a genuine near-tie. "
+        "Return JSON only."
     )
 
 
@@ -844,7 +1464,144 @@ def _cards_with_fallback(
             raw_response=raw_response,
         )
         for card in cards
-    ]
+    ] 
+
+
+def _controller_candidate_from_card(
+    card: StepScoreCard,
+    *,
+    edge_id: str,
+    two_hop: bool,
+) -> ControllerCandidate:
+    return ControllerCandidate(
+        edge_id=edge_id,
+        utility=_clamp_score(card.total_score),
+        direct_support=_clamp_score(card.subscores.get("direct_support", card.total_score)),
+        bridge_potential=_clamp_score(card.subscores.get("bridge_potential", card.total_score)),
+        future_potential=(
+            _clamp_score(card.subscores.get("future_potential", card.subscores.get("future_score", 0.0)))
+            if two_hop
+            else None
+        ),
+        redundancy_risk=_clamp_score(1.0 - card.subscores.get("novelty", 1.0)),
+        rationale=card.rationale,
+    )
+
+
+def _allow_choose_two(
+    *,
+    config: SelectorLLMConfig,
+    candidates: Sequence[ControllerCandidate],
+    primary: ControllerCandidate | None,
+    secondary: ControllerCandidate | None,
+    forks_used: int,
+) -> bool:
+    if not config.enable_scout_fork or forks_used >= max(config.max_scout_branches - 1, 1):
+        return False
+    if primary is None or secondary is None:
+        return False
+    if primary.utility < 0.55 or secondary.utility < 0.55:
+        return False
+    return (primary.utility - secondary.utility) <= 0.07
+
+
+def _decision_to_cards(
+    *,
+    decision: ControllerDecision,
+    fallback_cards: Sequence[StepScoreCard],
+    candidate_links: Sequence[LinkContext],
+    provider: str,
+    model: str | None,
+    mode: str,
+    prefilter_top_n: int,
+) -> list[StepScoreCard]:
+    candidate_map = {candidate.edge_id: candidate for candidate in decision.candidates}
+    top_prefiltered = {
+        card.edge_id
+        for card in sorted(fallback_cards, key=lambda item: (item.total_score, item.edge_id), reverse=True)[:prefilter_top_n]
+    }
+    cards: list[StepScoreCard] = []
+    for index, _link in enumerate(candidate_links):
+        edge_id = str(index)
+        fallback_card = fallback_cards[index] if index < len(fallback_cards) else None
+        if edge_id not in top_prefiltered:
+            cards.append(
+                StepScoreCard(
+                    edge_id=edge_id,
+                    total_score=0.0,
+                    subscores={"prefilter_score": 0.0},
+                    rationale=None,
+                    text=decision.text,
+                    backend=provider,
+                    provider=provider,
+                    model=model,
+                    latency_s=decision.latency_s,
+                    prompt_tokens=decision.prompt_tokens,
+                    completion_tokens=decision.completion_tokens,
+                    total_tokens=decision.total_tokens,
+                    cache_hit=decision.cache_hit,
+                    fallback_reason="prefiltered_out",
+                    raw_response=decision.raw_response,
+                    decision_action=decision.action,
+                    primary_edge_id=decision.primary_edge_id,
+                    secondary_edge_id=decision.secondary_edge_id,
+                    backup_edge_id=decision.backup_edge_id,
+                    stop_score=decision.stop_score,
+                    evidence_cluster_confidence=decision.evidence_cluster_confidence,
+                    prefiltered_candidate_count=len(top_prefiltered),
+                )
+            )
+            continue
+        candidate = candidate_map.get(edge_id)
+        subscores: dict[str, float]
+        total_score: float
+        rationale: str | None
+        if candidate is not None:
+            subscores = {
+                "controller_utility": candidate.utility,
+                "direct_support": candidate.direct_support,
+                "bridge_potential": candidate.bridge_potential,
+                "redundancy_risk": candidate.redundancy_risk,
+            }
+            if mode == "two_hop":
+                subscores["future_potential"] = _clamp_score(candidate.future_potential)
+            total_score = candidate.utility
+            rationale = candidate.rationale
+        elif fallback_card is not None:
+            subscores = dict(fallback_card.subscores)
+            total_score = fallback_card.total_score
+            rationale = fallback_card.rationale
+        else:
+            subscores = {"controller_utility": 0.0}
+            total_score = 0.0
+            rationale = None
+        cards.append(
+            StepScoreCard(
+                edge_id=edge_id,
+                total_score=total_score,
+                subscores=subscores,
+                rationale=rationale,
+                text=decision.text,
+                backend=provider,
+                provider=provider,
+                model=model,
+                latency_s=decision.latency_s,
+                prompt_tokens=decision.prompt_tokens,
+                completion_tokens=decision.completion_tokens,
+                total_tokens=decision.total_tokens,
+                cache_hit=decision.cache_hit,
+                fallback_reason=decision.fallback_reason,
+                raw_response=decision.raw_response,
+                decision_action=decision.action,
+                primary_edge_id=decision.primary_edge_id,
+                secondary_edge_id=decision.secondary_edge_id,
+                backup_edge_id=decision.backup_edge_id,
+                stop_score=decision.stop_score,
+                evidence_cluster_confidence=decision.evidence_cluster_confidence,
+                prefiltered_candidate_count=len(top_prefiltered),
+            )
+        )
+    return cards
 
 
 def _parse_completion_payload(text: str) -> dict[str, Any]:

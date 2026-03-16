@@ -18,7 +18,12 @@ from webwalker.embeddings import (
     TextEmbedder,
 )
 from webwalker.graph import LinkContext, LinkContextGraph
-from webwalker.selector_llm import LLMStepLinkScorer, SelectorLLMConfig
+from webwalker.selector_llm import (
+    LLMController,
+    LLMControllerStepScorer,
+    LLMStepLinkScorer,
+    SelectorLLMConfig,
+)
 from webwalker.text import approx_token_count, content_tokens, normalized_token_overlap
 from webwalker.walker import (
     AnchorOverlapStepScorer,
@@ -30,10 +35,13 @@ from webwalker.walker import (
     StepScorerMetadata,
     WalkBudget,
     WalkResult,
+    WalkStep,
     WalkStepLog,
     _clamp_score,
+    walk_step_from_dict,
     walk_step_log_from_dict,
     walk_step_log_to_dict,
+    walk_step_to_dict,
 )
 
 SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
@@ -46,8 +54,14 @@ BaselineName = Literal[
     "anchor_neighbors",
     "link_context_neighbors",
 ]
-SearchStructure = Literal["single_path_walk", "beam", "astar", "ucs", "beam_ppr"]
-EdgeScorerName = Literal["link_context_overlap", "link_context_llm", "anchor_overlap", "link_context_sentence_transformer"]
+SearchStructure = Literal["single_path_walk", "constrained_multipath", "beam", "astar", "ucs", "beam_ppr"]
+EdgeScorerName = Literal[
+    "link_context_overlap",
+    "link_context_llm",
+    "link_context_llm_controller",
+    "anchor_overlap",
+    "link_context_sentence_transformer",
+]
 LookaheadName = Literal["lookahead_1", "lookahead_2"]
 SelectorFamily = Literal["baseline", "path_search", "diagnostic"]
 SelectorPresetName = Literal["full", "paper_recommended", "paper_recommended_local", "branchy_profiles"]
@@ -61,8 +75,14 @@ _BASELINES: set[str] = {
     "anchor_neighbors",
     "link_context_neighbors",
 }
-_SEARCH_STRUCTURES: set[str] = {"single_path_walk", "beam", "astar", "ucs", "beam_ppr"}
-_EDGE_SCORERS: set[str] = {"link_context_overlap", "link_context_llm", "anchor_overlap", "link_context_sentence_transformer"}
+_SEARCH_STRUCTURES: set[str] = {"single_path_walk", "constrained_multipath", "beam", "astar", "ucs", "beam_ppr"}
+_EDGE_SCORERS: set[str] = {
+    "link_context_overlap",
+    "link_context_llm",
+    "link_context_llm_controller",
+    "anchor_overlap",
+    "link_context_sentence_transformer",
+}
 _LOOKAHEADS: set[str] = {"lookahead_1", "lookahead_2"}
 _BUDGET_FILL_SUFFIXES: dict[str, BudgetFillMode] = {
     "budget_fill_score_floor": "score_floor",
@@ -205,6 +225,11 @@ class SelectorUsage:
     step_count: int = 0
     fallback_steps: int = 0
     parse_failure_steps: int = 0
+    controller_calls: int = 0
+    controller_stop_actions: int = 0
+    controller_fork_actions: int = 0
+    controller_backtrack_actions: int = 0
+    controller_prefiltered_candidates: int = 0
 
 
 @dataclass(slots=True)
@@ -398,6 +423,11 @@ def selector_usage_to_dict(usage: SelectorUsage | None) -> dict[str, Any] | None
         "step_count": usage.step_count,
         "fallback_steps": usage.fallback_steps,
         "parse_failure_steps": usage.parse_failure_steps,
+        "controller_calls": usage.controller_calls,
+        "controller_stop_actions": usage.controller_stop_actions,
+        "controller_fork_actions": usage.controller_fork_actions,
+        "controller_backtrack_actions": usage.controller_backtrack_actions,
+        "controller_prefiltered_candidates": usage.controller_prefiltered_candidates,
     }
 
 
@@ -414,6 +444,11 @@ def selector_usage_from_dict(payload: dict[str, Any] | None) -> SelectorUsage | 
         step_count=int(payload.get("step_count", 0)),
         fallback_steps=int(payload.get("fallback_steps", 0)),
         parse_failure_steps=int(payload.get("parse_failure_steps", 0)),
+        controller_calls=int(payload.get("controller_calls", 0)),
+        controller_stop_actions=int(payload.get("controller_stop_actions", 0)),
+        controller_fork_actions=int(payload.get("controller_fork_actions", 0)),
+        controller_backtrack_actions=int(payload.get("controller_backtrack_actions", 0)),
+        controller_prefiltered_candidates=int(payload.get("controller_prefiltered_candidates", 0)),
     )
 
 
@@ -1995,6 +2030,477 @@ class CanonicalSinglePathSelector(_SentenceTransformerSupport):
         return _apply_selector_metadata(result, self.spec, seed_backend=seed_backend, seed_model=seed_model)
 
 
+class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
+    def __init__(
+        self,
+        spec: SelectorSpec,
+        *,
+        llm_config: SelectorLLMConfig | None = None,
+        backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
+        embedder_config: SentenceTransformerSelectorConfig | None = None,
+        embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder] | None = None,
+    ):
+        super().__init__(embedder_config=embedder_config, embedder_factory=embedder_factory)
+        self.spec = spec
+        self.name = spec.canonical_name
+        self.llm_config = llm_config or SelectorLLMConfig()
+        self.backend_factory = backend_factory
+
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
+        started_at = time.perf_counter()
+        seed_candidates = _select_seed_candidates(
+            graph,
+            case.query,
+            self.spec.seed_top_k or 1,
+            seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+            embedder=_seed_embedder(self.spec, self._get_embedder),
+        )
+        start_nodes = [node_id for node_id, _score in seed_candidates]
+        scorer = _build_step_scorer_from_spec(
+            self.spec,
+            self.llm_config,
+            self.backend_factory,
+            embedder=_scorer_embedder(self.spec, self._get_embedder),
+        )
+        if not isinstance(scorer, LLMControllerStepScorer):
+            raise ValueError("constrained_multipath requires link_context_llm_controller.")
+        max_steps = (self.spec.hop_budget or 0) + 1
+        token_budget_limit = _runtime_budget_token_limit(graph, budget)
+        if resume_state is not None:
+            current = str(resume_state["current_node"])
+            visited_nodes = [str(node_id) for node_id in resume_state.get("visited_nodes", [])]
+            visited_set = set(visited_nodes)
+            steps = [walk_step_from_dict(step) for step in resume_state.get("steps", [])]
+            if not steps:
+                raise ValueError("constrained_multipath resume_state is missing steps.")
+            selector_logs = [walk_step_log_from_dict(log) for log in resume_state.get("selector_logs", [])]
+            debug_trace = [str(item) for item in resume_state.get("debug_trace", [])]
+            forks_used = int(resume_state.get("forks_used", 0))
+            backtracks_used = int(resume_state.get("backtracks_used", 0))
+            merged_steps = [walk_step_from_dict(step) for step in resume_state.get("merged_steps", [])]
+            merged_links = {
+                _link_key(link): link
+                for link in (scored_link_from_dict(link) for link in resume_state.get("merged_links", []))
+            }
+        else:
+            current = start_nodes[0]
+            visited_nodes = [current]
+            visited_set = {current}
+            steps = [WalkStep(index=0, node_id=current, score=_node_score(graph, case.query, current))]
+            selector_logs = []
+            debug_trace = [f"seed:{node_id}:{score:.4f}" for node_id, score in seed_candidates]
+            forks_used = 0
+            backtracks_used = 0
+            merged_steps = []
+            merged_links = {}
+
+        stop_reason = "budget_exhausted"
+        while len(steps) < max_steps:
+            current_token_cost = sum(_node_token_cost(graph, node_id) for node_id in visited_nodes)
+            candidate_links = [
+                link for link in graph.links_from(current) if link.target not in visited_set
+            ]
+            if not candidate_links:
+                if self._apply_backup(steps, visited_nodes, visited_set, selector_logs, backtracks_used):
+                    backtracks_used += 1
+                    current = visited_nodes[-1]
+                    continue
+                stop_reason = "dead_end"
+                break
+            score_cards = scorer.score_candidates(
+                query=case.query,
+                graph=graph,
+                current_node_id=current,
+                candidate_links=candidate_links,
+                visited_nodes=visited_set,
+                path_node_ids=visited_nodes,
+                remaining_steps=max_steps - len(steps),
+            )
+            if not score_cards:
+                stop_reason = "dead_end"
+                break
+            primary_index, primary_card, primary_link = self._choose_edge(
+                candidate_links=candidate_links,
+                score_cards=score_cards,
+                preferred_edge_id=next(
+                    (card.primary_edge_id for card in score_cards if card.primary_edge_id is not None),
+                    None,
+                ),
+            )
+            secondary_index, secondary_card, secondary_link = self._choose_edge(
+                candidate_links=candidate_links,
+                score_cards=score_cards,
+                preferred_edge_id=next(
+                    (card.secondary_edge_id for card in score_cards if card.secondary_edge_id is not None),
+                    None,
+                ),
+            )
+            decision_action = next((card.decision_action for card in score_cards if card.decision_action is not None), None)
+            evidence_cluster_confidence = next(
+                (card.evidence_cluster_confidence for card in score_cards if card.evidence_cluster_confidence is not None),
+                None,
+            )
+            stop_score = next((card.stop_score for card in score_cards if card.stop_score is not None), None)
+            selector_logs.append(
+                WalkStepLog(
+                    step_index=len(steps) - 1,
+                    current_node_id=current,
+                    path_node_ids=list(visited_nodes),
+                    chosen_edge_id=primary_card.edge_id,
+                    chosen_target_node_id=primary_link.target,
+                    backend=primary_card.backend,
+                    provider=primary_card.provider,
+                    model=primary_card.model,
+                    latency_s=primary_card.latency_s,
+                    prompt_tokens=primary_card.prompt_tokens,
+                    completion_tokens=primary_card.completion_tokens,
+                    total_tokens=primary_card.total_tokens,
+                    cache_hit=primary_card.cache_hit,
+                    fallback_reason=primary_card.fallback_reason,
+                    text=primary_card.text,
+                    raw_response=primary_card.raw_response,
+                    decision_action=decision_action,
+                    secondary_edge_id=secondary_card.edge_id if secondary_card is not None else None,
+                    backup_edge_id=primary_card.backup_edge_id,
+                    stop_score=stop_score,
+                    evidence_cluster_confidence=evidence_cluster_confidence,
+                    prefiltered_candidate_count=primary_card.prefiltered_candidate_count,
+                    candidates=[
+                        StepCandidateTrace(
+                            edge_id=card.edge_id,
+                            source_node_id=link.source,
+                            target_node_id=link.target,
+                            anchor_text=link.anchor_text,
+                            sentence=link.sentence,
+                            total_score=card.total_score,
+                            subscores=dict(card.subscores),
+                            rationale=card.rationale,
+                            best_next_edge_id=card.best_next_edge_id,
+                            fallback_reason=card.fallback_reason,
+                        )
+                        for link, card in zip(candidate_links, score_cards, strict=False)
+                    ],
+                )
+            )
+            if decision_action == "stop" and len(steps) >= 3 and (stop_score or 0.0) >= 0.65:
+                debug_trace.append(f"controller_stop:{current}:{stop_score:.4f}")
+                stop_reason = "controller_stop"
+                break
+            if primary_card.total_score < 0.05:
+                if self._apply_backup(steps, visited_nodes, visited_set, selector_logs, backtracks_used):
+                    backtracks_used += 1
+                    current = visited_nodes[-1]
+                    continue
+                stop_reason = "score_below_threshold"
+                break
+
+            chosen_card = primary_card
+            chosen_link = primary_link
+            chosen_index = primary_index
+            if (
+                decision_action == "choose_two"
+                and secondary_card is not None
+                and secondary_link is not None
+                and forks_used < 1
+            ):
+                winner_card, winner_link, winner_index = primary_card, primary_link, primary_index
+                loser_card, loser_link = secondary_card, secondary_link
+                if self._branch_score(secondary_card, evidence_cluster_confidence) > self._branch_score(
+                    primary_card,
+                    evidence_cluster_confidence,
+                ):
+                    winner_card, winner_link, winner_index = secondary_card, secondary_link, secondary_index
+                    loser_card, loser_link = primary_card, primary_link
+                chosen_card, chosen_link, chosen_index = winner_card, winner_link, winner_index
+                forks_used += 1
+                debug_trace.append(
+                    f"fork:{current}:keep={winner_link.target}:drop={loser_link.target}:conf={evidence_cluster_confidence or 0.0:.4f}"
+                )
+                loser_tokens = _node_token_cost(graph, loser_link.target)
+                if (
+                    loser_card.subscores.get("redundancy_risk", 1.0) < 0.60
+                    and token_budget_limit > 0
+                    and loser_tokens <= max(1, math.floor(token_budget_limit * 0.10))
+                    and loser_link.target not in visited_set
+                ):
+                    merged_steps.append(
+                        WalkStep(
+                            index=max_steps + len(merged_steps),
+                            node_id=loser_link.target,
+                            score=loser_card.total_score,
+                            source_node_id=loser_link.source,
+                            anchor_text=loser_link.anchor_text,
+                            sentence=loser_link.sentence,
+                            edge_id=loser_card.edge_id,
+                        )
+                    )
+                    merged_link = ScoredLink.from_link(
+                        loser_link,
+                        score=loser_card.total_score,
+                        source_strategy=self.name,
+                        selected_reason="scout_merge",
+                    )
+                    merged_links[_link_key(merged_link)] = merged_link
+                    debug_trace.append(f"merge:{loser_link.target}:{loser_card.total_score:.4f}")
+
+            visited_nodes.append(chosen_link.target)
+            visited_set.add(chosen_link.target)
+            current = chosen_link.target
+            steps.append(
+                WalkStep(
+                    index=len(steps),
+                    node_id=current,
+                    score=chosen_card.total_score,
+                    source_node_id=chosen_link.source,
+                    anchor_text=chosen_link.anchor_text,
+                    sentence=chosen_link.sentence,
+                    edge_id=str(chosen_index),
+                )
+            )
+            debug_trace.append(f"walk:{chosen_link.source}->{chosen_link.target}:{chosen_card.total_score:.4f}")
+            if (
+                token_budget_limit > 0
+                and current_token_cost >= math.floor(token_budget_limit * 0.35)
+                and (evidence_cluster_confidence or 0.0) < 0.70
+                and len(steps) > 1
+            ):
+                stop_reason = "controller_stop"
+                debug_trace.append(f"budget_pacing_stop:{current}:{current_token_cost}")
+                break
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    self._checkpoint_payload(
+                        query=case.query,
+                        start_nodes=start_nodes,
+                        current_node=current,
+                        visited_nodes=visited_nodes,
+                        steps=steps,
+                        selector_logs=selector_logs,
+                        remaining_steps=max_steps - len(steps),
+                        debug_trace=debug_trace,
+                        forks_used=forks_used,
+                        backtracks_used=backtracks_used,
+                        merged_steps=merged_steps,
+                        merged_links=merged_links,
+                    )
+                )
+            if stop_callback is not None:
+                stop_callback()
+        runtime_s = time.perf_counter() - started_at
+        result = self._result_from_steps(
+            graph=graph,
+            query=case.query,
+            start_nodes=start_nodes,
+            steps=steps,
+            merged_steps=merged_steps,
+            merged_links=merged_links,
+            token_budget_limit=token_budget_limit,
+            selector_logs=selector_logs,
+            runtime_s=runtime_s,
+            scorer=scorer,
+            stop_reason=stop_reason,
+            debug_trace=debug_trace,
+        )
+        seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
+        return _apply_selector_metadata(result, self.spec, seed_backend=seed_backend, seed_model=seed_model)
+
+    def _checkpoint_payload(
+        self,
+        *,
+        query: str,
+        start_nodes: Sequence[str],
+        current_node: str,
+        visited_nodes: Sequence[str],
+        steps: Sequence[WalkStep],
+        selector_logs: Sequence[WalkStepLog],
+        remaining_steps: int,
+        debug_trace: Sequence[str],
+        forks_used: int,
+        backtracks_used: int,
+        merged_steps: Sequence[WalkStep],
+        merged_links: dict[tuple[str, str, str, str, int, str | None], ScoredLink],
+    ) -> dict[str, Any]:
+        return {
+            "query": query,
+            "start_nodes": list(start_nodes),
+            "current_node": current_node,
+            "visited_nodes": list(visited_nodes),
+            "steps": [walk_step_to_dict(step) for step in steps],
+            "selector_logs": [walk_step_log_to_dict(log) for log in selector_logs],
+            "remaining_steps": remaining_steps,
+            "debug_trace": list(debug_trace),
+            "forks_used": forks_used,
+            "backtracks_used": backtracks_used,
+            "merged_steps": [walk_step_to_dict(step) for step in merged_steps],
+            "merged_links": [scored_link_to_dict(link) for link in merged_links.values()],
+        }
+
+    def _result_from_steps(
+        self,
+        *,
+        graph: LinkContextGraph,
+        query: str,
+        start_nodes: Sequence[str],
+        steps: Sequence[WalkStep],
+        merged_steps: Sequence[WalkStep],
+        merged_links: dict[tuple[str, str, str, str, int, str | None], ScoredLink],
+        token_budget_limit: int,
+        selector_logs: Sequence[WalkStepLog],
+        runtime_s: float,
+        scorer: StepLinkScorer,
+        stop_reason: str,
+        debug_trace: Sequence[str],
+    ) -> CorpusSelectionResult:
+        node_scores: dict[str, float] = {}
+        link_scores: dict[tuple[str, str, str, str, int, str | None], ScoredLink] = dict(merged_links)
+        trace: list[SelectionTraceStep] = []
+        for step in [*steps, *merged_steps]:
+            node_scores[step.node_id] = max(node_scores.get(step.node_id, 0.0), step.score)
+            trace.append(
+                SelectionTraceStep(
+                    index=len(trace),
+                    node_id=step.node_id,
+                    score=step.score,
+                    source_node_id=step.source_node_id,
+                    anchor_text=step.anchor_text,
+                    sentence=step.sentence,
+                )
+            )
+            if step.source_node_id is not None and step.anchor_text is not None and step.sentence is not None:
+                for link in graph.links_between(step.source_node_id, step.node_id):
+                    if link.anchor_text == step.anchor_text and link.sentence == step.sentence:
+                        scored_link = ScoredLink.from_link(
+                            link,
+                            score=step.score,
+                            source_strategy=self.name,
+                            selected_reason="constrained_multipath",
+                        )
+                        link_scores[_link_key(scored_link)] = scored_link
+                        break
+        return _build_corpus_selection_result(
+            selector_name=self.name,
+            graph=graph,
+            query=query,
+            node_scores=node_scores,
+            link_scores=link_scores,
+            budget=SelectorBudget(max_nodes=None, max_hops=self.spec.hop_budget, max_tokens=token_budget_limit),
+            strategy="constrained_multipath",
+            mode=SelectionMode.STANDALONE,
+            debug_trace=list(debug_trace),
+            root_node_ids=start_nodes,
+            trace=trace,
+            selector_metadata=_selector_metadata_from_step_scorer(
+                scorer,
+                seed_top_k=self.spec.seed_top_k,
+                hop_budget=self.spec.hop_budget,
+                search_structure="constrained_multipath",
+                edge_scorer=self.spec.edge_scorer,
+                lookahead_depth=self.spec.lookahead_depth,
+                profile_name=_resolved_profile_name(self.spec),
+            ),
+            selector_usage=_selector_usage_from_logs(selector_logs, runtime_override=runtime_s),
+            selector_logs=selector_logs,
+            stop_reason=stop_reason,
+        )
+
+    def _choose_edge(
+        self,
+        *,
+        candidate_links: Sequence[LinkContext],
+        score_cards: Sequence[StepScoreCard],
+        preferred_edge_id: str | None,
+    ) -> tuple[int, StepScoreCard, LinkContext] | tuple[None, None, None]:
+        if preferred_edge_id is not None:
+            for index, (link, card) in enumerate(zip(candidate_links, score_cards, strict=False)):
+                if card.edge_id == preferred_edge_id:
+                    return index, card, link
+        if not candidate_links or not score_cards:
+            return None, None, None
+        return max(
+            (
+                (index, score_cards[index], candidate_links[index])
+                for index in range(min(len(candidate_links), len(score_cards)))
+            ),
+            key=lambda item: (item[1].total_score, item[1].subscores.get("future_potential", 0.0), -item[0]),
+        )
+
+    def _branch_score(self, card: StepScoreCard, evidence_cluster_confidence: float | None) -> float:
+        return card.total_score + 0.25 * (evidence_cluster_confidence or 0.0)
+
+    def _apply_backup(
+        self,
+        steps: list[WalkStep],
+        visited_nodes: list[str],
+        visited_set: set[str],
+        selector_logs: list[WalkStepLog],
+        backtracks_used: int,
+    ) -> bool:
+        if backtracks_used >= self.llm_config.max_backtracks_per_case or len(steps) <= 1 or not selector_logs:
+            return False
+        previous_log = selector_logs[-1]
+        backup_edge_id = previous_log.backup_edge_id
+        if backup_edge_id is None:
+            return False
+        backup_candidate = next((candidate for candidate in previous_log.candidates if candidate.edge_id == backup_edge_id), None)
+        if backup_candidate is None or backup_candidate.target_node_id in visited_set:
+            return False
+        removed = steps.pop()
+        visited_set.discard(removed.node_id)
+        if visited_nodes and visited_nodes[-1] == removed.node_id:
+            visited_nodes.pop()
+        parent_node_id = steps[-1].node_id
+        selector_logs.append(
+            WalkStepLog(
+                step_index=len(steps) - 1,
+                current_node_id=parent_node_id,
+                path_node_ids=list(visited_nodes),
+                chosen_edge_id=backup_candidate.edge_id,
+                chosen_target_node_id=backup_candidate.target_node_id,
+                backend=previous_log.backend,
+                provider=previous_log.provider,
+                model=previous_log.model,
+                latency_s=0.0,
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                cache_hit=None,
+                fallback_reason="controller_backtrack",
+                text=previous_log.text,
+                raw_response=previous_log.raw_response,
+                decision_action="backtrack",
+                secondary_edge_id=previous_log.secondary_edge_id,
+                backup_edge_id=None,
+                stop_score=previous_log.stop_score,
+                evidence_cluster_confidence=previous_log.evidence_cluster_confidence,
+                prefiltered_candidate_count=previous_log.prefiltered_candidate_count,
+                candidates=list(previous_log.candidates),
+            )
+        )
+        visited_nodes.append(backup_candidate.target_node_id)
+        visited_set.add(backup_candidate.target_node_id)
+        steps.append(
+            WalkStep(
+                index=len(steps),
+                node_id=backup_candidate.target_node_id,
+                score=backup_candidate.total_score,
+                source_node_id=backup_candidate.source_node_id,
+                anchor_text=backup_candidate.anchor_text,
+                sentence=backup_candidate.sentence,
+                edge_id=backup_candidate.edge_id,
+            )
+        )
+        return True
+
+
 class CanonicalSearchSelector(_SentenceTransformerSupport):
     def __init__(
         self,
@@ -2396,6 +2902,15 @@ def parse_selector_spec(name: str) -> SelectorSpec:
     search_structure, edge_scorer, lookahead = parts
     if search_structure not in _SEARCH_STRUCTURES or edge_scorer not in _EDGE_SCORERS or lookahead not in _LOOKAHEADS:
         raise ValueError(f"Unknown selector: {name}")
+    if edge_scorer == "link_context_llm_controller" and search_structure not in {
+        "single_path_walk",
+        "constrained_multipath",
+    }:
+        raise ValueError(f"Unknown selector: {name}")
+    if search_structure == "constrained_multipath" and (
+        edge_scorer != "link_context_llm_controller" or lookahead != "lookahead_2"
+    ):
+        raise ValueError(f"Unknown selector: {name}")
     spec = SelectorSpec(
         canonical_name=name,
         base_canonical_name=spec_name,
@@ -2431,6 +2946,8 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
                 f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2",
                 f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_llm__lookahead_1",
                 f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_llm__lookahead_2",
+                f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_llm_controller__lookahead_2",
+                f"top_1_seed__{seed_strategy}__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2",
                 f"top_3_seed__{seed_strategy}__hop_0__dense",
                 f"top_3_seed__{seed_strategy}__hop_1__topology_neighbors",
                 f"top_3_seed__{seed_strategy}__hop_1__anchor_neighbors",
@@ -2521,7 +3038,7 @@ def build_selector(
         if name == "gold_support_context":
             return GoldSupportContextSelector()
         return FullCorpusUpperBoundSelector()
-    if spec.edge_scorer == "link_context_llm":
+    if spec.edge_scorer in {"link_context_llm", "link_context_llm_controller"}:
         _validate_selector_llm_config(llm_config)
     selector = _build_canonical_selector(
         spec,
@@ -2575,6 +3092,14 @@ def _build_canonical_selector(
     assert spec.search_structure is not None
     if spec.search_structure == "single_path_walk":
         return CanonicalSinglePathSelector(
+            spec,
+            llm_config=llm_config,
+            backend_factory=backend_factory,
+            embedder_config=sentence_transformer_config,
+            embedder_factory=sentence_transformer_embedder_factory,
+        )
+    if spec.search_structure == "constrained_multipath":
+        return CanonicalConstrainedMultipathSelector(
             spec,
             llm_config=llm_config,
             backend_factory=backend_factory,
@@ -2684,6 +3209,21 @@ def _build_step_scorer_from_spec(
             prefilter_scorer=LinkContextOverlapStepScorer(),
             fallback_scorer=LinkContextOverlapStepScorer(lookahead_steps=lookahead_steps),
             backend_factory=backend_factory,
+        )
+    if spec.edge_scorer == "link_context_llm_controller":
+        mode = "two_hop" if lookahead_steps == 2 else "single_hop"
+        controller = LLMController(
+            config=llm_config,
+            mode=mode,
+            prefilter_scorer=LinkContextOverlapStepScorer(),
+            fallback_scorer=LinkContextOverlapStepScorer(lookahead_steps=lookahead_steps),
+            backend_factory=backend_factory,
+        )
+        return LLMControllerStepScorer(
+            controller=controller,
+            config=llm_config,
+            mode=mode,
+            fallback_scorer=LinkContextOverlapStepScorer(lookahead_steps=lookahead_steps),
         )
     raise ValueError(f"Unsupported edge scorer: {spec.edge_scorer}")
 
@@ -3386,9 +3926,11 @@ class _WalkScorerMetadataAdapter:
 def _selector_usage_from_logs(logs: Sequence[WalkStepLog], *, runtime_override: float | None = None) -> SelectorUsage:
     if not logs:
         return SelectorUsage(runtime_s=runtime_override or 0.0)
+    controller_logs = [log for log in logs if log.decision_action is not None and log.decision_action != "backtrack"]
+    backtrack_logs = [log for log in logs if log.decision_action == "backtrack"]
     return SelectorUsage(
         runtime_s=runtime_override if runtime_override is not None else sum(log.latency_s for log in logs),
-        llm_calls=sum(1 for log in logs if log.provider is not None),
+        llm_calls=sum(1 for log in logs if log.provider is not None and log.decision_action != "backtrack"),
         prompt_tokens=sum(log.prompt_tokens or 0 for log in logs),
         completion_tokens=sum(log.completion_tokens or 0 for log in logs),
         total_tokens=sum(log.total_tokens or 0 for log in logs),
@@ -3396,6 +3938,11 @@ def _selector_usage_from_logs(logs: Sequence[WalkStepLog], *, runtime_override: 
         step_count=len(logs),
         fallback_steps=sum(1 for log in logs if _is_selector_fallback(log.fallback_reason)),
         parse_failure_steps=sum(1 for log in logs if _is_selector_parse_failure(log.fallback_reason)),
+        controller_calls=len(controller_logs),
+        controller_stop_actions=sum(1 for log in controller_logs if log.decision_action == "stop"),
+        controller_fork_actions=sum(1 for log in controller_logs if log.decision_action == "choose_two"),
+        controller_backtrack_actions=len(backtrack_logs),
+        controller_prefiltered_candidates=sum(log.prefiltered_candidate_count or 0 for log in controller_logs),
     )
 
 

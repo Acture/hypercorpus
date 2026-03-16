@@ -12,6 +12,7 @@ class StopReason(StrEnum):
     DEAD_END = "dead_end"
     BUDGET_EXHAUSTED = "budget_exhausted"
     SCORE_BELOW_THRESHOLD = "score_below_threshold"
+    CONTROLLER_STOP = "controller_stop"
 
 
 @dataclass(slots=True)
@@ -31,6 +32,9 @@ class StepScorerMetadata:
     prompt_version: str | None = None
     candidate_prefilter_top_n: int | None = None
     two_hop_prefilter_top_n: int | None = None
+    controller_prompt_version: str | None = None
+    controller_prefilter_top_n: int | None = None
+    controller_future_top_n: int | None = None
 
 
 @dataclass(slots=True)
@@ -51,6 +55,13 @@ class StepScoreCard:
     fallback_reason: str | None = None
     best_next_edge_id: str | None = None
     raw_response: str | None = None
+    decision_action: str | None = None
+    primary_edge_id: str | None = None
+    secondary_edge_id: str | None = None
+    backup_edge_id: str | None = None
+    stop_score: float | None = None
+    evidence_cluster_confidence: float | None = None
+    prefiltered_candidate_count: int | None = None
 
 
 @dataclass(slots=True)
@@ -85,6 +96,12 @@ class WalkStepLog:
     fallback_reason: str | None
     text: str | None
     raw_response: str | None
+    decision_action: str | None = None
+    secondary_edge_id: str | None = None
+    backup_edge_id: str | None = None
+    stop_score: float | None = None
+    evidence_cluster_confidence: float | None = None
+    prefiltered_candidate_count: int | None = None
     candidates: list[StepCandidateTrace] = field(default_factory=list)
 
 
@@ -197,6 +214,12 @@ def walk_step_log_to_dict(log: WalkStepLog) -> dict[str, Any]:
         "fallback_reason": log.fallback_reason,
         "text": log.text,
         "raw_response": log.raw_response,
+        "decision_action": log.decision_action,
+        "secondary_edge_id": log.secondary_edge_id,
+        "backup_edge_id": log.backup_edge_id,
+        "stop_score": log.stop_score,
+        "evidence_cluster_confidence": log.evidence_cluster_confidence,
+        "prefiltered_candidate_count": log.prefiltered_candidate_count,
         "candidates": [step_candidate_trace_to_dict(candidate) for candidate in log.candidates],
     }
 
@@ -221,6 +244,18 @@ def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
         fallback_reason=None if payload.get("fallback_reason") is None else str(payload["fallback_reason"]),
         text=None if payload.get("text") is None else str(payload["text"]),
         raw_response=None if payload.get("raw_response") is None else str(payload["raw_response"]),
+        decision_action=None if payload.get("decision_action") is None else str(payload["decision_action"]),
+        secondary_edge_id=None if payload.get("secondary_edge_id") is None else str(payload["secondary_edge_id"]),
+        backup_edge_id=None if payload.get("backup_edge_id") is None else str(payload["backup_edge_id"]),
+        stop_score=None if payload.get("stop_score") is None else float(payload["stop_score"]),
+        evidence_cluster_confidence=(
+            None
+            if payload.get("evidence_cluster_confidence") is None
+            else float(payload["evidence_cluster_confidence"])
+        ),
+        prefiltered_candidate_count=(
+            None if payload.get("prefiltered_candidate_count") is None else int(payload["prefiltered_candidate_count"])
+        ),
         candidates=[step_candidate_trace_from_dict(candidate) for candidate in payload.get("candidates", [])],
     )
 
@@ -487,6 +522,7 @@ class DynamicWalker:
             if not steps:
                 raise ValueError("DynamicWalker resume_state is missing steps.")
             selector_logs = [walk_step_log_from_dict(log) for log in resume_state.get("selector_logs", [])]
+            backtracks_used = int(resume_state.get("backtracks_used", 0))
         else:
             current = self._choose_start_node(query, start_nodes)
             visited_nodes = [current]
@@ -499,6 +535,7 @@ class DynamicWalker:
                 )
             ]
             selector_logs = []
+            backtracks_used = 0
 
         stop_reason = StopReason.BUDGET_EXHAUSTED
         while len(steps) < budget.max_steps:
@@ -510,6 +547,17 @@ class DynamicWalker:
                 candidate_links.extend(self.graph.links_between(current, neighbor))
 
             if not candidate_links:
+                if _apply_single_backup(
+                    current_node_id=current,
+                    visited_nodes=visited_nodes,
+                    visited_set=visited_set,
+                    steps=steps,
+                    selector_logs=selector_logs,
+                    backtracks_used=backtracks_used,
+                ):
+                    backtracks_used += 1
+                    current = visited_nodes[-1]
+                    continue
                 stop_reason = StopReason.DEAD_END
                 break
 
@@ -523,15 +571,29 @@ class DynamicWalker:
                 remaining_steps=remaining_steps,
             )
             if not score_cards:
+                if _apply_single_backup(
+                    current_node_id=current,
+                    visited_nodes=visited_nodes,
+                    visited_set=visited_set,
+                    steps=steps,
+                    selector_logs=selector_logs,
+                    backtracks_used=backtracks_used,
+                ):
+                    backtracks_used += 1
+                    current = visited_nodes[-1]
+                    continue
                 stop_reason = StopReason.DEAD_END
                 break
 
-            best_index, best_card, best_link = max(
-                (
-                    (index, score_cards[index], candidate_links[index])
-                    for index in range(min(len(candidate_links), len(score_cards)))
-                ),
-                key=lambda item: (item[1].total_score, item[1].subscores.get("future_score", 0.0), -item[0]),
+            best_index, best_card, best_link = _choose_walk_edge(
+                candidate_links=candidate_links,
+                score_cards=score_cards,
+            )
+
+            controller_stop = (
+                best_card.decision_action == "stop"
+                and len(steps) >= 3
+                and (best_card.stop_score or 0.0) >= 0.65
             )
 
             selector_logs.append(
@@ -552,6 +614,12 @@ class DynamicWalker:
                     fallback_reason=best_card.fallback_reason,
                     text=best_card.text,
                     raw_response=best_card.raw_response,
+                    decision_action=best_card.decision_action,
+                    secondary_edge_id=best_card.secondary_edge_id,
+                    backup_edge_id=best_card.backup_edge_id,
+                    stop_score=best_card.stop_score,
+                    evidence_cluster_confidence=best_card.evidence_cluster_confidence,
+                    prefiltered_candidate_count=best_card.prefiltered_candidate_count,
                     candidates=[
                         StepCandidateTrace(
                             edge_id=card.edge_id,
@@ -570,7 +638,22 @@ class DynamicWalker:
                 )
             )
 
+            if controller_stop:
+                stop_reason = StopReason.CONTROLLER_STOP
+                break
+
             if best_card.total_score < budget.min_score:
+                if _apply_single_backup(
+                    current_node_id=current,
+                    visited_nodes=visited_nodes,
+                    visited_set=visited_set,
+                    steps=steps,
+                    selector_logs=selector_logs,
+                    backtracks_used=backtracks_used,
+                ):
+                    backtracks_used += 1
+                    current = visited_nodes[-1]
+                    continue
                 stop_reason = StopReason.SCORE_BELOW_THRESHOLD
                 break
 
@@ -600,6 +683,7 @@ class DynamicWalker:
                         "selector_logs": [walk_step_log_to_dict(log) for log in selector_logs],
                         "remaining_steps": budget.max_steps - len(steps),
                         "budget": walk_budget_to_dict(budget),
+                        "backtracks_used": backtracks_used,
                     }
                 )
             if stop_callback is not None:
@@ -628,6 +712,104 @@ class DynamicWalker:
         attr = self.graph.node_attr.get(node_id, {})
         text = f"{attr.get('title', '')} {attr.get('text', '')}".strip()
         return normalized_token_overlap(query, text)
+
+
+def _choose_walk_edge(
+    *,
+    candidate_links: Sequence[LinkContext],
+    score_cards: Sequence[StepScoreCard],
+) -> tuple[int, StepScoreCard, LinkContext]:
+    indexed = [
+        (index, score_cards[index], candidate_links[index])
+        for index in range(min(len(candidate_links), len(score_cards)))
+    ]
+    if not indexed:
+        raise ValueError("walk edge selection requires non-empty candidates.")
+    primary_edge_id = next(
+        (
+            card.primary_edge_id
+            for _index, card, _link in indexed
+            if card.decision_action in {"choose_one", "choose_two"} and card.primary_edge_id is not None
+        ),
+        None,
+    )
+    if primary_edge_id is not None:
+        for index, card, link in indexed:
+            if card.edge_id == primary_edge_id:
+                return index, card, link
+    return max(
+        indexed,
+        key=lambda item: (item[1].total_score, item[1].subscores.get("future_score", 0.0), -item[0]),
+    )
+
+
+def _apply_single_backup(
+    *,
+    current_node_id: str,
+    visited_nodes: list[str],
+    visited_set: set[str],
+    steps: list[WalkStep],
+    selector_logs: list[WalkStepLog],
+    backtracks_used: int,
+) -> bool:
+    if backtracks_used >= 1 or len(steps) <= 1 or not selector_logs:
+        return False
+    previous_log = selector_logs[-1]
+    backup_edge_id = previous_log.backup_edge_id
+    if backup_edge_id is None:
+        return False
+    if current_node_id != steps[-1].node_id:
+        return False
+    backup_candidate = next((candidate for candidate in previous_log.candidates if candidate.edge_id == backup_edge_id), None)
+    if backup_candidate is None or backup_candidate.target_node_id in visited_set:
+        return False
+    removed = steps.pop()
+    if removed.node_id in visited_set:
+        visited_set.remove(removed.node_id)
+    if visited_nodes and visited_nodes[-1] == removed.node_id:
+        visited_nodes.pop()
+    parent_node_id = steps[-1].node_id
+    selector_logs.append(
+        WalkStepLog(
+            step_index=len(steps) - 1,
+            current_node_id=parent_node_id,
+            path_node_ids=list(visited_nodes),
+            chosen_edge_id=backup_candidate.edge_id,
+            chosen_target_node_id=backup_candidate.target_node_id,
+            backend=previous_log.backend,
+            provider=previous_log.provider,
+            model=previous_log.model,
+            latency_s=0.0,
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+            cache_hit=None,
+            fallback_reason="controller_backtrack",
+            text=previous_log.text,
+            raw_response=previous_log.raw_response,
+            decision_action="backtrack",
+            secondary_edge_id=previous_log.secondary_edge_id,
+            backup_edge_id=None,
+            stop_score=previous_log.stop_score,
+            evidence_cluster_confidence=previous_log.evidence_cluster_confidence,
+            prefiltered_candidate_count=previous_log.prefiltered_candidate_count,
+            candidates=list(previous_log.candidates),
+        )
+    )
+    visited_nodes.append(backup_candidate.target_node_id)
+    visited_set.add(backup_candidate.target_node_id)
+    steps.append(
+        WalkStep(
+            index=len(steps),
+            node_id=backup_candidate.target_node_id,
+            score=backup_candidate.total_score,
+            source_node_id=backup_candidate.source_node_id,
+            anchor_text=backup_candidate.anchor_text,
+            sentence=backup_candidate.sentence,
+            edge_id=backup_candidate.edge_id,
+        )
+    )
+    return True
 
 
 def _target_title(graph: LinkContextGraph, node_id: str) -> str:
