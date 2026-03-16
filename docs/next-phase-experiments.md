@@ -1,8 +1,12 @@
 # Next-Phase Experiments
 
+Purpose: single working plan and run-status log for active experiments.
+Canonical for: current sequencing, entry criteria, local recovery commands, and immediate next actions.
+Not for / See also: completed claim support lives in `phase-decisions.md`; implementation surface lives in `current-implementation.md`; stable framing lives in `paper-positioning.md`.
+
 Date: `2026-03-13`
 
-This document is a working plan for the next experiment phase. It is not a canonical paper-facing decision log. Completed, paper-facing decisions should remain in `docs/phase-decisions.md`.
+This document is the working experiment plan. Keep completed, paper-facing decisions in `phase-decisions.md`. Do not create sibling status notes under `runs/` for the current phase; put recovery state here.
 
 ## Headline Policy Shift
 
@@ -29,6 +33,114 @@ The fixed judgment rule for the current paper direction is:
 - if `webwalker` only beats repo-native `dense` but does not beat `MDR`, the current paper story does not hold
 - if `webwalker` stably beats `MDR` on a harder dataset, `dense` can move to appendix / sanity-check status
 
+## Current 2Wiki Execution State
+
+### Scope
+
+- Dataset: `2Wiki dev`
+- Sample size: `100`
+- Sample source: `runs/2wiki-sample-s100-v1`
+- Main metric: `summary_rows.csv.support_f1_zero_on_empty`
+- Constraints:
+  - `--no-e2e`
+  - `--no-export-graphrag-inputs`
+  - local-only, no selector LLM
+
+### Completed Runs
+
+#### Sample-Defining Run
+
+- Run: `runs/2wiki-sample-s100-v1`
+- Selector: `top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop`
+- Budget: `128`
+- Status: completed and merged
+- Canonical sample IDs: `runs/2wiki-sample-s100-v1/evaluated_case_ids.txt`
+
+#### Single-Path Edge Ablation
+
+- Run: `runs/2wiki-single-path-edge-ablation-s100-v1`
+- Study preset: `single_path_edge_ablation_local`
+- Status: completed and merged
+
+Winner on `tokens-128`:
+
+- `top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop`
+- `support_f1_zero_on_empty = 0.3935`
+- `support_precision = 0.3247`
+- `support_recall = 0.5575`
+- vs control delta:
+  - `support_f1 = +0.0415`
+  - `support_precision = +0.0352`
+  - `support_recall = +0.0575`
+
+Winner on `tokens-256`:
+
+- `top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop`
+- `support_f1_zero_on_empty = 0.4139`
+- `support_precision = 0.3101`
+- `support_recall = 0.7300`
+- vs control delta:
+  - `support_f1 = +0.0575`
+  - `support_precision = +0.0472`
+  - `support_recall = +0.0900`
+
+Current conclusion:
+
+- `lookahead_2 + sentence_transformer + st_future_heavy` is the clear Phase 1 single-path winner.
+- The current overlap control does not remain competitive on the `100`-case sample.
+
+### In-Progress Recovery
+
+#### Baseline Retest
+
+- Run: `runs/2wiki-baseline-retest-s100-v1`
+- Study preset: `baseline_retest_local`
+- Status: interrupted for connectivity reasons
+- Do not merge this run yet.
+
+Chunk state:
+
+- complete: `chunk-00000`
+- complete: `chunk-00001`
+- complete: `chunk-00002`
+- partial, must rerun: `chunk-00003`
+- not started: `chunk-00004`
+
+Important note:
+
+- `chunk-00003` has partial artifacts and should be treated as invalid until rerun to completion.
+
+Resume commands:
+
+```bash
+uv run webwalker-cli experiments run-2wiki-store \
+  --store data/2wiki-store-1k \
+  --exp-name 2wiki-baseline-retest-s100-v1 \
+  --output-root runs \
+  --split dev \
+  --case-ids-file runs/2wiki-sample-s100-v1/evaluated_case_ids.txt \
+  --study-preset baseline_retest_local \
+  --chunk-size 20 \
+  --chunk-index 3 \
+  --no-e2e \
+  --no-export-graphrag-inputs
+
+uv run webwalker-cli experiments run-2wiki-store \
+  --store data/2wiki-store-1k \
+  --exp-name 2wiki-baseline-retest-s100-v1 \
+  --output-root runs \
+  --split dev \
+  --case-ids-file runs/2wiki-sample-s100-v1/evaluated_case_ids.txt \
+  --study-preset baseline_retest_local \
+  --chunk-size 20 \
+  --chunk-index 4 \
+  --no-e2e \
+  --no-export-graphrag-inputs
+
+uv run webwalker-cli experiments merge-2wiki-results \
+  --run-dir runs/2wiki-baseline-retest-s100-v1
+```
+
 ## 2Wiki Wrap-Up Only
 
 `2Wiki` is no longer the main decision surface. It is now only a wrap-up and calibration stage.
@@ -38,6 +150,7 @@ Required remaining work:
 1. Finish and merge `runs/2wiki-baseline-retest-s100-v1`.
 2. Record the current best `single_path` operating point.
 3. Record the current repo-native baseline ordering.
+4. Record the delta between the current `single_path` winner and the best repo-native baseline.
 
 Explicitly out of scope on `2Wiki`:
 
@@ -45,23 +158,17 @@ Explicitly out of scope on `2Wiki`:
 - do not expand the `2Wiki` sample to chase small gains
 - do not use `2Wiki` as the main evidence for whether broad walk is the paper story
 
-Current best `single_path` winner:
-
-- `top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop`
-
-Current `2Wiki` baseline retest recovery status:
-
-- run: `runs/2wiki-baseline-retest-s100-v1`
-- completed chunks: `chunk-00000`, `chunk-00001`, `chunk-00002`
-- partial and must rerun: `chunk-00003`
-- not started: `chunk-00004`
-- do not merge until `chunk-00003` and `chunk-00004` are completed and the run is merged cleanly
-
 After `2Wiki` wrap-up, the only internal conclusions to carry forward are:
 
 - the current best `single_path` selector
 - the repo-native baseline ordering on the retest sample
 - the delta between `single_path winner` and best repo-native baseline, but this delta is not a headline acceptance criterion
+
+Immediate next actions:
+
+1. Resume and complete `baseline_retest_local`.
+2. Merge the run and write down the best repo-native baseline ordering plus the delta to the `single_path` winner.
+3. Move directly to `IIRC`; do not reopen extra `2Wiki` confirmation work first.
 
 ## IIRC As The Main Next Phase
 
@@ -167,23 +274,11 @@ These datasets are recorded as backup or future-track options only; they do not 
 
 The current adapters and normalized dataset format expect a graph plus per-case `gold_support_nodes`, `gold_start_nodes`, and optional `gold_path_nodes`, so new datasets should only move into the mainline if they can be mapped cleanly into that interface without redefining the evaluation task.
 
-## Tracking Docs
+## Documentation Rules
 
-Document ownership is split as follows:
-
-- `docs/phase-decisions.md`
-  - completed, paper-facing phase decisions only
-- `docs/next-phase-experiments.md`
-  - this working next-step plan
-  - baseline policy switch to published methods first
-  - `2Wiki` wrap-up and direct move to `IIRC`
-  - `HotpotQA fullwiki` entry conditions
-  - current `single_path` winner
-  - current `2Wiki` baseline retest recovery status
-- `runs/2wiki-phase1-local-s100-status.md`
-  - local execution state and recovery commands for `2Wiki`
-- `runs/iirc-phase2-local-s100-status.md`
-  - future local execution state doc for the `IIRC` phase
+- `phase-decisions.md`: completed, paper-facing phase decisions only
+- `next-phase-experiments.md`: active plan, sequencing, local status, and recovery commands
+- run directories under `runs/`: artifacts only, not separate human-written status notes
 
 ## Minimum Completion Standards
 

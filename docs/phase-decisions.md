@@ -1,6 +1,10 @@
 # Phase Decisions
 
-This file is the canonical experiment-facing record for paper claims. Every phase-decision entry should separate:
+Purpose: canonical experiment-facing evidence log for paper claims.
+Canonical for: completed run-backed findings, missing ablations, and not-yet-compared systems.
+Not for / See also: active sequencing and recovery status belong in `next-phase-experiments.md`; implementation scope belongs in `current-implementation.md`; framing belongs in `paper-positioning.md`.
+
+Every phase-decision entry should separate:
 
 - `supported on <run>`
 - `needs ablation`
@@ -107,23 +111,9 @@ These systems should not be described as beaten or matched by the current phase.
 
 ### Next Experiments
 
-- Use `single_path_edge_ablation_local` as the clean edge-scorer ablation for `top_1 + sentence_transformer + hop_2 + single_path`.
-- Use `baseline_retest_local` to re-test the existing `dense top-k` and repo-native `mdr_light` baselines on broader phase samples; direct trained `MDR` remains unimplemented.
-- Repeat the current selector family on a larger phase sample before elevating claims beyond the present operating-point story.
-- Expand broad-search evaluation to harder datasets that already exist in this repo, with `IIRC` first and `HotpotQA fullwiki` next.
-- Re-test `beam`, `astar`, `ucs`, and `beam_ppr` under looser budgets such as `384` and `512` before declaring the family unpromising.
-- Run `branchy_profiles_384_512` to test whether the exposed overlap/ST profiles recover precision for broad search.
-- Treat limited LLM scorer profile experiments as later work, after the non-LLM branchy matrix is understood.
-- Treat further `beam` and `astar` work as conditional on one of two outcomes:
-  - a harder dataset shows a real gain over single-path
-  - scorer-profile tuning fixes the current precision collapse
+These are follow-ups justified by the evidence above. They do not define execution order.
 
-### Exploration Directions
-
-The current repo should treat broad-search follow-up as a targeted exploration track, not as an already failed idea.
-
-- The `2Wiki` result only shows that broad search is a poor operating point under the current budget and scorer setup.
-- `IIRC` is the best next place to test broad search because the task itself rewards natural hyperlink expansion over incomplete information.
-- `HotpotQA fullwiki` is the next-best stress test because start retrieval is harder and broad search has more room to recover missing support pages.
-- Broader phase samples should be replayed from `evaluated_case_ids.txt`, not re-created ad hoc from `--limit`.
-- Overlap and sentence-transformer scorer composition are now exposed as named profiles, but search-heavy selectors should still not be judged final until those profiles are tested explicitly. LLM scorer profile tuning remains open.
+- Use `single_path_edge_ablation_local` as the clean edge-scorer ablation for the `top_1 + sentence_transformer + hop_2 + single_path` family.
+- Re-test `dense top-k`, `iterative_dense`, and repo-native `mdr_light` on broader replayable samples before elevating the current operating-point story.
+- Validate the current single-path winner on harder datasets that already exist in this repo, starting with `IIRC`.
+- Treat branchy follow-up as conditional and diagnostic until either harder datasets or scorer-profile tuning recover precision without reopening the full search frontier by default.

@@ -1,8 +1,8 @@
 # Literature Map for `webwalker`
 
-This document is the `full pool / research inventory` for `webwalker`.
-
-It is not the paper outline and it is not the baseline-priority guide. Those responsibilities live in [corpus-selection-literature.md](corpus-selection-literature.md) and [paper-positioning.md](paper-positioning.md).
+Purpose: full annotated literature inventory and reading pool for `webwalker`.
+Canonical for: human-readable research inventory derived from `literature-map.tsv`.
+Not for / See also: paper-facing narrative order lives in `corpus-selection-literature.md`; framing lives in `paper-positioning.md`.
 
 围绕 `linked-corpora discovery + complex answer retrieval + query-time graph search` 整理的 64 篇带注释文献池。
 
@@ -22,66 +22,12 @@ It is not the paper outline and it is not the baseline-priority guide. Those res
 - `docs/corpus-selection-literature.tsv` 只应视为面向论文写作的 subset/export，不是 source of truth。
 - 下方嵌入同字段、同顺序的 TSV 快照，便于直接复制到表格工具或后续生成 related work 草稿。
 
-## Corpus Selection Focus
+## How To Use This Inventory
 
-如果你的核心目标是做 `RAG` 之前的 `corpus selection` 或 `subgraph discovery` 优化，优先读下面这 25 篇，不要平均用力。
-
-### 1. 先明确“什么叫真的需要选对语料”
-
-1. `HotpotQA: A Dataset for Diverse, Explainable Multi-hop Question Answering`
-2. `Constructing A Multi-hop QA Dataset for Comprehensive Evaluation of Reasoning Steps`
-3. `MuSiQue: Multihop Questions via Single-hop Question Composition`
-4. `Compositional Questions Do Not Necessitate Multi-hop Reasoning`
-
-这四篇用来定义你的问题边界：你不是在优化普通 top-k 检索，而是在优化“把后续推理真正需要的文档子集先挑出来”。
-
-### 2. 用 IR 社区把问题写成 complex answer retrieval
-
-1. `Benchmark for Complex Answer Retrieval`
-2. `Characterizing Question Facets for Complex Answer Retrieval`
-3. `Local and Global Query Expansion for Hierarchical Complex Topics`
-4. `Why Does This Entity Matter? Support Passage Retrieval for Entity Retrieval`
-
-这组文献把你的问题从 “multi-hop QA 检索技巧” 拉回到 `complex answer retrieval / hierarchical topic retrieval / support passage retrieval` 的 IR 主线。
-
-### 3. 直接看与“选哪些文档/页面进入后续阶段”最相关的方法
-
-1. `Learning to Retrieve Reasoning Paths over Wikipedia Graph for Question Answering`
-2. `Answering Complex Open-Domain Questions with Multi-Hop Dense Retrieval`
-3. `HopRetriever: Retrieve Hops over Wikipedia to Answer Complex Questions`
-4. `Answering Any-hop Open-domain Questions with Iterative Document Reranking`
-5. `Simple yet Effective Bridge Reasoning for Open-Domain Multi-Hop Question Answering`
-6. `Multi-Hop Paragraph Retrieval for Open-Domain Question Answering`
-
-这组文献最接近你的主问题，因为它们都在回答“第一跳从哪来、下一跳往哪扩、什么时候停止、哪些文档该留下”。
-
-### 4. 再看“如何把语料筛选做成图选择或子图选择”
-
-1. `HippoRAG: Neurobiologically Inspired Long-Term Memory for Large Language Models`
-2. `Knowledge Graph-Guided Retrieval Augmented Generation`
-3. `LightRAG: Simple and Fast Retrieval-Augmented Generation`
-4. `PathRAG: Pruning Graph-based Retrieval Augmented Generation with Relational Paths`
-5. `When to use Graphs in RAG: A Comprehensive Analysis for Graph Retrieval-Augmented Generation`
-6. `Exploiting Relevance Feedback in Knowledge Graph Search`
-7. `Keyword Search over Knowledge Graphs via Static and Dynamic Hub Labelings`
-
-这组文献帮助你把 corpus selection 从“选文档”升级成“选路径、选邻域、选子图”，并补上更 algorithmic 的 `KDD/WWW` 图搜索叙事。
-
-### 5. 最后补“图上扩展策略”的邻近灵感
-
-1. `End-to-End Goal-Driven Web Navigation`
-2. `Focused crawling: A new approach to topic-specific Web resource discovery`
-3. `Topic-Sensitive PageRank`
-4. `Tree-based Focused Web Crawling with Reinforcement Learning`
-
-这组不是 RAG 论文，但对你最关键，因为它们直指 `walker policy`、扩展前沿控制、query-conditioned graph prior 这些设计点。
-
-### 6. 对 `webwalker` 最值得先回答的 4 个研究问题
-
-1. `corpus selection` 的单位是什么：整篇文档、文档中的链接上下文、还是路径诱导出的子图。
-2. 目标函数是什么：后续 EM/F1、supporting facts recall、time-to-first-answer，还是 token budget 下的 answer quality。
-3. 选择策略是单步排序还是序贯决策：一次性 top-k 选文档，还是边走边扩展、边筛边停。
-4. 与后续 RAG 的接口是什么：输出候选文档集、证据链、还是结构化子图。
+- 需要“先读什么、baseline 怎么排、rebuttal 怎么写”时，优先看 `corpus-selection-literature.md`。
+- 需要“完整文献池、bucket 分布、带注释条目”时，使用这份文档。
+- 需要程序化处理或导出时，使用 `docs/literature-map.tsv`。
+- 下方 TSV 快照是便于浏览的镜像，不承担额外 narrative 责任。
 
 ```tsv
 bucket	priority	year	venue	title	authors	primary_link	why_relevant_cn	relation_to_webwalker	notes

@@ -1,5 +1,9 @@
 # Current Implementation
 
+Purpose: canonical implementation-status document for `webwalker`.
+Canonical for: current pipeline shape, supported selector families, evaluation contract, missing pieces, and test coverage.
+Not for / See also: paper-facing claims live in `phase-decisions.md`; active experiment sequencing lives in `next-phase-experiments.md`; framing lives in `paper-positioning.md`.
+
 ## Positioning
 
 `webwalker` currently implements a selector-first experimentation pipeline:
@@ -122,27 +126,11 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 - `gold_support_context` is an oracle-style upper bound for evidence coverage under the same token budget accounting.
 - `full_corpus_upper_bound` is a full-corpus proxy for GraphRAG-style eager inclusion.
 
-## Current Evidence Snapshot
+## Evidence And Planning Pointers
 
-The current phase-decision anchor is the completed `phase-decision-30` run on `2Wiki dev`, `30` cases, `token budget 256`, and `no-e2e`. The strongest tested operating point is:
-
-`top_1 + sentence_transformer seed + hop_2 + single_path_walk + link_context_llm + budget_fill_relative_drop`
-
-This run supports three narrow conclusions:
-
-- Sentence-transformer seeds outperform lexical seeds in the tested families.
-- `top_1` is a better operating point than `top_3` at this budget.
-- Broad `hop_3` search with `beam` or `astar` is not a good direction on this `2Wiki` phase sample under a fixed `256`-token budget.
-
-Those conclusions should be read together with [phase-decisions.md](phase-decisions.md), which separates supported findings from claims that still need ablation or direct baseline comparisons.
-
-## Current Exploration Priorities
-
-- Re-test `mdr_light` and stronger dense baselines before broadening the paper claim.
-- Re-test broad search on harder datasets already supported in this repo, especially `IIRC` and `HotpotQA fullwiki`.
-- Run `branchy_profiles` on `384` and `512` token budgets before treating `beam` or `astar` as settled.
-- Prefer replaying larger phase samples via `evaluated_case_ids.txt` rather than ad hoc `--limit` slices.
-- Keep `single_path_walk` as the current default operating point until a broader search family wins on a harder setting.
+- Use `phase-decisions.md` for completed empirical conclusions and their current claim boundary.
+- Use `next-phase-experiments.md` for active sequencing, run recovery status, and near-term execution order.
+- Keep this document focused on what the code can do today, not which experiment should run next.
 
 ## What Is Still Not Implemented
 

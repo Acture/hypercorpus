@@ -1,10 +1,12 @@
 # Corpus-Selection Literature Guide
 
-This document is the paper-facing related-work guide for `webwalker`.
+Purpose: paper-facing related-work guide for `webwalker`.
+Canonical for: narrative order, baseline priority, comparator taxonomy, and rebuttal-ready talking points.
+Not for / See also: full annotated inventory lives in `literature-map.md`; framing lives in `paper-positioning.md`; evidence-backed comparator claims live in `phase-decisions.md`.
 
 Treat the paper as a `linked-corpora discovery` paper first and as a `downstream QA support` paper second.
 
-Use it to answer four writing questions:
+Use this document to answer four writing questions:
 
 - what problem are we actually claiming to solve
 - which baselines are mandatory

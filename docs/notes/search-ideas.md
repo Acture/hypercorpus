@@ -1,8 +1,19 @@
-# Parser-Inspired Search Ideas
+# Search Ideas Backlog
+
+Purpose: exploratory backlog for future selector and search-policy ideas.
+Canonical for: speculative control-policy hypotheses and design questions that are explicitly not yet claimed.
+Not for / See also: stable framing lives in `../paper-positioning.md`; evidence lives in `../phase-decisions.md`; active plan lives in `../next-phase-experiments.md`.
 
 Date: `2026-03-13`
 
 This document is a non-canonical research memo. It records algorithm-design hypotheses for future selector work. It is not an implementation spec, not a completed phase decision, and not a paper-facing claim document.
+
+The former high-level idea note has been absorbed into the canonical framing docs where its content became stable. This file keeps only the remaining exploratory search ideas and historical prompts that are still speculative.
+
+## Legacy Prompts Kept As Notes
+
+- Compare natural-link selection against eager whole-corpus graph construction only when the comparison is explicitly budget-aware.
+- Keep selector-policy questions open until harder datasets show whether the next gain comes from stopping, recovery, local propagation, or broader search.
 
 ## Current Grounding
 

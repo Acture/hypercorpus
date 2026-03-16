@@ -1,5 +1,9 @@
 # Paper Positioning
 
+Purpose: canonical paper-facing framing for `webwalker`.
+Canonical for: problem statement, thesis, stable research questions, safe claims, and novelty boundaries.
+Not for / See also: completed empirical support lives in `phase-decisions.md`; active experiment sequencing lives in `next-phase-experiments.md`; code capability lives in `current-implementation.md`; venue-specific packaging lives in `notes/venue-strategy.md`.
+
 ## Problem Framing
 
 `webwalker` targets a narrow problem:
@@ -7,6 +11,14 @@
 `query-time budgeted subgraph/corpus discovery for naturally linked corpora before downstream RAG or GraphRAG`
 
 The paper should not be framed as a new full-stack RAG system or primarily as a QA model. The core question is whether a lightweight selector can discover a compact evidence set or induced subgraph under a fixed token budget by exploiting natural hyperlink structure and local link semantics.
+
+## Why This Problem Exists
+
+Three stable pressures motivate the project:
+
+- Full-stack GraphRAG pipelines often rely on eager global structuring, which is expensive and discards the fact that many corpora already contain usable link structure.
+- Flat dense top-k is a weak corpus selector for bridge-heavy questions because it treats documents as isolated items and often misses support pages that are only visible after one step of navigation.
+- Natural hyperlinks already contain semantics through anchor text and local sentence context, but many retrieval baselines use topology alone or ignore the links entirely.
 
 ## One-Sentence Thesis
 
@@ -20,6 +32,15 @@ Write the project as an algorithmic discovery paper.
 - Primary objective: evidence discovery quality before downstream reasoning.
 - Primary comparison class: dense and iterative retrieval baselines, not full answer-generation systems.
 - QA remains an evaluation context, not the core identity of the method.
+
+## Stable Research Questions
+
+These are the durable questions that should survive changes in the current operating point:
+
+1. Can link-semantic corpus selection avoid eager whole-corpus graph construction while staying competitive on evidence recovery?
+2. Can a query-time selector recover more support and bridge evidence than flat dense top-k under the same token budget?
+3. Does explicit budget control over hops, nodes, and tokens produce a better recall-cost tradeoff than purely dense or iterative retrieval?
+4. Which selector policy family best uses natural hyperlink structure: local walk, branchy search, or controlled local propagation?
 
 ## Main Claims We Can Defend Now
 
