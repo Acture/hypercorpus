@@ -4,7 +4,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import heapq
-import itertools
 import math
 import os
 from pathlib import Path
@@ -29,12 +28,12 @@ from webwalker.walker import (
     StepLinkScorer,
     StepScoreCard,
     StepScorerMetadata,
-    StopReason,
-    TitleAwareOverlapStepScorer,
     WalkBudget,
     WalkResult,
     WalkStepLog,
     _clamp_score,
+    walk_step_log_from_dict,
+    walk_step_log_to_dict,
 )
 
 SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
@@ -145,6 +144,22 @@ class SelectorBudget:
     max_tokens: int | None = 256
 
 
+def selector_budget_to_dict(budget: SelectorBudget) -> dict[str, Any]:
+    return {
+        "max_nodes": budget.max_nodes,
+        "max_hops": budget.max_hops,
+        "max_tokens": budget.max_tokens,
+    }
+
+
+def selector_budget_from_dict(payload: dict[str, Any]) -> SelectorBudget:
+    return SelectorBudget(
+        max_nodes=None if payload.get("max_nodes") is None else int(payload["max_nodes"]),
+        max_hops=None if payload.get("max_hops") is None else int(payload["max_hops"]),
+        max_tokens=None if payload.get("max_tokens") is None else int(payload["max_tokens"]),
+    )
+
+
 @dataclass(slots=True)
 class SelectionTraceStep:
     index: int
@@ -236,6 +251,172 @@ class ScoredLink:
         )
 
 
+def scored_node_to_dict(node: ScoredNode) -> dict[str, Any]:
+    return {
+        "node_id": node.node_id,
+        "score": node.score,
+        "source_strategy": node.source_strategy,
+        "selected_reason": node.selected_reason,
+    }
+
+
+def scored_node_from_dict(payload: dict[str, Any]) -> ScoredNode:
+    return ScoredNode(
+        node_id=str(payload["node_id"]),
+        score=float(payload["score"]),
+        source_strategy=str(payload["source_strategy"]),
+        selected_reason=str(payload["selected_reason"]),
+    )
+
+
+def scored_link_to_dict(link: ScoredLink) -> dict[str, Any]:
+    return {
+        "source": link.source,
+        "target": link.target,
+        "anchor_text": link.anchor_text,
+        "sentence": link.sentence,
+        "sent_idx": link.sent_idx,
+        "ref_id": link.ref_id,
+        "metadata": dict(link.metadata),
+        "score": link.score,
+        "source_strategy": link.source_strategy,
+        "selected_reason": link.selected_reason,
+    }
+
+
+def scored_link_from_dict(payload: dict[str, Any]) -> ScoredLink:
+    return ScoredLink(
+        source=str(payload["source"]),
+        target=str(payload["target"]),
+        anchor_text=str(payload["anchor_text"]),
+        sentence=str(payload["sentence"]),
+        sent_idx=int(payload["sent_idx"]),
+        ref_id=None if payload.get("ref_id") is None else str(payload["ref_id"]),
+        metadata=dict(payload.get("metadata", {})),
+        score=float(payload["score"]),
+        source_strategy=str(payload["source_strategy"]),
+        selected_reason=str(payload["selected_reason"]),
+    )
+
+
+def selection_trace_step_to_dict(step: SelectionTraceStep) -> dict[str, Any]:
+    return {
+        "index": step.index,
+        "node_id": step.node_id,
+        "score": step.score,
+        "source_node_id": step.source_node_id,
+        "anchor_text": step.anchor_text,
+        "sentence": step.sentence,
+    }
+
+
+def selection_trace_step_from_dict(payload: dict[str, Any]) -> SelectionTraceStep:
+    return SelectionTraceStep(
+        index=int(payload["index"]),
+        node_id=str(payload["node_id"]),
+        score=float(payload["score"]),
+        source_node_id=None if payload.get("source_node_id") is None else str(payload["source_node_id"]),
+        anchor_text=None if payload.get("anchor_text") is None else str(payload["anchor_text"]),
+        sentence=None if payload.get("sentence") is None else str(payload["sentence"]),
+    )
+
+
+def selector_metadata_to_dict(metadata: SelectorMetadata | None) -> dict[str, Any] | None:
+    if metadata is None:
+        return None
+    return {
+        "scorer_kind": metadata.scorer_kind,
+        "backend": metadata.backend,
+        "profile_name": metadata.profile_name,
+        "provider": metadata.provider,
+        "model": metadata.model,
+        "seed_strategy": metadata.seed_strategy,
+        "seed_backend": metadata.seed_backend,
+        "seed_model": metadata.seed_model,
+        "prompt_version": metadata.prompt_version,
+        "candidate_prefilter_top_n": metadata.candidate_prefilter_top_n,
+        "two_hop_prefilter_top_n": metadata.two_hop_prefilter_top_n,
+        "seed_top_k": metadata.seed_top_k,
+        "hop_budget": metadata.hop_budget,
+        "search_structure": metadata.search_structure,
+        "edge_scorer": metadata.edge_scorer,
+        "lookahead_depth": metadata.lookahead_depth,
+        "budget_fill_mode": metadata.budget_fill_mode,
+        "budget_fill_pool_k": metadata.budget_fill_pool_k,
+        "budget_fill_score_floor": metadata.budget_fill_score_floor,
+        "budget_fill_relative_drop_ratio": metadata.budget_fill_relative_drop_ratio,
+    }
+
+
+def selector_metadata_from_dict(payload: dict[str, Any] | None) -> SelectorMetadata | None:
+    if payload is None:
+        return None
+    return SelectorMetadata(
+        scorer_kind=str(payload["scorer_kind"]),
+        backend=str(payload["backend"]),
+        profile_name=None if payload.get("profile_name") is None else str(payload["profile_name"]),
+        provider=None if payload.get("provider") is None else str(payload["provider"]),
+        model=None if payload.get("model") is None else str(payload["model"]),
+        seed_strategy=None if payload.get("seed_strategy") is None else str(payload["seed_strategy"]),
+        seed_backend=None if payload.get("seed_backend") is None else str(payload["seed_backend"]),
+        seed_model=None if payload.get("seed_model") is None else str(payload["seed_model"]),
+        prompt_version=None if payload.get("prompt_version") is None else str(payload["prompt_version"]),
+        candidate_prefilter_top_n=(
+            None if payload.get("candidate_prefilter_top_n") is None else int(payload["candidate_prefilter_top_n"])
+        ),
+        two_hop_prefilter_top_n=(
+            None if payload.get("two_hop_prefilter_top_n") is None else int(payload["two_hop_prefilter_top_n"])
+        ),
+        seed_top_k=None if payload.get("seed_top_k") is None else int(payload["seed_top_k"]),
+        hop_budget=None if payload.get("hop_budget") is None else int(payload["hop_budget"]),
+        search_structure=None if payload.get("search_structure") is None else str(payload["search_structure"]),
+        edge_scorer=None if payload.get("edge_scorer") is None else str(payload["edge_scorer"]),
+        lookahead_depth=None if payload.get("lookahead_depth") is None else int(payload["lookahead_depth"]),
+        budget_fill_mode=None if payload.get("budget_fill_mode") is None else str(payload["budget_fill_mode"]),
+        budget_fill_pool_k=None if payload.get("budget_fill_pool_k") is None else int(payload["budget_fill_pool_k"]),
+        budget_fill_score_floor=(
+            None if payload.get("budget_fill_score_floor") is None else float(payload["budget_fill_score_floor"])
+        ),
+        budget_fill_relative_drop_ratio=(
+            None
+            if payload.get("budget_fill_relative_drop_ratio") is None
+            else float(payload["budget_fill_relative_drop_ratio"])
+        ),
+    )
+
+
+def selector_usage_to_dict(usage: SelectorUsage | None) -> dict[str, Any] | None:
+    if usage is None:
+        return None
+    return {
+        "runtime_s": usage.runtime_s,
+        "llm_calls": usage.llm_calls,
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "cache_hits": usage.cache_hits,
+        "step_count": usage.step_count,
+        "fallback_steps": usage.fallback_steps,
+        "parse_failure_steps": usage.parse_failure_steps,
+    }
+
+
+def selector_usage_from_dict(payload: dict[str, Any] | None) -> SelectorUsage | None:
+    if payload is None:
+        return None
+    return SelectorUsage(
+        runtime_s=float(payload.get("runtime_s", 0.0)),
+        llm_calls=int(payload.get("llm_calls", 0)),
+        prompt_tokens=int(payload.get("prompt_tokens", 0)),
+        completion_tokens=int(payload.get("completion_tokens", 0)),
+        total_tokens=int(payload.get("total_tokens", 0)),
+        cache_hits=int(payload.get("cache_hits", 0)),
+        step_count=int(payload.get("step_count", 0)),
+        fallback_steps=int(payload.get("fallback_steps", 0)),
+        parse_failure_steps=int(payload.get("parse_failure_steps", 0)),
+    )
+
+
 @dataclass(slots=True)
 class PathState:
     current_node: str
@@ -257,6 +438,80 @@ class PathState:
         if query_token_count <= 0:
             return 0.0
         return len(self.covered_query_tokens) / query_token_count
+
+
+def path_state_to_dict(state: PathState) -> dict[str, Any]:
+    return {
+        "current_node": state.current_node,
+        "path_links": [scored_link_to_dict(link) for link in state.path_links],
+        "visited_nodes": list(state.visited_nodes),
+        "g_score": state.g_score,
+        "h_score": state.h_score,
+        "f_score": state.f_score,
+        "covered_query_tokens": list(state.covered_query_tokens),
+        "token_cost_estimate": state.token_cost_estimate,
+        "reward_score": state.reward_score,
+        "goal_reached": state.goal_reached,
+    }
+
+
+def path_state_from_dict(payload: dict[str, Any]) -> PathState:
+    return PathState(
+        current_node=str(payload["current_node"]),
+        path_links=tuple(scored_link_from_dict(link) for link in payload.get("path_links", [])),
+        visited_nodes=tuple(str(node_id) for node_id in payload.get("visited_nodes", [])),
+        g_score=float(payload.get("g_score", 0.0)),
+        h_score=float(payload.get("h_score", 0.0)),
+        f_score=float(payload.get("f_score", 0.0)),
+        covered_query_tokens=tuple(str(token) for token in payload.get("covered_query_tokens", [])),
+        token_cost_estimate=int(payload.get("token_cost_estimate", 0)),
+        reward_score=float(payload.get("reward_score", 0.0)),
+        goal_reached=bool(payload.get("goal_reached", False)),
+    )
+
+
+def corpus_selection_result_to_dict(result: CorpusSelectionResult) -> dict[str, Any]:
+    return {
+        "selector_name": result.selector_name,
+        "query": result.query,
+        "ranked_nodes": [scored_node_to_dict(node) for node in result.ranked_nodes],
+        "ranked_links": [scored_link_to_dict(link) for link in result.ranked_links],
+        "selected_node_ids": list(result.selected_node_ids),
+        "selected_links": [scored_link_to_dict(link) for link in result.selected_links],
+        "token_cost_estimate": result.token_cost_estimate,
+        "strategy": result.strategy,
+        "mode": result.mode.value,
+        "debug_trace": list(result.debug_trace),
+        "coverage_ratio": result.coverage_ratio,
+        "root_node_ids": list(result.root_node_ids),
+        "trace": [selection_trace_step_to_dict(step) for step in result.trace],
+        "stop_reason": result.stop_reason,
+        "selector_metadata": selector_metadata_to_dict(result.selector_metadata),
+        "selector_usage": selector_usage_to_dict(result.selector_usage),
+        "selector_logs": [walk_step_log_to_dict(log) for log in result.selector_logs],
+    }
+
+
+def corpus_selection_result_from_dict(payload: dict[str, Any]) -> CorpusSelectionResult:
+    return CorpusSelectionResult(
+        selector_name=str(payload["selector_name"]),
+        query=str(payload["query"]),
+        ranked_nodes=[scored_node_from_dict(node) for node in payload.get("ranked_nodes", [])],
+        ranked_links=[scored_link_from_dict(link) for link in payload.get("ranked_links", [])],
+        selected_node_ids=[str(node_id) for node_id in payload.get("selected_node_ids", [])],
+        selected_links=[scored_link_from_dict(link) for link in payload.get("selected_links", [])],
+        token_cost_estimate=int(payload.get("token_cost_estimate", 0)),
+        strategy=str(payload["strategy"]),
+        mode=SelectionMode(str(payload["mode"])),
+        debug_trace=[str(item) for item in payload.get("debug_trace", [])],
+        coverage_ratio=float(payload.get("coverage_ratio", 0.0)),
+        root_node_ids=[str(node_id) for node_id in payload.get("root_node_ids", [])],
+        trace=[selection_trace_step_from_dict(step) for step in payload.get("trace", [])],
+        stop_reason=None if payload.get("stop_reason") is None else str(payload["stop_reason"]),
+        selector_metadata=selector_metadata_from_dict(payload.get("selector_metadata")),
+        selector_usage=selector_usage_from_dict(payload.get("selector_usage")),
+        selector_logs=[walk_step_log_from_dict(log) for log in payload.get("selector_logs", [])],
+    )
 
 
 @dataclass(slots=True)
@@ -671,6 +926,9 @@ class _PathfindingSelector:
         heuristic: CoverageSemanticHeuristic | None = None,
         selector_name: str | None = None,
         seed_weights: dict[str, float] | None = None,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
     ) -> CorpusSelectionResult:
         if not start_nodes:
             raise ValueError(f"{self.strategy_name} requires at least one start node.")
@@ -678,36 +936,42 @@ class _PathfindingSelector:
         scorer = scorer or LinkContextOverlapStepScorer()
         heuristic = heuristic or CoverageSemanticHeuristic()
         query_tokens = _query_tokens(query)
-        states, debug_trace, selector_logs = self._run_path_search(
-            graph=graph,
-            query=query,
-            query_tokens=query_tokens,
-            start_nodes=start_nodes,
-            budget=budget,
-            scorer=scorer,
-            heuristic=heuristic,
-        )
-        path_result = _build_selection_from_states(
-            selector_name=selector_name or self.strategy_name,
-            graph=graph,
-            query=query,
-            query_tokens=query_tokens,
-            states=states,
-            budget=budget,
-            strategy=self.strategy_name,
-            mode=SelectionMode.STANDALONE,
-            debug_trace=debug_trace,
-            root_node_ids=start_nodes,
-            selector_metadata=_selector_metadata_from_step_scorer(
-                scorer,
-                seed_top_k=len(start_nodes),
-                hop_budget=budget.max_hops,
-                search_structure=self._search_structure_name(),
-            ),
-            selector_usage=_selector_usage_from_logs(selector_logs),
-            selector_logs=selector_logs,
-            stop_reason="path_search",
-        )
+        if resume_state is not None and resume_state.get("substage") == "ppr":
+            path_result = corpus_selection_result_from_dict(dict(resume_state["path_result"]))
+        else:
+            states, debug_trace, selector_logs = self._run_path_search(
+                graph=graph,
+                query=query,
+                query_tokens=query_tokens,
+                start_nodes=start_nodes,
+                budget=budget,
+                scorer=scorer,
+                heuristic=heuristic,
+                resume_state=resume_state,
+                checkpoint_callback=checkpoint_callback,
+                stop_callback=stop_callback,
+            )
+            path_result = _build_selection_from_states(
+                selector_name=selector_name or self.strategy_name,
+                graph=graph,
+                query=query,
+                query_tokens=query_tokens,
+                states=states,
+                budget=budget,
+                strategy=self.strategy_name,
+                mode=SelectionMode.STANDALONE,
+                debug_trace=debug_trace,
+                root_node_ids=start_nodes,
+                selector_metadata=_selector_metadata_from_step_scorer(
+                    scorer,
+                    seed_top_k=len(start_nodes),
+                    hop_budget=budget.max_hops,
+                    search_structure=self._search_structure_name(),
+                ),
+                selector_usage=_selector_usage_from_logs(selector_logs),
+                selector_logs=selector_logs,
+                stop_reason="path_search",
+            )
         if self.mode == SelectionMode.STANDALONE:
             return path_result
 
@@ -715,6 +979,19 @@ class _PathfindingSelector:
         personalization = dict(seed_weights or _seed_weights_from_graph(graph, query, start_nodes))
         for node_id, score in frontier_scores.items():
             personalization[node_id] = personalization.get(node_id, 0.0) + score
+        if checkpoint_callback is not None:
+            checkpoint_callback(
+                {
+                    "substage": "ppr",
+                    "query": query,
+                    "start_nodes": list(start_nodes),
+                    "budget": selector_budget_to_dict(budget),
+                    "path_result": corpus_selection_result_to_dict(path_result),
+                    "seed_weights": dict(seed_weights or {}),
+                }
+            )
+        if stop_callback is not None:
+            stop_callback()
         ppr_node_scores, ppr_link_scores, ppr_trace = self._ppr._run_ppr(
             graph,
             query,
@@ -751,6 +1028,9 @@ class _PathfindingSelector:
         budget: SelectorBudget,
         scorer: StepLinkScorer,
         heuristic: CoverageSemanticHeuristic,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
     ) -> tuple[list[PathState], list[str], list[WalkStepLog]]:
         raise NotImplementedError
 
@@ -921,18 +1201,29 @@ class SemanticBeamSelector(_PathfindingSelector):
         budget: SelectorBudget,
         scorer: StepLinkScorer,
         heuristic: CoverageSemanticHeuristic,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
     ) -> tuple[list[PathState], list[str], list[WalkStepLog]]:
-        debug_trace: list[str] = []
-        selector_logs: list[WalkStepLog] = []
-        seeds = self._seed_states(graph, query_tokens, start_nodes, heuristic)
-        for seed in seeds:
-            debug_trace.append(f"seed:{seed.current_node}:h={seed.h_score:.4f}")
-
-        all_states = list(seeds)
-        frontier = list(seeds)
+        if resume_state is not None:
+            debug_trace = [str(item) for item in resume_state.get("debug_trace", [])]
+            selector_logs = [walk_step_log_from_dict(log) for log in resume_state.get("selector_logs", [])]
+            all_states = [path_state_from_dict(state) for state in resume_state.get("all_states", [])]
+            frontier = [path_state_from_dict(state) for state in resume_state.get("frontier", [])]
+            frontier_index = int(resume_state.get("frontier_index", 0))
+            next_frontier = [path_state_from_dict(state) for state in resume_state.get("next_frontier", [])]
+        else:
+            debug_trace = []
+            selector_logs = []
+            seeds = self._seed_states(graph, query_tokens, start_nodes, heuristic)
+            for seed in seeds:
+                debug_trace.append(f"seed:{seed.current_node}:h={seed.h_score:.4f}")
+            all_states = list(seeds)
+            frontier = list(seeds)
+            frontier_index = 0
+            next_frontier = []
         while frontier:
-            next_frontier: list[PathState] = []
-            for state in frontier:
+            for state in frontier[frontier_index:]:
                 debug_trace.append(f"expand:{state.current_node}:reward={state.reward_score:.4f}:depth={state.depth}")
                 expanded, log = self._expand_state(
                     graph=graph,
@@ -946,6 +1237,24 @@ class SemanticBeamSelector(_PathfindingSelector):
                 if log is not None:
                     selector_logs.append(log)
                 next_frontier.extend(expanded)
+                frontier_index += 1
+                if checkpoint_callback is not None:
+                    checkpoint_callback(
+                        {
+                            "substage": "search",
+                            "query": query,
+                            "start_nodes": list(start_nodes),
+                            "budget": selector_budget_to_dict(budget),
+                            "all_states": [path_state_to_dict(item) for item in all_states],
+                            "frontier": [path_state_to_dict(item) for item in frontier],
+                            "frontier_index": frontier_index,
+                            "next_frontier": [path_state_to_dict(item) for item in next_frontier],
+                            "debug_trace": list(debug_trace),
+                            "selector_logs": [walk_step_log_to_dict(item) for item in selector_logs],
+                        }
+                    )
+                if stop_callback is not None:
+                    stop_callback()
             if not next_frontier:
                 break
             next_frontier.sort(
@@ -955,6 +1264,8 @@ class SemanticBeamSelector(_PathfindingSelector):
             frontier = next_frontier[: self.beam_width]
             all_states.extend(frontier)
             debug_trace.append("beam:" + ",".join(f"{state.current_node}:{state.reward_score:.4f}" for state in frontier))
+            frontier_index = 0
+            next_frontier = []
         return all_states, debug_trace, selector_logs
 
 
@@ -974,19 +1285,35 @@ class _PriorityPathSelector(_PathfindingSelector):
         budget: SelectorBudget,
         scorer: StepLinkScorer,
         heuristic: CoverageSemanticHeuristic,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
     ) -> tuple[list[PathState], list[str], list[WalkStepLog]]:
-        counter = itertools.count()
-        debug_trace: list[str] = []
-        selector_logs: list[WalkStepLog] = []
-        seeds = self._seed_states(graph, query_tokens, start_nodes, heuristic)
-        all_states = list(seeds)
-        heap: list[tuple[float, int, PathState]] = []
-        for seed in seeds:
-            priority = self._priority(seed)
-            heapq.heappush(heap, (priority, next(counter), seed))
-            debug_trace.append(f"seed:{seed.current_node}:g={seed.g_score:.4f}:h={seed.h_score:.4f}:f={seed.f_score:.4f}")
-
-        expansions = 0
+        if resume_state is not None:
+            debug_trace = [str(item) for item in resume_state.get("debug_trace", [])]
+            selector_logs = [walk_step_log_from_dict(log) for log in resume_state.get("selector_logs", [])]
+            all_states = [path_state_from_dict(state) for state in resume_state.get("all_states", [])]
+            heap = [
+                (float(entry["priority"]), int(entry["order"]), path_state_from_dict(dict(entry["state"])))
+                for entry in resume_state.get("heap_entries", [])
+            ]
+            next_counter_value = int(resume_state.get("next_counter", len(heap)))
+            expansions = int(resume_state.get("expansions", 0))
+        else:
+            next_counter_value = 0
+            debug_trace = []
+            selector_logs = []
+            seeds = self._seed_states(graph, query_tokens, start_nodes, heuristic)
+            all_states = list(seeds)
+            heap = []
+            for seed in seeds:
+                priority = self._priority(seed)
+                heapq.heappush(heap, (priority, next_counter_value, seed))
+                next_counter_value += 1
+                debug_trace.append(
+                    f"seed:{seed.current_node}:g={seed.g_score:.4f}:h={seed.h_score:.4f}:f={seed.f_score:.4f}"
+                )
+            expansions = 0
         while heap and expansions < self._expansion_limit(graph, budget):
             priority, _order, state = heapq.heappop(heap)
             debug_trace.append(
@@ -1007,10 +1334,31 @@ class _PriorityPathSelector(_PathfindingSelector):
             for child in children:
                 all_states.append(child)
                 child_priority = self._priority(child)
-                heapq.heappush(heap, (child_priority, next(counter), child))
+                heapq.heappush(heap, (child_priority, next_counter_value, child))
+                next_counter_value += 1
                 debug_trace.append(
                     f"push:{state.current_node}->{child.current_node}:{self.priority_label}={child_priority:.4f}:g={child.g_score:.4f}:h={child.h_score:.4f}:f={child.f_score:.4f}"
                 )
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    {
+                        "substage": "search",
+                        "query": query,
+                        "start_nodes": list(start_nodes),
+                        "budget": selector_budget_to_dict(budget),
+                        "all_states": [path_state_to_dict(item) for item in all_states],
+                        "heap_entries": [
+                            {"priority": item[0], "order": item[1], "state": path_state_to_dict(item[2])}
+                            for item in heap
+                        ],
+                        "next_counter": next_counter_value,
+                        "expansions": expansions,
+                        "debug_trace": list(debug_trace),
+                        "selector_logs": [walk_step_log_to_dict(item) for item in selector_logs],
+                    }
+                )
+            if stop_callback is not None:
+                stop_callback()
         return all_states, debug_trace, selector_logs
 
 
@@ -1042,7 +1390,16 @@ class CanonicalDenseSelector(_SentenceTransformerSupport):
         self.spec = spec
         self.name = spec.canonical_name
 
-    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
         started_at = time.perf_counter()
         seed_candidates = _select_seed_candidates(
             graph,
@@ -1085,39 +1442,76 @@ class CanonicalIterativeDenseSelector(_SentenceTransformerSupport):
         self.spec = spec
         self.name = spec.canonical_name
 
-    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
         started_at = time.perf_counter()
         embedder = _seed_embedder(self.spec, self._get_embedder)
         hop_budget = self.spec.hop_budget or 1
         per_hop_top_k = self.spec.seed_top_k or 1
         token_budget_limit = _runtime_budget_token_limit(graph, budget)
 
-        selected_order: list[str] = []
-        selected_set: set[str] = set()
-        node_scores: dict[str, float] = {}
-        trace: list[SelectionTraceStep] = []
-        debug_trace: list[str] = []
+        if resume_state is not None:
+            selected_order = [str(node_id) for node_id in resume_state.get("selected_order", [])]
+            selected_set = {str(node_id) for node_id in resume_state.get("selected_set", [])}
+            node_scores = {str(node_id): float(score) for node_id, score in resume_state.get("node_scores", {}).items()}
+            trace = [selection_trace_step_from_dict(step) for step in resume_state.get("trace", [])]
+            debug_trace = [str(item) for item in resume_state.get("debug_trace", [])]
+            frontier = [str(node_id) for node_id in resume_state.get("frontier", [])]
+            root_candidates = [str(node_id) for node_id in resume_state.get("root_candidates", [])]
+            next_hop_index = int(resume_state.get("hop_index", 1))
+        else:
+            selected_order = []
+            selected_set = set()
+            node_scores = {}
+            trace = []
+            debug_trace = []
+            seed_candidates = _select_seed_candidates(
+                graph,
+                case.query,
+                per_hop_top_k,
+                seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+                embedder=embedder,
+            )
+            root_candidates = [node_id for node_id, _score in seed_candidates]
+            frontier = self._accept_candidates(
+                seed_candidates,
+                selected_order=selected_order,
+                selected_set=selected_set,
+                node_scores=node_scores,
+                trace=trace,
+                debug_trace=debug_trace,
+                hop_index=0,
+                score_reason="seed",
+            )
+            next_hop_index = 1
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    self._checkpoint_payload(
+                        graph=graph,
+                        case=case,
+                        hop_index=next_hop_index,
+                        selected_order=selected_order,
+                        selected_set=selected_set,
+                        node_scores=node_scores,
+                        trace=trace,
+                        debug_trace=debug_trace,
+                        frontier=frontier,
+                        root_candidates=root_candidates,
+                        token_budget_limit=token_budget_limit,
+                    )
+                )
+            if stop_callback is not None:
+                stop_callback()
 
-        seed_candidates = _select_seed_candidates(
-            graph,
-            case.query,
-            per_hop_top_k,
-            seed_strategy=self.spec.seed_strategy or "lexical_overlap",
-            embedder=embedder,
-        )
-        root_candidates = [node_id for node_id, _score in seed_candidates]
-        frontier = self._accept_candidates(
-            seed_candidates,
-            selected_order=selected_order,
-            selected_set=selected_set,
-            node_scores=node_scores,
-            trace=trace,
-            debug_trace=debug_trace,
-            hop_index=0,
-            score_reason="seed",
-        )
-
-        for hop_index in range(1, hop_budget + 1):
+        for hop_index in range(next_hop_index, hop_budget + 1):
             remaining_node_ids = [node_id for node_id in graph.nodes if node_id not in selected_set]
             if not remaining_node_ids or not frontier:
                 break
@@ -1145,6 +1539,24 @@ class CanonicalIterativeDenseSelector(_SentenceTransformerSupport):
             if not frontier:
                 debug_trace.append(f"hop:{hop_index}:duplicates_only")
                 break
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    self._checkpoint_payload(
+                        graph=graph,
+                        case=case,
+                        hop_index=hop_index + 1,
+                        selected_order=selected_order,
+                        selected_set=selected_set,
+                        node_scores=node_scores,
+                        trace=trace,
+                        debug_trace=debug_trace,
+                        frontier=frontier,
+                        root_candidates=root_candidates,
+                        token_budget_limit=token_budget_limit,
+                    )
+                )
+            if stop_callback is not None:
+                stop_callback()
 
         runtime_s = time.perf_counter() - started_at
         seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
@@ -1170,6 +1582,36 @@ class CanonicalIterativeDenseSelector(_SentenceTransformerSupport):
         selected_node_set = set(selected_node_ids)
         result.trace = [step for step in trace if step.node_id in selected_node_set]
         return result
+
+    def _checkpoint_payload(
+        self,
+        *,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        hop_index: int,
+        selected_order: Sequence[str],
+        selected_set: set[str],
+        node_scores: dict[str, float],
+        trace: Sequence[SelectionTraceStep],
+        debug_trace: Sequence[str],
+        frontier: Sequence[str],
+        root_candidates: Sequence[str],
+        token_budget_limit: int,
+    ) -> dict[str, Any]:
+        remaining_node_ids = [node_id for node_id in graph.nodes if node_id not in selected_set]
+        return {
+            "query": case.query,
+            "hop_index": hop_index,
+            "selected_order": list(selected_order),
+            "selected_set": sorted(selected_set),
+            "node_scores": dict(node_scores),
+            "trace": [selection_trace_step_to_dict(step) for step in trace],
+            "debug_trace": list(debug_trace),
+            "frontier": list(frontier),
+            "root_candidates": list(root_candidates),
+            "token_budget_limit": token_budget_limit,
+            "remaining_node_ids": remaining_node_ids,
+        }
 
     def _accept_candidates(
         self,
@@ -1228,7 +1670,16 @@ class CanonicalIterativeDenseSelector(_SentenceTransformerSupport):
 
 
 class CanonicalMDRLightSelector(CanonicalIterativeDenseSelector):
-    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
         started_at = time.perf_counter()
         embedder = _seed_embedder(self.spec, self._get_embedder)
         if embedder is None:
@@ -1237,32 +1688,60 @@ class CanonicalMDRLightSelector(CanonicalIterativeDenseSelector):
         per_hop_top_k = self.spec.seed_top_k or 1
         token_budget_limit = _runtime_budget_token_limit(graph, budget)
 
-        selected_order: list[str] = []
-        selected_set: set[str] = set()
-        node_scores: dict[str, float] = {}
-        trace: list[SelectionTraceStep] = []
-        debug_trace: list[str] = []
+        if resume_state is not None:
+            selected_order = [str(node_id) for node_id in resume_state.get("selected_order", [])]
+            selected_set = {str(node_id) for node_id in resume_state.get("selected_set", [])}
+            node_scores = {str(node_id): float(score) for node_id, score in resume_state.get("node_scores", {}).items()}
+            trace = [selection_trace_step_from_dict(step) for step in resume_state.get("trace", [])]
+            debug_trace = [str(item) for item in resume_state.get("debug_trace", [])]
+            frontier = [str(node_id) for node_id in resume_state.get("frontier", [])]
+            root_candidates = [str(node_id) for node_id in resume_state.get("root_candidates", [])]
+            next_hop_index = int(resume_state.get("hop_index", 1))
+        else:
+            selected_order = []
+            selected_set = set()
+            node_scores = {}
+            trace = []
+            debug_trace = []
+            seed_candidates = _select_seed_candidates(
+                graph,
+                case.query,
+                per_hop_top_k,
+                seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+                embedder=embedder,
+            )
+            root_candidates = [node_id for node_id, _score in seed_candidates]
+            frontier = self._accept_candidates(
+                seed_candidates,
+                selected_order=selected_order,
+                selected_set=selected_set,
+                node_scores=node_scores,
+                trace=trace,
+                debug_trace=debug_trace,
+                hop_index=0,
+                score_reason="seed",
+            )
+            next_hop_index = 1
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    self._checkpoint_payload(
+                        graph=graph,
+                        case=case,
+                        hop_index=next_hop_index,
+                        selected_order=selected_order,
+                        selected_set=selected_set,
+                        node_scores=node_scores,
+                        trace=trace,
+                        debug_trace=debug_trace,
+                        frontier=frontier,
+                        root_candidates=root_candidates,
+                        token_budget_limit=token_budget_limit,
+                    )
+                )
+            if stop_callback is not None:
+                stop_callback()
 
-        seed_candidates = _select_seed_candidates(
-            graph,
-            case.query,
-            per_hop_top_k,
-            seed_strategy=self.spec.seed_strategy or "lexical_overlap",
-            embedder=embedder,
-        )
-        root_candidates = [node_id for node_id, _score in seed_candidates]
-        frontier = self._accept_candidates(
-            seed_candidates,
-            selected_order=selected_order,
-            selected_set=selected_set,
-            node_scores=node_scores,
-            trace=trace,
-            debug_trace=debug_trace,
-            hop_index=0,
-            score_reason="seed",
-        )
-
-        for hop_index in range(1, hop_budget + 1):
+        for hop_index in range(next_hop_index, hop_budget + 1):
             remaining_node_ids = [node_id for node_id in graph.nodes if node_id not in selected_set]
             if not remaining_node_ids or not frontier:
                 break
@@ -1307,6 +1786,24 @@ class CanonicalMDRLightSelector(CanonicalIterativeDenseSelector):
             if not frontier:
                 debug_trace.append(f"hop:{hop_index}:duplicates_only")
                 break
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    self._checkpoint_payload(
+                        graph=graph,
+                        case=case,
+                        hop_index=hop_index + 1,
+                        selected_order=selected_order,
+                        selected_set=selected_set,
+                        node_scores=node_scores,
+                        trace=trace,
+                        debug_trace=debug_trace,
+                        frontier=frontier,
+                        root_candidates=root_candidates,
+                        token_budget_limit=token_budget_limit,
+                    )
+                )
+            if stop_callback is not None:
+                stop_callback()
 
         runtime_s = time.perf_counter() - started_at
         seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
@@ -1346,7 +1843,16 @@ class CanonicalNeighborSelector(_SentenceTransformerSupport):
         self.spec = spec
         self.name = spec.canonical_name
 
-    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
         started_at = time.perf_counter()
         seed_candidates = _select_seed_candidates(
             graph,
@@ -1441,7 +1947,16 @@ class CanonicalSinglePathSelector(_SentenceTransformerSupport):
         self.llm_config = llm_config or SelectorLLMConfig()
         self.backend_factory = backend_factory
 
-    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
         started_at = time.perf_counter()
         seed_candidates = _select_seed_candidates(
             graph,
@@ -1461,6 +1976,9 @@ class CanonicalSinglePathSelector(_SentenceTransformerSupport):
             case.query,
             start_nodes,
             WalkBudget(max_steps=(self.spec.hop_budget or 0) + 1, min_score=0.05, allow_revisit=False),
+            resume_state=resume_state,
+            checkpoint_callback=checkpoint_callback,
+            stop_callback=stop_callback,
         )
         runtime_s = time.perf_counter() - started_at
         result = _corpus_selection_from_walk(
@@ -1493,7 +2011,16 @@ class CanonicalSearchSelector(_SentenceTransformerSupport):
         self.llm_config = llm_config or SelectorLLMConfig()
         self.backend_factory = backend_factory
 
-    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
         seed_candidates = _select_seed_candidates(
             graph,
             case.query,
@@ -1524,6 +2051,9 @@ class CanonicalSearchSelector(_SentenceTransformerSupport):
             heuristic=heuristic,
             selector_name=self.name,
             seed_weights={node_id: score for node_id, score in seed_candidates},
+            resume_state=resume_state,
+            checkpoint_callback=checkpoint_callback,
+            stop_callback=stop_callback,
         )
         seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
         return _apply_selector_metadata(result, self.spec, seed_backend=seed_backend, seed_model=seed_model)
@@ -1543,25 +2073,75 @@ class BudgetFillSelector(_SentenceTransformerSupport):
         self.spec = spec
         self.name = spec.canonical_name
 
-    def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
-        result = self.base_selector.select(graph, case, budget)
+    def select(
+        self,
+        graph: LinkContextGraph,
+        case: SelectionCase,
+        budget: RuntimeBudget,
+        *,
+        base_result: CorpusSelectionResult | None = None,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+    ) -> CorpusSelectionResult:
+        if resume_state is not None:
+            result = corpus_selection_result_from_dict(dict(resume_state["base_result"]))
+        elif base_result is not None:
+            result = base_result
+        else:
+            result = self.base_selector.select(graph, case, budget)
         budget_token_limit = _runtime_budget_token_limit(graph, budget)
-        seed_candidates = _select_seed_candidates(
-            graph,
-            case.query,
-            self.spec.budget_fill_pool_k or 64,
-            seed_strategy=self.spec.seed_strategy or "lexical_overlap",
-            embedder=_seed_embedder(self.spec, self._get_embedder),
-        )
-        selected_node_ids = list(result.selected_node_ids)
-        selected_node_set = set(selected_node_ids)
-        ranked_nodes = list(result.ranked_nodes)
-        trace = list(result.trace)
-        debug_trace = list(result.debug_trace)
-        token_cost_estimate = result.token_cost_estimate
-        first_backfill_score: float | None = None
+        if resume_state is not None:
+            seed_candidates = [
+                (str(item["node_id"]), float(item["score"])) for item in resume_state.get("seed_candidates", [])
+            ]
+            candidate_index = int(resume_state.get("candidate_index", 0))
+            selected_node_ids = [str(node_id) for node_id in resume_state.get("selected_node_ids", [])]
+            selected_node_set = {str(node_id) for node_id in resume_state.get("selected_node_set", [])}
+            ranked_nodes = [scored_node_from_dict(node) for node in resume_state.get("ranked_nodes", [])]
+            trace = [selection_trace_step_from_dict(step) for step in resume_state.get("trace", [])]
+            debug_trace = [str(item) for item in resume_state.get("debug_trace", [])]
+            token_cost_estimate = int(resume_state.get("token_cost_estimate", result.token_cost_estimate))
+            first_backfill_score = (
+                None if resume_state.get("first_backfill_score") is None else float(resume_state["first_backfill_score"])
+            )
+        else:
+            seed_candidates = _select_seed_candidates(
+                graph,
+                case.query,
+                self.spec.budget_fill_pool_k or 64,
+                seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+                embedder=_seed_embedder(self.spec, self._get_embedder),
+            )
+            candidate_index = 0
+            selected_node_ids = list(result.selected_node_ids)
+            selected_node_set = set(selected_node_ids)
+            ranked_nodes = list(result.ranked_nodes)
+            trace = list(result.trace)
+            debug_trace = list(result.debug_trace)
+            token_cost_estimate = result.token_cost_estimate
+            first_backfill_score = None
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    self._checkpoint_payload(
+                        case=case,
+                        result=result,
+                        seed_candidates=seed_candidates,
+                        candidate_index=candidate_index,
+                        selected_node_ids=selected_node_ids,
+                        selected_node_set=selected_node_set,
+                        ranked_nodes=ranked_nodes,
+                        trace=trace,
+                        debug_trace=debug_trace,
+                        token_cost_estimate=token_cost_estimate,
+                        first_backfill_score=first_backfill_score,
+                        budget_token_limit=budget_token_limit,
+                    )
+                )
+            if stop_callback is not None:
+                stop_callback()
 
-        for node_id, score in seed_candidates:
+        for offset, (node_id, score) in enumerate(seed_candidates[candidate_index:], start=candidate_index):
             if node_id in selected_node_set:
                 continue
             if first_backfill_score is None:
@@ -1600,6 +2180,25 @@ class BudgetFillSelector(_SentenceTransformerSupport):
                 )
             )
             debug_trace.append(f"fill_add:{self.spec.budget_fill_mode}:{node_id}:{score:.4f}")
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    self._checkpoint_payload(
+                        case=case,
+                        result=result,
+                        seed_candidates=seed_candidates,
+                        candidate_index=offset + 1,
+                        selected_node_ids=selected_node_ids,
+                        selected_node_set=selected_node_set,
+                        ranked_nodes=ranked_nodes,
+                        trace=trace,
+                        debug_trace=debug_trace,
+                        token_cost_estimate=token_cost_estimate,
+                        first_backfill_score=first_backfill_score,
+                        budget_token_limit=budget_token_limit,
+                    )
+                )
+            if stop_callback is not None:
+                stop_callback()
 
         selector_metadata = _apply_budget_fill_metadata(result.selector_metadata, self.spec)
         selected_links = [
@@ -1618,6 +2217,37 @@ class BudgetFillSelector(_SentenceTransformerSupport):
             selector_metadata=selector_metadata,
         )
 
+    def _checkpoint_payload(
+        self,
+        *,
+        case: SelectionCase,
+        result: CorpusSelectionResult,
+        seed_candidates: Sequence[tuple[str, float]],
+        candidate_index: int,
+        selected_node_ids: Sequence[str],
+        selected_node_set: set[str],
+        ranked_nodes: Sequence[ScoredNode],
+        trace: Sequence[SelectionTraceStep],
+        debug_trace: Sequence[str],
+        token_cost_estimate: int,
+        first_backfill_score: float | None,
+        budget_token_limit: int,
+    ) -> dict[str, Any]:
+        return {
+            "query": case.query,
+            "base_result": corpus_selection_result_to_dict(result),
+            "seed_candidates": [{"node_id": node_id, "score": score} for node_id, score in seed_candidates],
+            "candidate_index": candidate_index,
+            "selected_node_ids": list(selected_node_ids),
+            "selected_node_set": sorted(selected_node_set),
+            "ranked_nodes": [scored_node_to_dict(node) for node in ranked_nodes],
+            "trace": [selection_trace_step_to_dict(step) for step in trace],
+            "debug_trace": list(debug_trace),
+            "token_cost_estimate": token_cost_estimate,
+            "first_backfill_score": first_backfill_score,
+            "budget_token_limit": budget_token_limit,
+        }
+
 
 class GoldSupportContextSelector:
     name = "gold_support_context"
@@ -1625,10 +2255,8 @@ class GoldSupportContextSelector:
 
     def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
         del budget
-        started_at = time.perf_counter()
         ordered_nodes = list(dict.fromkeys(case.gold_support_nodes))
         node_scores = {node_id: 1.0 for node_id in ordered_nodes}
-        runtime_s = time.perf_counter() - started_at
         return _build_corpus_selection_result(
             selector_name=self.name,
             graph=graph,
@@ -1652,9 +2280,7 @@ class FullCorpusUpperBoundSelector:
 
     def select(self, graph: LinkContextGraph, case: SelectionCase, budget: RuntimeBudget) -> CorpusSelectionResult:
         del budget
-        started_at = time.perf_counter()
         ordered_nodes = list(graph.nodes)
-        runtime_s = time.perf_counter() - started_at
         node_scores = {node_id: _node_score(graph, case.query, node_id) for node_id in ordered_nodes}
         return _build_corpus_selection_result(
             selector_name=self.name,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 from webwalker.graph import LinkContext, LinkContextGraph
 from webwalker.text import normalized_token_overlap
@@ -107,6 +107,122 @@ class WalkResult:
     stop_reason: StopReason
     scorer_metadata: StepScorerMetadata
     selector_logs: list[WalkStepLog] = field(default_factory=list)
+
+
+def walk_budget_to_dict(budget: WalkBudget) -> dict[str, Any]:
+    return {
+        "max_steps": budget.max_steps,
+        "min_score": budget.min_score,
+        "allow_revisit": budget.allow_revisit,
+    }
+
+
+def walk_budget_from_dict(payload: dict[str, Any]) -> WalkBudget:
+    return WalkBudget(
+        max_steps=int(payload.get("max_steps", 3)),
+        min_score=float(payload.get("min_score", 0.0)),
+        allow_revisit=bool(payload.get("allow_revisit", False)),
+    )
+
+
+def walk_step_to_dict(step: WalkStep) -> dict[str, Any]:
+    return {
+        "index": step.index,
+        "node_id": step.node_id,
+        "score": step.score,
+        "source_node_id": step.source_node_id,
+        "anchor_text": step.anchor_text,
+        "sentence": step.sentence,
+        "edge_id": step.edge_id,
+    }
+
+
+def walk_step_from_dict(payload: dict[str, Any]) -> WalkStep:
+    return WalkStep(
+        index=int(payload["index"]),
+        node_id=str(payload["node_id"]),
+        score=float(payload["score"]),
+        source_node_id=None if payload.get("source_node_id") is None else str(payload["source_node_id"]),
+        anchor_text=None if payload.get("anchor_text") is None else str(payload["anchor_text"]),
+        sentence=None if payload.get("sentence") is None else str(payload["sentence"]),
+        edge_id=None if payload.get("edge_id") is None else str(payload["edge_id"]),
+    )
+
+
+def step_candidate_trace_to_dict(trace: StepCandidateTrace) -> dict[str, Any]:
+    return {
+        "edge_id": trace.edge_id,
+        "source_node_id": trace.source_node_id,
+        "target_node_id": trace.target_node_id,
+        "anchor_text": trace.anchor_text,
+        "sentence": trace.sentence,
+        "total_score": trace.total_score,
+        "subscores": dict(trace.subscores),
+        "rationale": trace.rationale,
+        "best_next_edge_id": trace.best_next_edge_id,
+        "fallback_reason": trace.fallback_reason,
+    }
+
+
+def step_candidate_trace_from_dict(payload: dict[str, Any]) -> StepCandidateTrace:
+    return StepCandidateTrace(
+        edge_id=str(payload["edge_id"]),
+        source_node_id=str(payload["source_node_id"]),
+        target_node_id=str(payload["target_node_id"]),
+        anchor_text=str(payload["anchor_text"]),
+        sentence=str(payload["sentence"]),
+        total_score=float(payload["total_score"]),
+        subscores={str(key): float(value) for key, value in dict(payload.get("subscores", {})).items()},
+        rationale=None if payload.get("rationale") is None else str(payload["rationale"]),
+        best_next_edge_id=None if payload.get("best_next_edge_id") is None else str(payload["best_next_edge_id"]),
+        fallback_reason=None if payload.get("fallback_reason") is None else str(payload["fallback_reason"]),
+    )
+
+
+def walk_step_log_to_dict(log: WalkStepLog) -> dict[str, Any]:
+    return {
+        "step_index": log.step_index,
+        "current_node_id": log.current_node_id,
+        "path_node_ids": list(log.path_node_ids),
+        "chosen_edge_id": log.chosen_edge_id,
+        "chosen_target_node_id": log.chosen_target_node_id,
+        "backend": log.backend,
+        "provider": log.provider,
+        "model": log.model,
+        "latency_s": log.latency_s,
+        "prompt_tokens": log.prompt_tokens,
+        "completion_tokens": log.completion_tokens,
+        "total_tokens": log.total_tokens,
+        "cache_hit": log.cache_hit,
+        "fallback_reason": log.fallback_reason,
+        "text": log.text,
+        "raw_response": log.raw_response,
+        "candidates": [step_candidate_trace_to_dict(candidate) for candidate in log.candidates],
+    }
+
+
+def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
+    return WalkStepLog(
+        step_index=int(payload["step_index"]),
+        current_node_id=str(payload["current_node_id"]),
+        path_node_ids=[str(node_id) for node_id in payload.get("path_node_ids", [])],
+        chosen_edge_id=None if payload.get("chosen_edge_id") is None else str(payload["chosen_edge_id"]),
+        chosen_target_node_id=(
+            None if payload.get("chosen_target_node_id") is None else str(payload["chosen_target_node_id"])
+        ),
+        backend=str(payload["backend"]),
+        provider=None if payload.get("provider") is None else str(payload["provider"]),
+        model=None if payload.get("model") is None else str(payload["model"]),
+        latency_s=float(payload.get("latency_s", 0.0)),
+        prompt_tokens=None if payload.get("prompt_tokens") is None else int(payload["prompt_tokens"]),
+        completion_tokens=None if payload.get("completion_tokens") is None else int(payload["completion_tokens"]),
+        total_tokens=None if payload.get("total_tokens") is None else int(payload["total_tokens"]),
+        cache_hit=payload.get("cache_hit"),
+        fallback_reason=None if payload.get("fallback_reason") is None else str(payload["fallback_reason"]),
+        text=None if payload.get("text") is None else str(payload["text"]),
+        raw_response=None if payload.get("raw_response") is None else str(payload["raw_response"]),
+        candidates=[step_candidate_trace_from_dict(candidate) for candidate in payload.get("candidates", [])],
+    )
 
 
 class StepLinkScorer(Protocol):
@@ -350,6 +466,10 @@ class DynamicWalker:
         query: str,
         start_nodes: list[str],
         budget: WalkBudget | None = None,
+        *,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
     ) -> WalkResult:
         budget = budget or WalkBudget()
         if budget.max_steps <= 0:
@@ -357,17 +477,28 @@ class DynamicWalker:
         if not start_nodes:
             raise ValueError("walk requires at least one start node.")
 
-        current = self._choose_start_node(query, start_nodes)
-        visited_nodes = [current]
-        visited_set = {current}
-        steps = [
-            WalkStep(
-                index=0,
-                node_id=current,
-                score=self._node_score(query, current),
-            )
-        ]
-        selector_logs: list[WalkStepLog] = []
+        if resume_state is not None:
+            current = str(resume_state["current_node"])
+            visited_nodes = [str(node_id) for node_id in resume_state.get("visited_nodes", [])]
+            if not visited_nodes:
+                raise ValueError("DynamicWalker resume_state is missing visited_nodes.")
+            visited_set = set(visited_nodes)
+            steps = [walk_step_from_dict(step) for step in resume_state.get("steps", [])]
+            if not steps:
+                raise ValueError("DynamicWalker resume_state is missing steps.")
+            selector_logs = [walk_step_log_from_dict(log) for log in resume_state.get("selector_logs", [])]
+        else:
+            current = self._choose_start_node(query, start_nodes)
+            visited_nodes = [current]
+            visited_set = {current}
+            steps = [
+                WalkStep(
+                    index=0,
+                    node_id=current,
+                    score=self._node_score(query, current),
+                )
+            ]
+            selector_logs = []
 
         stop_reason = StopReason.BUDGET_EXHAUSTED
         while len(steps) < budget.max_steps:
@@ -457,6 +588,22 @@ class DynamicWalker:
                     edge_id=str(best_index),
                 )
             )
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    {
+                        "query": query,
+                        "start_nodes": list(start_nodes),
+                        "chosen_start_node": steps[0].node_id,
+                        "current_node": current,
+                        "visited_nodes": list(visited_nodes),
+                        "steps": [walk_step_to_dict(step) for step in steps],
+                        "selector_logs": [walk_step_log_to_dict(log) for log in selector_logs],
+                        "remaining_steps": budget.max_steps - len(steps),
+                        "budget": walk_budget_to_dict(budget),
+                    }
+                )
+            if stop_callback is not None:
+                stop_callback()
         else:
             stop_reason = StopReason.BUDGET_EXHAUSTED
 

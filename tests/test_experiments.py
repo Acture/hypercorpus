@@ -17,6 +17,7 @@ from webwalker.experiments import (
     run_2wiki_experiment,
     run_2wiki_store_experiment,
 )
+from webwalker.resume import StopRequested
 from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
 from webwalker.reports import (
     STUDY_COMPARISON_FIELDNAMES,
@@ -659,6 +660,184 @@ def test_run_2wiki_experiment_writes_partial_results_and_progress_updates(two_wi
     assert "evaluating" in observed_phases
     assert "finalizing" in observed_phases
     assert "completed" in observed_phases
+
+
+def test_run_2wiki_experiment_rejects_existing_output_without_resume_or_restart(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "existing-output"
+
+    run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=1,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    with pytest.raises(ValueError, match="--resume or --restart"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=output_dir,
+            limit=1,
+            selector_names=[CANONICAL_DENSE],
+            token_budgets=[128],
+            with_e2e=False,
+            export_graphrag_inputs=False,
+        )
+
+
+def test_run_2wiki_experiment_resume_only_runs_remaining_selection(two_wiki_files, tmp_path, monkeypatch):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "resume-run"
+    base_selector = build_selector(CANONICAL_DENSE)
+
+    class CountingSelector:
+        def __init__(self):
+            self.name = base_selector.name
+            self.spec = base_selector.spec
+            self.calls = 0
+
+        def select(self, graph, case, budget):
+            self.calls += 1
+            return base_selector.select(graph, case, budget)
+
+    counting_selector = CountingSelector()
+
+    def _fake_select_selectors(*args, **kwargs):
+        return [counting_selector]
+
+    checkpoint_limit = {"value": 2}
+
+    class ControlledInterruptController:
+        def __init__(self):
+            self.count = 0
+
+        def install(self):
+            return None
+
+        def uninstall(self):
+            return None
+
+        def checkpoint(self):
+            self.count += 1
+            if checkpoint_limit["value"] is not None and self.count >= checkpoint_limit["value"]:
+                raise StopRequested()
+
+    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+    monkeypatch.setattr("webwalker.experiments.InterruptController", ControlledInterruptController)
+
+    partial_evaluations, partial_summary = run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=2,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    assert len(partial_evaluations) == 1
+    assert partial_summary.total_cases == 1
+    assert counting_selector.calls == 1
+    assert (output_dir / "results.jsonl").read_text(encoding="utf-8").strip().count("\n") == 0
+    run_state = json.loads((output_dir / "run_state.json").read_text(encoding="utf-8"))
+    assert run_state["status"] == "INTERRUPTED"
+
+    checkpoint_limit["value"] = None
+    resumed_evaluations, resumed_summary = run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=2,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+        resume=True,
+    )
+
+    assert len(resumed_evaluations) == 2
+    assert resumed_summary.total_cases == 2
+    assert counting_selector.calls == 2
+    assert len((output_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()) == 2
+
+
+def test_run_2wiki_experiment_resume_rebuilds_missing_public_outputs(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "resume-rebuild"
+
+    run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=2,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    for path in (
+        output_dir / "results.jsonl",
+        output_dir / "selector_logs.jsonl",
+        output_dir / "summary.json",
+        output_dir / "summary_rows.csv",
+        output_dir / "study_comparison_rows.csv",
+        output_dir / "evaluated_case_ids.txt",
+    ):
+        path.unlink()
+
+    evaluations, summary = run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=2,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+        resume=True,
+    )
+
+    assert len(evaluations) == 2
+    assert summary.total_cases == 2
+    assert (output_dir / "results.jsonl").exists()
+    assert (output_dir / "summary.json").exists()
+    assert (output_dir / "evaluated_case_ids.txt").read_text(encoding="utf-8") == "q1\nq2\n"
+
+
+def test_run_2wiki_experiment_resume_rejects_configuration_mismatch(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "resume-mismatch"
+
+    run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=1,
+        selector_names=[CANONICAL_DENSE],
+        token_budgets=[128],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+    )
+
+    with pytest.raises(ValueError, match="config_fingerprint|resolved_token_budgets|planned_selection_keys"):
+        run_2wiki_experiment(
+            questions_path=questions_path,
+            graph_records_path=graph_path,
+            output_dir=output_dir,
+            limit=1,
+            selector_names=[CANONICAL_DENSE],
+            token_budgets=[256],
+            with_e2e=False,
+            export_graphrag_inputs=False,
+            resume=True,
+        )
 
 
 def test_run_2wiki_store_experiment_writes_chunk_outputs(prepared_two_wiki_store, tmp_path):

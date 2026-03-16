@@ -13,6 +13,7 @@ from webwalker.selector import (
     build_selector,
     parse_selector_spec,
 )
+from webwalker.walker import DynamicWalker, LinkContextOverlapStepScorer, WalkBudget
 
 
 class FakeEmbedder:
@@ -110,6 +111,91 @@ def test_semantic_beam_returns_weighted_subgraph_contract(sample_graph):
     assert all(link.source in set(selection.selected_node_ids) for link in selection.selected_links)
     assert all(link.target in set(selection.selected_node_ids) for link in selection.selected_links)
     assert selection.token_cost_estimate <= 256
+
+
+def test_dynamic_walker_resumes_from_checkpointed_step(sample_graph):
+    walker = DynamicWalker(sample_graph, scorer=LinkContextOverlapStepScorer())
+    checkpoints: list[dict] = []
+
+    full = walker.walk(
+        "Which state contains Cape Canaveral?",
+        ["mission"],
+        WalkBudget(max_steps=3, min_score=0.0, allow_revisit=False),
+        checkpoint_callback=lambda payload: checkpoints.append(payload),
+    )
+
+    resumed = walker.walk(
+        "Which state contains Cape Canaveral?",
+        ["mission"],
+        WalkBudget(max_steps=3, min_score=0.0, allow_revisit=False),
+        resume_state=checkpoints[0],
+    )
+
+    assert checkpoints
+    assert [step.node_id for step in resumed.steps] == [step.node_id for step in full.steps]
+    assert [log.current_node_id for log in resumed.selector_logs] == [log.current_node_id for log in full.selector_logs]
+
+
+def test_semantic_beam_resumes_from_checkpointed_expansion(sample_graph):
+    selector = SemanticBeamSelector()
+    checkpoints: list[dict] = []
+
+    full = selector.select(
+        sample_graph,
+        "Which state contains Cape Canaveral?",
+        ["mission"],
+        SelectorBudget(max_nodes=4, max_hops=3, max_tokens=256),
+        checkpoint_callback=lambda payload: checkpoints.append(payload),
+    )
+    resumed = selector.select(
+        sample_graph,
+        "Which state contains Cape Canaveral?",
+        ["mission"],
+        SelectorBudget(max_nodes=4, max_hops=3, max_tokens=256),
+        resume_state=checkpoints[0],
+    )
+
+    assert checkpoints
+    assert resumed.selected_node_ids == full.selected_node_ids
+    assert len(resumed.selector_logs) == len(full.selector_logs)
+
+
+def test_iterative_dense_resumes_from_checkpointed_hop(sample_graph):
+    selector = build_selector("top_1_seed__lexical_overlap__hop_2__iterative_dense")
+    case = EvaluationCase(
+        case_id="q-resume",
+        query="Which state contains Cape Canaveral?",
+        gold_support_nodes=["mission", "cape", "florida"],
+        gold_start_nodes=["mission"],
+        dataset_name="synthetic",
+    )
+    budget = EvaluationBudget(token_budget_tokens=128)
+    checkpoints: list[dict] = []
+
+    full = selector.select(sample_graph, case, budget, checkpoint_callback=lambda payload: checkpoints.append(payload))
+    resumed = selector.select(sample_graph, case, budget, resume_state=checkpoints[0])
+
+    assert checkpoints
+    assert resumed.selected_node_ids == full.selected_node_ids
+
+
+def test_budget_fill_resumes_from_checkpointed_fill_state(sample_graph):
+    selector = build_selector("top_1_seed__lexical_overlap__hop_0__dense__budget_fill_always")
+    case = EvaluationCase(
+        case_id="q-fill",
+        query="Which state contains Cape Canaveral?",
+        gold_support_nodes=["mission", "cape", "florida"],
+        gold_start_nodes=["mission"],
+        dataset_name="synthetic",
+    )
+    budget = EvaluationBudget(token_budget_tokens=128)
+    checkpoints: list[dict] = []
+
+    full = selector.select(sample_graph, case, budget, checkpoint_callback=lambda payload: checkpoints.append(payload))
+    resumed = selector.select(sample_graph, case, budget, resume_state=checkpoints[0])
+
+    assert checkpoints
+    assert resumed.selected_node_ids == full.selected_node_ids
 
 
 def test_semantic_beam_keeps_bridge_path():
@@ -473,20 +559,21 @@ def test_mdr_light_differs_from_iterative_dense_for_multi_frontier_dense_hops():
     alpha_query = "launch answer Start Alpha Start alpha context."
     beta_query = "launch answer Start Beta Start beta context."
 
-    embedder = lambda _config: FakeEmbedder(
-        {
-            query: [1.0, 0.0, 0.0, 0.0],
-            start_a_text: [0.9, 0.1, 0.0, 0.0],
-            start_b_text: [0.9, 0.2, 0.0, 0.0],
-            goal_a_text: [0.0, 1.0, 0.0, 0.0],
-            goal_b_text: [0.0, 0.0, 1.0, 0.0],
-            noise_text: [0.0, 0.0, 0.0, 1.0],
-            merged_query: [0.0, 0.0, 0.0, 1.0],
-            merged_query_reversed: [0.0, 0.0, 0.0, 1.0],
-            alpha_query: [0.0, 1.0, 0.0, 0.0],
-            beta_query: [0.0, 0.0, 1.0, 0.0],
-        }
-    )
+    def embedder(_config):
+        return FakeEmbedder(
+            {
+                query: [1.0, 0.0, 0.0, 0.0],
+                start_a_text: [0.9, 0.1, 0.0, 0.0],
+                start_b_text: [0.9, 0.2, 0.0, 0.0],
+                goal_a_text: [0.0, 1.0, 0.0, 0.0],
+                goal_b_text: [0.0, 0.0, 1.0, 0.0],
+                noise_text: [0.0, 0.0, 0.0, 1.0],
+                merged_query: [0.0, 0.0, 0.0, 1.0],
+                merged_query_reversed: [0.0, 0.0, 0.0, 1.0],
+                alpha_query: [0.0, 1.0, 0.0, 0.0],
+                beta_query: [0.0, 0.0, 1.0, 0.0],
+            }
+        )
     budget = EvaluationBudget(token_budget_tokens=256)
     case = EvaluationCase(case_id="q-mdr-light", query=query)
 

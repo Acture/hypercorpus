@@ -4,6 +4,7 @@ import csv
 import json
 import logging
 import os
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence
@@ -20,25 +21,59 @@ from webwalker.datasets.iirc import IIRCAdapter
 from webwalker.datasets.musique import MuSiQueAdapter
 from webwalker.datasets.store import ShardedDocumentStore
 from webwalker.datasets.twowiki import TwoWikiAdapter
-from webwalker.datasets.twowiki_store import ShardedLinkContextStore
 from webwalker.eval import (
     DEFAULT_BUDGET_RATIOS,
     DEFAULT_TOKEN_BUDGETS,
     CaseEvaluation,
+    EndToEndResult,
     EvaluationBudget,
+    EvaluationCase,
     Evaluator,
     ExperimentSummary,
-    IncrementalExperimentAggregator,
+    SelectedCorpus,
+    SelectedEdgeContext,
+    SelectionMetrics,
+    SelectionResult,
     SelectorBudgetSummary,
-    summarize_evaluations,
+    _run_end_to_end,
+    _selection_result_from_raw,
 )
 from webwalker.logging import create_progress, should_render_progress
+from webwalker.resume import (
+    CheckpointStore,
+    HardStopRequested,
+    InterruptController,
+    RUN_STATE_VERSION,
+    RunState,
+    RunStatus,
+    SelectionCheckpointBundle,
+    SelectionPlanItem,
+    SelectionResumeState,
+    SelectionStage,
+    StopRequested,
+    atomic_write_text,
+    build_config_fingerprint,
+    build_selection_key,
+)
 from webwalker.reports import export_study_comparison_report, export_summary_report
 from webwalker.selector import (
+    BudgetFillSelector,
+    CanonicalIterativeDenseSelector,
+    CanonicalMDRLightSelector,
+    CanonicalSearchSelector,
+    CanonicalSinglePathSelector,
+    CorpusSelectionResult,
+    SelectorUsage,
     available_selector_names,
     available_selector_presets,
+    corpus_selection_result_from_dict,
+    selection_trace_step_from_dict,
+    selector_metadata_from_dict,
+    selector_usage_from_dict,
     select_selectors,
 )
+from webwalker.subgraph import SubgraphExtractor
+from webwalker.walker import walk_step_log_from_dict
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +203,8 @@ def run_dataset_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     dataset_label = getattr(adapter, "dataset_name", "dataset")
     _notify_progress(
@@ -206,16 +243,6 @@ def run_dataset_experiment(
         token_budgets=resolved.token_budgets,
         budget_ratios=resolved.budget_ratios,
     )
-    evaluators = _build_evaluators(
-        selectors=selectors,
-        budgets=budgets,
-        with_e2e=with_e2e,
-        answerer_mode=answerer_mode,
-        answer_model=answer_model,
-        answer_api_key_env=answer_api_key_env,
-        answer_base_url=answer_base_url,
-        answer_cache_path=answer_cache_path,
-    )
     logger.info(
         "Running %s experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         dataset_label,
@@ -226,92 +253,35 @@ def run_dataset_experiment(
         answerer_mode,
         export_graphrag_inputs,
     )
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    results_path, selector_logs_path, summary_path = _initialize_result_files(output_path)
-    aggregator = IncrementalExperimentAggregator(
-        dataset_name=selected_cases[0].dataset_name if selected_cases else dataset_label,
-    )
-    _write_run_manifest(
-        output_path,
+    evaluations, summary = _run_loaded_experiment(
+        graph=graph,
+        selected_cases=selected_cases,
+        selectors=selectors,
+        budgets=budgets,
+        output_dir=Path(output_dir),
         dataset_name=dataset_label,
         study_preset=resolved.study_preset,
         selector_preset=resolved.selector_preset,
-        resolved_selectors=[selector.name for selector in selectors],
-        resolved_token_budgets=resolved.token_budgets,
-        resolved_budget_ratios=resolved.budget_ratios,
+        token_budgets=resolved.token_budgets,
+        budget_ratios=resolved.budget_ratios,
         case_ids_file=case_ids_file,
-        total_selected_cases=len(selected_cases),
         control_selector_name=resolved.control_selector_name,
-    )
-
-    def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
-        if export_graphrag_inputs:
-            _notify_progress(
-                progress_observer,
-                dataset_name=dataset_label,
-                phase="exporting",
-                total_cases=total_cases,
-                completed_cases=completed_cases - 1,
-                current_case_id=evaluation.case.case_id,
-                current_query=evaluation.case.query,
-                summary=aggregator.to_summary() if completed_cases > 1 else None,
-            )
-            _export_case_graphrag_inputs(
-                graph=graph,
-                evaluation=evaluation,
-                output_dir=output_path,
-            )
-        aggregator.add_case_evaluation(evaluation)
-        _append_case_result_files(
-            results_path=results_path,
-            selector_logs_path=selector_logs_path,
-            evaluation=evaluation,
-        )
-        summary = aggregator.to_summary()
-        _write_summary_file(
-            summary_path=summary_path,
-            summary=summary,
-            study_preset=resolved.study_preset,
-            control_selector_name=resolved.control_selector_name,
-        )
-        _notify_progress(
-            progress_observer,
-            dataset_name=dataset_label,
-            phase="evaluating",
-            total_cases=total_cases,
-            completed_cases=completed_cases,
-            current_case_id=evaluation.case.case_id,
-            current_query=evaluation.case.query,
-            summary=summary,
-        )
-
-    evaluations = _evaluate_cases(
-        graph=graph,
-        cases=selected_cases,
-        evaluators=evaluators,
-        description=f"evaluate {dataset_label} cases",
-        dataset_name=dataset_label,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_base_url=selector_base_url,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_device=sentence_transformer_device,
+        with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
+        export_graphrag_inputs=export_graphrag_inputs,
         progress_observer=progress_observer,
-        on_case_complete=_on_case_complete,
+        resume=resume,
+        restart=restart,
     )
-    _notify_progress(
-        progress_observer,
-        dataset_name=dataset_label,
-        phase="finalizing",
-        total_cases=len(selected_cases),
-        completed_cases=len(evaluations),
-        summary=aggregator.to_summary(),
-    )
-    summary = aggregator.to_summary()
-    _write_summary_file(
-        summary_path=summary_path,
-        summary=summary,
-        study_preset=resolved.study_preset,
-        control_selector_name=resolved.control_selector_name,
-    )
-    _write_evaluated_case_ids(output_path, [evaluation.case for evaluation in evaluations])
     _notify_progress(
         progress_observer,
         dataset_name=dataset_label,
@@ -320,7 +290,7 @@ def run_dataset_experiment(
         completed_cases=len(evaluations),
         summary=summary,
     )
-    logger.info("Completed %s experiment; results written to %s", dataset_label, output_path)
+    logger.info("Completed %s experiment; results written to %s", dataset_label, output_dir)
 
     return evaluations, summary
 
@@ -353,6 +323,8 @@ def run_2wiki_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
         adapter=TwoWikiAdapter(),
@@ -382,6 +354,8 @@ def run_2wiki_experiment(
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
         progress_observer=progress_observer,
+        resume=resume,
+        restart=restart,
     )
 
 
@@ -413,6 +387,8 @@ def run_iirc_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
         adapter=IIRCAdapter(),
@@ -442,6 +418,8 @@ def run_iirc_experiment(
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
         progress_observer=progress_observer,
+        resume=resume,
+        restart=restart,
     )
 
 
@@ -474,6 +452,8 @@ def run_hotpotqa_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     if variant == "fullwiki":
         if graph_records_path is None:
@@ -506,6 +486,8 @@ def run_hotpotqa_experiment(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         )
 
     dataset_label = "hotpotqa-distractor"
@@ -549,35 +531,7 @@ def run_hotpotqa_experiment(
         sentence_transformer_device=sentence_transformer_device,
     )
     budgets = _resolve_budgets(token_budgets=resolved.token_budgets, budget_ratios=resolved.budget_ratios)
-    evaluators = _build_evaluators(
-        selectors=selectors,
-        budgets=budgets,
-        with_e2e=with_e2e,
-        answerer_mode=answerer_mode,
-        answer_model=answer_model,
-        answer_api_key_env=answer_api_key_env,
-        answer_base_url=answer_base_url,
-        answer_cache_path=answer_cache_path,
-    )
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    results_path, selector_logs_path, summary_path = _initialize_result_files(output_path)
-    aggregator = IncrementalExperimentAggregator(dataset_name=dataset_label)
     total = len(paired_cases)
-    _write_run_manifest(
-        output_path,
-        dataset_name=dataset_label,
-        variant="distractor",
-        study_preset=resolved.study_preset,
-        selector_preset=resolved.selector_preset,
-        resolved_selectors=[selector.name for selector in selectors],
-        resolved_token_budgets=resolved.token_budgets,
-        resolved_budget_ratios=resolved.budget_ratios,
-        case_ids_file=case_ids_file,
-        total_selected_cases=total,
-        control_selector_name=resolved.control_selector_name,
-    )
-    evaluations: list[CaseEvaluation] = []
     logger.info(
         "Running hotpotqa distractor experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         total,
@@ -587,68 +541,39 @@ def run_hotpotqa_experiment(
         answerer_mode,
         export_graphrag_inputs,
     )
-    _notify_progress(
-        progress_observer,
+    record_by_case_id = {case.case_id: record for record, case in paired_cases}
+    selected_cases = [case for _record, case in paired_cases]
+    evaluations, summary = _run_loaded_experiment(
+        graph=None,
+        graph_for_case=lambda case: build_hotpotqa_distractor_graph_for_case(record_by_case_id[case.case_id]),
+        selected_cases=selected_cases,
+        selectors=selectors,
+        budgets=budgets,
+        output_dir=Path(output_dir),
         dataset_name=dataset_label,
-        phase="evaluating",
-        total_cases=total,
-        completed_cases=0,
-    )
-    for index, (record, case) in enumerate(paired_cases, start=1):
-        graph = build_hotpotqa_distractor_graph_for_case(record)
-        evaluation = _evaluate_single_case(
-            graph=graph,
-            case=case,
-            evaluators=evaluators,
-        )
-        if export_graphrag_inputs:
-            _notify_progress(
-                progress_observer,
-                dataset_name=dataset_label,
-                phase="exporting",
-                total_cases=total,
-                completed_cases=index - 1,
-                current_case_id=case.case_id,
-                current_query=case.query,
-                summary=aggregator.to_summary() if index > 1 else None,
-            )
-            _export_case_graphrag_inputs(graph=graph, evaluation=evaluation, output_dir=output_path)
-        aggregator.add_case_evaluation(evaluation)
-        _append_case_result_files(results_path=results_path, selector_logs_path=selector_logs_path, evaluation=evaluation)
-        summary = aggregator.to_summary()
-        _write_summary_file(
-            summary_path=summary_path,
-            summary=summary,
-            study_preset=resolved.study_preset,
-            control_selector_name=resolved.control_selector_name,
-        )
-        _notify_progress(
-            progress_observer,
-            dataset_name=dataset_label,
-            phase="evaluating",
-            total_cases=total,
-            completed_cases=index,
-            current_case_id=case.case_id,
-            current_query=case.query,
-            summary=summary,
-        )
-        evaluations.append(evaluation)
-    _notify_progress(
-        progress_observer,
-        dataset_name=dataset_label,
-        phase="finalizing",
-        total_cases=total,
-        completed_cases=len(evaluations),
-        summary=aggregator.to_summary(),
-    )
-    summary = aggregator.to_summary()
-    _write_summary_file(
-        summary_path=summary_path,
-        summary=summary,
         study_preset=resolved.study_preset,
+        selector_preset=resolved.selector_preset,
+        token_budgets=resolved.token_budgets,
+        budget_ratios=resolved.budget_ratios,
+        case_ids_file=case_ids_file,
         control_selector_name=resolved.control_selector_name,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_base_url=selector_base_url,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_device=sentence_transformer_device,
+        with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
+        export_graphrag_inputs=export_graphrag_inputs,
+        progress_observer=progress_observer,
+        variant="distractor",
+        resume=resume,
+        restart=restart,
     )
-    _write_evaluated_case_ids(output_path, [evaluation.case for evaluation in evaluations])
     _notify_progress(
         progress_observer,
         dataset_name=dataset_label,
@@ -688,6 +613,8 @@ def run_musique_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
         adapter=MuSiQueAdapter(),
@@ -717,6 +644,8 @@ def run_musique_experiment(
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
         progress_observer=progress_observer,
+        resume=resume,
+        restart=restart,
     )
 
 
@@ -749,6 +678,8 @@ def run_docs_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary]:
     return run_dataset_experiment(
         adapter=DocumentationAdapter(dataset_name=dataset_name),
@@ -778,6 +709,8 @@ def run_docs_experiment(
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
         progress_observer=progress_observer,
+        resume=resume,
+        restart=restart,
     )
 
 
@@ -816,6 +749,8 @@ def run_store_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
     store = ShardedDocumentStore(store_uri, cache_dir=cache_dir)
     resolved_dataset_name = dataset_label or store.manifest.dataset_name
@@ -865,16 +800,6 @@ def run_store_experiment(
         token_budgets=resolved.token_budgets,
         budget_ratios=resolved.budget_ratios,
     )
-    evaluators = _build_evaluators(
-        selectors=selectors,
-        budgets=budgets,
-        with_e2e=with_e2e,
-        answerer_mode=answerer_mode,
-        answer_model=answer_model,
-        answer_api_key_env=answer_api_key_env,
-        answer_base_url=answer_base_url,
-        answer_cache_path=answer_cache_path,
-    )
     logger.info(
         "Running store-backed %s experiment (split=%s, selected_cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         resolved_dataset_name,
@@ -888,119 +813,37 @@ def run_store_experiment(
     )
 
     chunk_dir = _chunk_output_dir(output_root=Path(output_root), exp_name=exp_name, chunk_meta=chunk_meta)
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-    results_path, selector_logs_path, summary_path = _initialize_result_files(chunk_dir)
-    aggregator = IncrementalExperimentAggregator(
-        dataset_name=selected_cases[0].dataset_name if selected_cases else resolved_dataset_name,
-    )
-    _write_run_manifest(
-        chunk_dir,
+    evaluations, summary = _run_loaded_experiment(
+        graph=store,
+        selected_cases=selected_cases,
+        selectors=selectors,
+        budgets=budgets,
+        output_dir=chunk_dir,
         dataset_name=resolved_dataset_name,
-        split=split,
         study_preset=resolved.study_preset,
         selector_preset=resolved.selector_preset,
-        resolved_selectors=[selector.name for selector in selectors],
-        resolved_token_budgets=resolved.token_budgets,
-        resolved_budget_ratios=resolved.budget_ratios,
+        token_budgets=resolved.token_budgets,
+        budget_ratios=resolved.budget_ratios,
         case_ids_file=case_ids_file,
-        total_selected_cases=len(selected_cases),
         control_selector_name=resolved.control_selector_name,
-    )
-
-    def _on_case_complete(evaluation: CaseEvaluation, completed_cases: int, total_cases: int) -> None:
-        if export_graphrag_inputs:
-            _notify_progress(
-                progress_observer,
-                dataset_name=resolved_dataset_name,
-                phase="exporting",
-                total_cases=total_cases,
-                completed_cases=completed_cases - 1,
-                current_case_id=evaluation.case.case_id,
-                current_query=evaluation.case.query,
-                summary=aggregator.to_summary() if completed_cases > 1 else None,
-            )
-            _export_case_graphrag_inputs(
-                graph=store,
-                evaluation=evaluation,
-                output_dir=chunk_dir,
-            )
-        aggregator.add_case_evaluation(evaluation)
-        _append_case_result_files(
-            results_path=results_path,
-            selector_logs_path=selector_logs_path,
-            evaluation=evaluation,
-        )
-        summary = aggregator.to_summary()
-        _write_summary_file(
-            summary_path=summary_path,
-            summary=summary,
-            study_preset=resolved.study_preset,
-            control_selector_name=resolved.control_selector_name,
-        )
-        _notify_progress(
-            progress_observer,
-            dataset_name=resolved_dataset_name,
-            phase="evaluating",
-            total_cases=total_cases,
-            completed_cases=completed_cases,
-            current_case_id=evaluation.case.case_id,
-            current_query=evaluation.case.query,
-            summary=summary,
-        )
-
-    evaluations = _evaluate_cases(
-        graph=store,
-        cases=selected_cases,
-        evaluators=evaluators,
-        description=f"evaluate store-backed {resolved_dataset_name} cases",
-        dataset_name=resolved_dataset_name,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_base_url=selector_base_url,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_device=sentence_transformer_device,
+        with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
+        export_graphrag_inputs=export_graphrag_inputs,
         progress_observer=progress_observer,
-        on_case_complete=_on_case_complete,
-    )
-    _notify_progress(
-        progress_observer,
-        dataset_name=resolved_dataset_name,
-        phase="finalizing",
-        total_cases=len(selected_cases),
-        completed_cases=len(evaluations),
-        summary=aggregator.to_summary(),
-    )
-    summary = aggregator.to_summary()
-    _write_summary_file(
-        summary_path=summary_path,
-        summary=summary,
-        study_preset=resolved.study_preset,
-        control_selector_name=resolved.control_selector_name,
-    )
-    _write_evaluated_case_ids(chunk_dir, [evaluation.case for evaluation in evaluations])
-    (chunk_dir / "chunk.json").write_text(
-        json.dumps(
-            {
-                **chunk_meta,
-                "store_uri": str(store_uri),
-                "selectors": [selector.name for selector in selectors],
-                "study_preset": resolved.study_preset,
-                "selector_preset": resolved.selector_preset,
-                "token_budgets": resolved.token_budgets,
-                "budget_ratios": resolved.budget_ratios,
-                "case_ids_file": str(case_ids_file) if case_ids_file is not None else None,
-                "selector_provider": selector_provider,
-                "selector_model": selector_model,
-                "selector_api_key_env": selector_api_key_env,
-                "selector_base_url": selector_base_url,
-                "selector_cache_path": str(selector_cache_path) if selector_cache_path is not None else None,
-                "with_e2e": with_e2e,
-                "answerer_mode": answerer_mode,
-                "answer_model": answer_model if with_e2e and answerer_mode == "llm_fixed" else None,
-                "answer_api_key_env": answer_api_key_env if with_e2e and answerer_mode == "llm_fixed" else None,
-                "answer_base_url": answer_base_url if with_e2e and answerer_mode == "llm_fixed" else None,
-                "answer_cache_path": str(answer_cache_path) if answer_cache_path is not None else None,
-                "export_graphrag_inputs": export_graphrag_inputs,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+        split=split,
+        chunk_meta=chunk_meta,
+        store_uri=store_uri,
+        resume=resume,
+        restart=restart,
     )
     _notify_progress(
         progress_observer,
@@ -1048,6 +891,8 @@ def run_2wiki_store_experiment(
     answer_cache_path: str | Path | None = None,
     export_graphrag_inputs: bool = True,
     progress_observer: ExperimentProgressObserver | None = None,
+    resume: bool = False,
+    restart: bool = False,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
     return run_store_experiment(
         store_uri=store_uri,
@@ -1083,6 +928,8 @@ def run_2wiki_store_experiment(
         answer_cache_path=answer_cache_path,
         export_graphrag_inputs=export_graphrag_inputs,
         progress_observer=progress_observer,
+        resume=resume,
+        restart=restart,
     )
 
 
@@ -1402,6 +1249,7 @@ def _write_run_manifest(
     variant: str | None = None,
     control_selector_name: str | None = None,
     missing_chunks: Sequence[int] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     payload = {
         "dataset_name": dataset_name,
@@ -1417,6 +1265,8 @@ def _write_run_manifest(
         "control_selector_name": control_selector_name,
         "missing_chunks": list(missing_chunks) if missing_chunks is not None else None,
     }
+    if extra:
+        payload.update(extra)
     (output_dir / "run_manifest.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1437,6 +1287,1014 @@ def _ordered_case_ids_from_records(records: Sequence[dict[str, Any]]) -> list[st
 
 def _case_id_value(case: Any) -> str:
     return str(case if isinstance(case, str) else case.case_id)
+
+
+def _selection_family(selector: Any) -> str:
+    if isinstance(selector, BudgetFillSelector):
+        return "budget_fill"
+    if isinstance(selector, CanonicalSinglePathSelector):
+        return "dynamic_walk"
+    if isinstance(selector, CanonicalSearchSelector):
+        return "path_search"
+    if isinstance(selector, (CanonicalIterativeDenseSelector, CanonicalMDRLightSelector)):
+        return "iterative_dense"
+    return "stateless"
+
+
+def _build_selection_plan(
+    *,
+    cases: Sequence[Any],
+    budgets: Sequence[EvaluationBudget],
+    selectors: Sequence[Any],
+) -> list[SelectionPlanItem]:
+    plan: list[SelectionPlanItem] = []
+    for case in cases:
+        case_id = str(case.case_id)
+        for budget in budgets:
+            for selector in selectors:
+                plan.append(
+                    SelectionPlanItem(
+                        selection_key=build_selection_key(
+                            case_id=case_id,
+                            budget_label=budget.budget_label,
+                            selector_name=selector.name,
+                        ),
+                        case_id=case_id,
+                        budget_label=budget.budget_label,
+                        selector_name=selector.name,
+                        selector_family=_selection_family(selector),
+                    )
+                )
+    return plan
+
+
+def _selection_keys_by_case(plan_items: Sequence[SelectionPlanItem]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for item in plan_items:
+        grouped.setdefault(item.case_id, []).append(item.selection_key)
+    return grouped
+
+
+def _ordered_completed_selection_keys(
+    plan_items: Sequence[SelectionPlanItem],
+    completed_selection_keys: set[str],
+) -> list[str]:
+    return [item.selection_key for item in plan_items if item.selection_key in completed_selection_keys]
+
+
+def _completed_case_ids(
+    *,
+    planned_case_ids: Sequence[str],
+    selection_keys_by_case: dict[str, list[str]],
+    completed_selection_keys: set[str],
+) -> list[str]:
+    completed: list[str] = []
+    for case_id in planned_case_ids:
+        planned_keys = selection_keys_by_case.get(case_id, [])
+        if planned_keys and all(key in completed_selection_keys for key in planned_keys):
+            completed.append(case_id)
+    return completed
+
+
+def _selection_stage_payload(case: EvaluationCase, selection: SelectionResult) -> dict[str, Any]:
+    evaluation = CaseEvaluation(case=case, selections=[selection])
+    return {
+        "selection_record": _selection_record(evaluation, selection),
+        "selector_log_records": _selector_log_records(evaluation, selection),
+    }
+
+
+def _case_from_selection_record(record: dict[str, Any]) -> EvaluationCase:
+    return EvaluationCase(
+        case_id=str(record["case_id"]),
+        query=str(record["query"]),
+        expected_answer=None if record.get("expected_answer") is None else str(record["expected_answer"]),
+        dataset_name=str(record["dataset_name"]),
+        gold_support_nodes=[str(node_id) for node_id in record.get("gold_support_nodes", [])],
+        gold_start_nodes=[str(node_id) for node_id in record.get("gold_start_nodes", [])],
+        gold_path_nodes=(
+            None
+            if record.get("gold_path_nodes") is None
+            else [str(node_id) for node_id in record.get("gold_path_nodes", [])]
+        ),
+    )
+
+
+def _selection_result_from_record(
+    record: dict[str, Any],
+    selector_log_records: Sequence[dict[str, Any]],
+) -> SelectionResult:
+    selection_payload = dict(record["selection"])
+    budget_payload = dict(selection_payload["budget"])
+    if budget_payload.get("token_budget_tokens") is not None:
+        budget = EvaluationBudget(token_budget_tokens=int(budget_payload["token_budget_tokens"]))
+    else:
+        budget = EvaluationBudget(token_budget_ratio=float(budget_payload["token_budget_ratio"]))
+    corpus_payload = dict(selection_payload["corpus"])
+    metrics_payload = dict(selection_payload["metrics"])
+    return SelectionResult(
+        selector_name=str(record["selector"]),
+        budget=budget,
+        corpus=SelectedCorpus(
+            node_ids=[str(node_id) for node_id in corpus_payload.get("node_ids", [])],
+            edge_contexts=[
+                SelectedEdgeContext(
+                    source=str(edge["source"]),
+                    target=str(edge["target"]),
+                    anchor_text=str(edge["anchor_text"]),
+                    sentence=str(edge["sentence"]),
+                    score=float(edge["score"]),
+                )
+                for edge in corpus_payload.get("edge_contexts", [])
+            ],
+            token_estimate=int(corpus_payload.get("token_estimate", 0)),
+            root_node_ids=[str(node_id) for node_id in corpus_payload.get("root_node_ids", [])],
+        ),
+        metrics=SelectionMetrics(
+            budget_mode=str(metrics_payload["budget_mode"]),
+            budget_value=metrics_payload["budget_value"],
+            budget_label=str(metrics_payload["budget_label"]),
+            token_budget_ratio=(
+                None if metrics_payload.get("token_budget_ratio") is None else float(metrics_payload["token_budget_ratio"])
+            ),
+            token_budget_tokens=(
+                None if metrics_payload.get("token_budget_tokens") is None else int(metrics_payload["token_budget_tokens"])
+            ),
+            budget_token_limit=int(metrics_payload["budget_token_limit"]),
+            selection_runtime_s=float(metrics_payload["selection_runtime_s"]),
+            selected_nodes_count=int(metrics_payload["selected_nodes_count"]),
+            selected_token_estimate=int(metrics_payload["selected_token_estimate"]),
+            compression_ratio=float(metrics_payload["compression_ratio"]),
+            budget_adherence=bool(metrics_payload["budget_adherence"]),
+            budget_utilization=float(metrics_payload["budget_utilization"]),
+            empty_selection=bool(metrics_payload["empty_selection"]),
+            start_hit=metrics_payload.get("start_hit"),
+            support_recall=metrics_payload.get("support_recall"),
+            support_precision=metrics_payload.get("support_precision"),
+            support_f1=metrics_payload.get("support_f1"),
+            support_f1_zero_on_empty=metrics_payload.get("support_f1_zero_on_empty"),
+            path_hit=metrics_payload.get("path_hit"),
+        ),
+        trace=[selection_trace_step_from_dict(step) for step in selection_payload.get("trace", [])],
+        end_to_end=(
+            None
+            if record.get("end_to_end") is None
+            else EndToEndResult(
+                mode=str(record["end_to_end"]["mode"]),
+                model=None if record["end_to_end"].get("model") is None else str(record["end_to_end"]["model"]),
+                answer=str(record["end_to_end"]["answer"]),
+                confidence=float(record["end_to_end"]["confidence"]),
+                evidence_count=int(record["end_to_end"]["evidence_count"]),
+                em=record["end_to_end"].get("em"),
+                f1=record["end_to_end"].get("f1"),
+                runtime_s=float(record["end_to_end"]["runtime_s"]),
+                prompt_tokens=(
+                    None if record["end_to_end"].get("prompt_tokens") is None else int(record["end_to_end"]["prompt_tokens"])
+                ),
+                completion_tokens=(
+                    None
+                    if record["end_to_end"].get("completion_tokens") is None
+                    else int(record["end_to_end"]["completion_tokens"])
+                ),
+                total_tokens=(
+                    None if record["end_to_end"].get("total_tokens") is None else int(record["end_to_end"]["total_tokens"])
+                ),
+            )
+        ),
+        stop_reason=None if selection_payload.get("stop_reason") is None else str(selection_payload["stop_reason"]),
+        graphrag_input_path=(
+            None
+            if selection_payload.get("graphrag_input_path") is None
+            else str(selection_payload["graphrag_input_path"])
+        ),
+        selector_metadata=selector_metadata_from_dict(selection_payload.get("selector_metadata")),
+        selector_usage=selector_usage_from_dict(selection_payload.get("selector_usage")) or SelectorUsage(),
+        selector_logs=[walk_step_log_from_dict(record["log"]) for record in selector_log_records],
+    )
+
+
+def _selection_from_stage_payload(payload: dict[str, Any]) -> tuple[EvaluationCase, SelectionResult]:
+    record = dict(payload["selection_record"])
+    case = _case_from_selection_record(record)
+    selection = _selection_result_from_record(record, payload.get("selector_log_records", []))
+    return case, selection
+
+
+def _bundle_from_selection(case: EvaluationCase, selection: SelectionResult) -> SelectionCheckpointBundle:
+    payload = _selection_stage_payload(case, selection)
+    record = dict(payload["selection_record"])
+    return SelectionCheckpointBundle(
+        selection_key=build_selection_key(
+            case_id=case.case_id,
+            budget_label=selection.budget.budget_label,
+            selector_name=selection.selector_name,
+        ),
+        case_id=case.case_id,
+        budget_label=selection.budget.budget_label,
+        selector_name=selection.selector_name,
+        selection_record=record,
+        selector_log_records=[dict(item) for item in payload["selector_log_records"]],
+    )
+
+
+def _evaluations_from_checkpoint_bundles(
+    *,
+    plan_items: Sequence[SelectionPlanItem],
+    bundles_by_key: dict[str, SelectionCheckpointBundle],
+    completed_case_ids: Sequence[str],
+) -> list[CaseEvaluation]:
+    items_by_case: dict[str, list[SelectionPlanItem]] = {}
+    for item in plan_items:
+        items_by_case.setdefault(item.case_id, []).append(item)
+
+    evaluations: list[CaseEvaluation] = []
+    for case_id in completed_case_ids:
+        case_items = items_by_case.get(case_id, [])
+        selections: list[SelectionResult] = []
+        case: EvaluationCase | None = None
+        for item in case_items:
+            bundle = bundles_by_key[item.selection_key]
+            case = _case_from_selection_record(bundle.selection_record)
+            selections.append(_selection_result_from_record(bundle.selection_record, bundle.selector_log_records))
+        if case is not None:
+            evaluations.append(CaseEvaluation(case=case, selections=selections))
+    return evaluations
+
+
+def _rebuild_public_outputs(
+    *,
+    output_dir: Path,
+    plan_items: Sequence[SelectionPlanItem],
+    planned_case_ids: Sequence[str],
+    store: CheckpointStore,
+    study_preset: str | None,
+    control_selector_name: str | None,
+    dataset_name: str,
+) -> tuple[list[CaseEvaluation], ExperimentSummary]:
+    completed_selection_keys = set(store.list_selection_keys())
+    bundles_by_key = {
+        selection_key: store.load_selection_checkpoint(selection_key)
+        for selection_key in completed_selection_keys
+    }
+    bundles_by_key = {key: bundle for key, bundle in bundles_by_key.items() if bundle is not None}
+    completed_selection_keys = set(bundles_by_key)
+    case_keys = _selection_keys_by_case(plan_items)
+    completed_case_ids = _completed_case_ids(
+        planned_case_ids=planned_case_ids,
+        selection_keys_by_case=case_keys,
+        completed_selection_keys=completed_selection_keys,
+    )
+    evaluations = _evaluations_from_checkpoint_bundles(
+        plan_items=plan_items,
+        bundles_by_key=bundles_by_key,
+        completed_case_ids=completed_case_ids,
+    )
+    results_records: list[dict[str, Any]] = []
+    selector_log_records: list[dict[str, Any]] = []
+    for evaluation in evaluations:
+        for selection in evaluation.selections:
+            results_records.append(_selection_record(evaluation, selection))
+            selector_log_records.extend(_selector_log_records(evaluation, selection))
+
+    atomic_write_text(
+        output_dir / "results.jsonl",
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in results_records),
+    )
+    atomic_write_text(
+        output_dir / "selector_logs.jsonl",
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in selector_log_records),
+    )
+    _write_evaluated_case_ids(output_dir, completed_case_ids)
+
+    if results_records:
+        summary = _summarize_result_records(results_records)
+        _write_summary_file(
+            summary_path=output_dir / "summary.json",
+            summary=summary,
+            study_preset=study_preset,
+            control_selector_name=control_selector_name,
+        )
+    else:
+        for path in (
+            output_dir / "summary.json",
+            output_dir / "summary_rows.csv",
+            output_dir / "study_comparison_rows.csv",
+        ):
+            path.unlink(missing_ok=True)
+        summary = ExperimentSummary(dataset_name=dataset_name, total_cases=0, selector_budgets=[])
+    return evaluations, summary
+
+
+def _has_run_artifacts(output_dir: Path) -> bool:
+    return any(
+        path.exists()
+        for path in (
+            output_dir / "run_manifest.json",
+            output_dir / "run_state.json",
+            output_dir / "results.jsonl",
+            output_dir / "selector_logs.jsonl",
+            output_dir / "summary.json",
+            output_dir / "evaluated_case_ids.txt",
+            output_dir / "_checkpoints",
+            output_dir / "chunk.json",
+        )
+    )
+
+
+def _clear_run_artifacts(output_dir: Path, checkpoint_store: CheckpointStore) -> None:
+    checkpoint_store.clear_artifacts()
+    for path in (
+        output_dir / "results.jsonl",
+        output_dir / "selector_logs.jsonl",
+        output_dir / "summary.json",
+        output_dir / "summary_rows.csv",
+        output_dir / "study_comparison_rows.csv",
+        output_dir / "run_manifest.json",
+        output_dir / "evaluated_case_ids.txt",
+        output_dir / "chunk.json",
+    ):
+        path.unlink(missing_ok=True)
+    shutil.rmtree(output_dir / "graphrag_inputs", ignore_errors=True)
+
+
+def _build_runtime_config_payload(
+    *,
+    dataset_name: str,
+    split: str | None,
+    variant: str | None,
+    planned_case_ids: Sequence[str],
+    plan_items: Sequence[SelectionPlanItem],
+    selectors: Sequence[Any],
+    budgets: Sequence[EvaluationBudget],
+    selector_provider: str,
+    selector_model: str | None,
+    selector_base_url: str | None,
+    sentence_transformer_model: str | None,
+    sentence_transformer_device: str | None,
+    with_e2e: bool,
+    answerer_mode: str,
+    answer_model: str,
+    answer_base_url: str | None,
+    export_graphrag_inputs: bool,
+) -> dict[str, Any]:
+    return {
+        "dataset_name": dataset_name,
+        "split": split,
+        "variant": variant,
+        "planned_case_ids": list(planned_case_ids),
+        "planned_selection_keys": [item.selection_key for item in plan_items],
+        "selectors": [selector.name for selector in selectors],
+        "selector_families": {selector.name: _selection_family(selector) for selector in selectors},
+        "budget_labels": [budget.budget_label for budget in budgets],
+        "selector_provider": selector_provider,
+        "selector_model": selector_model,
+        "selector_base_url": selector_base_url,
+        "sentence_transformer_model": sentence_transformer_model,
+        "sentence_transformer_device": sentence_transformer_device,
+        "with_e2e": with_e2e,
+        "answerer_mode": answerer_mode,
+        "answer_model": answer_model if with_e2e and answerer_mode == "llm_fixed" else None,
+        "answer_base_url": answer_base_url if with_e2e and answerer_mode == "llm_fixed" else None,
+        "export_graphrag_inputs": export_graphrag_inputs,
+    }
+
+
+def _validate_resume_configuration(
+    *,
+    manifest_path: Path,
+    expected_manifest_payload: dict[str, Any],
+    run_state: RunState,
+    config_fingerprint: str,
+) -> None:
+    existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    keys_to_compare = (
+        "dataset_name",
+        "split",
+        "variant",
+        "study_preset",
+        "selector_preset",
+        "resolved_selectors",
+        "resolved_token_budgets",
+        "resolved_budget_ratios",
+        "case_ids_file",
+        "total_selected_cases",
+        "control_selector_name",
+        "selector_provider",
+        "selector_model",
+        "selector_base_url",
+        "sentence_transformer_model",
+        "sentence_transformer_device",
+        "with_e2e",
+        "answerer_mode",
+        "answer_model",
+        "answer_base_url",
+        "export_graphrag_inputs",
+        "planned_case_ids",
+        "planned_selection_keys",
+    )
+    mismatches = [key for key in keys_to_compare if existing_manifest.get(key) != expected_manifest_payload.get(key)]
+    if run_state.config_fingerprint != config_fingerprint:
+        mismatches.append("config_fingerprint")
+    if run_state.planned_case_ids != list(expected_manifest_payload["planned_case_ids"]):
+        mismatches.append("planned_case_ids")
+    if run_state.planned_selection_keys != list(expected_manifest_payload["planned_selection_keys"]):
+        mismatches.append("planned_selection_keys")
+    if mismatches:
+        fields = ", ".join(dict.fromkeys(mismatches))
+        raise ValueError(f"Cannot resume because the experiment configuration changed: {fields}")
+
+
+def _save_selection_resume_state(
+    *,
+    checkpoint_store: CheckpointStore,
+    item: SelectionPlanItem,
+    stage: SelectionStage,
+    payload: dict[str, Any],
+) -> None:
+    checkpoint_store.save_resume_state(
+        SelectionResumeState(
+            selection_key=item.selection_key,
+            case_id=item.case_id,
+            budget_label=item.budget_label,
+            selector_name=item.selector_name,
+            family=item.selector_family,
+            stage=stage,
+            payload=payload,
+        )
+    )
+
+
+def _execute_selector_body_raw(
+    *,
+    selector: Any,
+    graph: Any,
+    case: EvaluationCase,
+    budget: EvaluationBudget,
+    family: str,
+    resume_payload: dict[str, Any] | None,
+    checkpoint_callback: Callable[[dict[str, Any]], None] | None,
+    stop_callback: Callable[[], None] | None,
+) -> CorpusSelectionResult:
+    if family == "dynamic_walk" and isinstance(selector, CanonicalSinglePathSelector):
+        return selector.select(
+            graph,
+            case,
+            budget,
+            resume_state=resume_payload,
+            checkpoint_callback=checkpoint_callback,
+            stop_callback=stop_callback,
+        )
+    if family == "path_search" and isinstance(selector, CanonicalSearchSelector):
+        return selector.select(
+            graph,
+            case,
+            budget,
+            resume_state=resume_payload,
+            checkpoint_callback=checkpoint_callback,
+            stop_callback=stop_callback,
+        )
+    if family == "iterative_dense" and isinstance(selector, (CanonicalIterativeDenseSelector, CanonicalMDRLightSelector)):
+        return selector.select(
+            graph,
+            case,
+            budget,
+            resume_state=resume_payload,
+            checkpoint_callback=checkpoint_callback,
+            stop_callback=stop_callback,
+        )
+    return selector.select(graph, case, budget)
+
+
+def _execute_selector_body(
+    *,
+    item: SelectionPlanItem,
+    selector: Any,
+    graph: Any,
+    case: EvaluationCase,
+    budget: EvaluationBudget,
+    checkpoint_store: CheckpointStore,
+    interrupt_controller: InterruptController,
+    resume_state: SelectionResumeState | None,
+) -> CorpusSelectionResult:
+    if isinstance(selector, BudgetFillSelector):
+        base_resume_payload = None
+        fill_resume_payload = None
+        if resume_state is not None and resume_state.stage == SelectionStage.BASE_SELECTOR:
+            base_resume_payload = dict(resume_state.payload.get("base_resume_state", {}))
+        elif resume_state is not None and resume_state.stage == SelectionStage.BUDGET_FILL:
+            fill_resume_payload = dict(resume_state.payload)
+
+        base_selector = selector.base_selector
+
+        def _base_checkpoint(payload: dict[str, Any]) -> None:
+            _save_selection_resume_state(
+                checkpoint_store=checkpoint_store,
+                item=item,
+                stage=SelectionStage.BASE_SELECTOR,
+                payload={
+                    "base_family": _selection_family(base_selector),
+                    "base_resume_state": payload,
+                },
+            )
+
+        if fill_resume_payload is not None:
+            base_result = corpus_selection_result_from_dict(dict(fill_resume_payload["base_result"]))
+        else:
+            base_result = _execute_selector_body_raw(
+                selector=base_selector,
+                graph=graph,
+                case=case,
+                budget=budget,
+                family=_selection_family(base_selector),
+                resume_payload=base_resume_payload,
+                checkpoint_callback=_base_checkpoint,
+                stop_callback=interrupt_controller.checkpoint,
+            )
+
+        def _budget_fill_checkpoint(payload: dict[str, Any]) -> None:
+            _save_selection_resume_state(
+                checkpoint_store=checkpoint_store,
+                item=item,
+                stage=SelectionStage.BUDGET_FILL,
+                payload=payload,
+            )
+
+        return selector.select(
+            graph,
+            case,
+            budget,
+            base_result=base_result,
+            resume_state=fill_resume_payload,
+            checkpoint_callback=_budget_fill_checkpoint,
+            stop_callback=interrupt_controller.checkpoint,
+        )
+
+    selection_body_resume = None
+    if resume_state is not None and resume_state.stage == SelectionStage.SELECTOR_BODY:
+        selection_body_resume = dict(resume_state.payload)
+
+    def _checkpoint(payload: dict[str, Any]) -> None:
+        _save_selection_resume_state(
+            checkpoint_store=checkpoint_store,
+            item=item,
+            stage=SelectionStage.SELECTOR_BODY,
+            payload=payload,
+        )
+
+    return _execute_selector_body_raw(
+        selector=selector,
+        graph=graph,
+        case=case,
+        budget=budget,
+        family=item.selector_family,
+        resume_payload=selection_body_resume,
+        checkpoint_callback=_checkpoint,
+        stop_callback=interrupt_controller.checkpoint,
+    )
+
+
+def _execute_selection(
+    *,
+    item: SelectionPlanItem,
+    selector: Any,
+    graph: Any,
+    case: EvaluationCase,
+    budget: EvaluationBudget,
+    checkpoint_store: CheckpointStore,
+    interrupt_controller: InterruptController,
+    answerer: SupportsAnswer | None,
+    export_graphrag_inputs: bool,
+    output_dir: Path,
+) -> SelectionCheckpointBundle:
+    resume_state = checkpoint_store.load_resume_state(item.selection_key)
+
+    if resume_state is not None and resume_state.stage in {
+        SelectionStage.EXPORT_GRAPHRAG,
+        SelectionStage.E2E,
+        SelectionStage.FINAL_COMMIT,
+    }:
+        payload_case, selection = _selection_from_stage_payload(resume_state.payload)
+        if payload_case.case_id != case.case_id:
+            raise ValueError(f"Resume payload case mismatch for {item.selection_key}.")
+        current_case = payload_case
+    else:
+        raw_result = _execute_selector_body(
+            item=item,
+            selector=selector,
+            graph=graph,
+            case=case,
+            budget=budget,
+            checkpoint_store=checkpoint_store,
+            interrupt_controller=interrupt_controller,
+            resume_state=resume_state,
+        )
+        selection = _selection_result_from_raw(graph=graph, case=case, budget=budget, raw=raw_result)
+        current_case = case
+        next_stage = (
+            SelectionStage.EXPORT_GRAPHRAG
+            if export_graphrag_inputs
+            else SelectionStage.E2E
+            if answerer is not None
+            else SelectionStage.FINAL_COMMIT
+        )
+        _save_selection_resume_state(
+            checkpoint_store=checkpoint_store,
+            item=item,
+            stage=next_stage,
+            payload=_selection_stage_payload(current_case, selection),
+        )
+        interrupt_controller.checkpoint()
+        resume_state = checkpoint_store.load_resume_state(item.selection_key)
+
+    if resume_state is not None and resume_state.stage == SelectionStage.EXPORT_GRAPHRAG:
+        selection.graphrag_input_path = _write_graphrag_input(
+            graph=graph,
+            case_id=current_case.case_id,
+            selection=selection,
+            output_dir=output_dir,
+        )
+        next_stage = SelectionStage.E2E if answerer is not None else SelectionStage.FINAL_COMMIT
+        _save_selection_resume_state(
+            checkpoint_store=checkpoint_store,
+            item=item,
+            stage=next_stage,
+            payload=_selection_stage_payload(current_case, selection),
+        )
+        interrupt_controller.checkpoint()
+        resume_state = checkpoint_store.load_resume_state(item.selection_key)
+
+    if resume_state is not None and resume_state.stage == SelectionStage.E2E:
+        if answerer is None:
+            raise ValueError("Encountered e2e resume state without an answerer.")
+        selection.end_to_end = _run_end_to_end(
+            graph=graph,
+            case=current_case,
+            node_ids=selection.corpus.node_ids,
+            extractor=SubgraphExtractor(),
+            answerer=answerer,
+        )
+        _save_selection_resume_state(
+            checkpoint_store=checkpoint_store,
+            item=item,
+            stage=SelectionStage.FINAL_COMMIT,
+            payload=_selection_stage_payload(current_case, selection),
+        )
+        interrupt_controller.checkpoint()
+
+    bundle = _bundle_from_selection(current_case, selection)
+    checkpoint_store.save_selection_checkpoint(bundle)
+    checkpoint_store.remove_resume_state(item.selection_key)
+    return bundle
+
+
+def _run_loaded_experiment(
+    *,
+    graph: Any,
+    graph_for_case: Callable[[EvaluationCase], Any] | None = None,
+    selected_cases: Sequence[EvaluationCase],
+    selectors: Sequence[Any],
+    budgets: Sequence[EvaluationBudget],
+    output_dir: Path,
+    dataset_name: str,
+    study_preset: str | None,
+    selector_preset: str | None,
+    token_budgets: Sequence[int] | None,
+    budget_ratios: Sequence[float] | None,
+    case_ids_file: str | Path | None,
+    control_selector_name: str | None,
+    selector_provider: str,
+    selector_model: str | None,
+    selector_base_url: str | None,
+    sentence_transformer_model: str | None,
+    sentence_transformer_device: str | None,
+    with_e2e: bool,
+    answerer_mode: str,
+    answer_model: str,
+    answer_api_key_env: str,
+    answer_base_url: str | None,
+    answer_cache_path: str | Path | None,
+    export_graphrag_inputs: bool,
+    progress_observer: ExperimentProgressObserver | None,
+    split: str | None = None,
+    variant: str | None = None,
+    chunk_meta: dict[str, Any] | None = None,
+    store_uri: str | Path | None = None,
+    resume: bool = False,
+    restart: bool = False,
+) -> tuple[list[CaseEvaluation], ExperimentSummary]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_store = CheckpointStore(output_dir)
+    existing_artifacts_before_lock = _has_run_artifacts(output_dir)
+    answerer = _build_answerer(
+        with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_api_key_env=answer_api_key_env,
+        answer_base_url=answer_base_url,
+        answer_cache_path=answer_cache_path,
+    )
+    plan_items = _build_selection_plan(cases=selected_cases, budgets=budgets, selectors=selectors)
+    planned_case_ids = [str(case.case_id) for case in selected_cases]
+    runtime_config_payload = _build_runtime_config_payload(
+        dataset_name=dataset_name,
+        split=split,
+        variant=variant,
+        planned_case_ids=planned_case_ids,
+        plan_items=plan_items,
+        selectors=selectors,
+        budgets=budgets,
+        selector_provider=selector_provider,
+        selector_model=selector_model,
+        selector_base_url=selector_base_url,
+        sentence_transformer_model=sentence_transformer_model,
+        sentence_transformer_device=sentence_transformer_device,
+        with_e2e=with_e2e,
+        answerer_mode=answerer_mode,
+        answer_model=answer_model,
+        answer_base_url=answer_base_url,
+        export_graphrag_inputs=export_graphrag_inputs,
+    )
+    config_fingerprint = build_config_fingerprint(runtime_config_payload)
+    manifest_payload = {
+        "dataset_name": dataset_name,
+        "split": split,
+        "variant": variant,
+        "study_preset": study_preset,
+        "selector_preset": selector_preset,
+        "resolved_selectors": [selector.name for selector in selectors],
+        "resolved_token_budgets": list(token_budgets) if token_budgets is not None else None,
+        "resolved_budget_ratios": list(budget_ratios) if budget_ratios is not None else None,
+        "case_ids_file": str(case_ids_file) if case_ids_file is not None else None,
+        "total_selected_cases": len(selected_cases),
+        "control_selector_name": control_selector_name,
+        "selector_provider": selector_provider,
+        "selector_model": selector_model,
+        "selector_base_url": selector_base_url,
+        "sentence_transformer_model": sentence_transformer_model,
+        "sentence_transformer_device": sentence_transformer_device,
+        "with_e2e": with_e2e,
+        "answerer_mode": answerer_mode,
+        "answer_model": answer_model if with_e2e and answerer_mode == "llm_fixed" else None,
+        "answer_base_url": answer_base_url if with_e2e and answerer_mode == "llm_fixed" else None,
+        "export_graphrag_inputs": export_graphrag_inputs,
+        "planned_case_ids": planned_case_ids,
+        "planned_selection_keys": [item.selection_key for item in plan_items],
+        "config_fingerprint": config_fingerprint,
+    }
+    if chunk_meta is not None:
+        manifest_payload.update(
+            {
+                "chunk_size": chunk_meta.get("chunk_size"),
+                "chunk_index": chunk_meta.get("chunk_index"),
+                "case_start": chunk_meta.get("case_start"),
+                "case_limit": chunk_meta.get("case_limit"),
+            }
+        )
+
+    with checkpoint_store.acquire_lock():
+        if restart:
+            _clear_run_artifacts(output_dir, checkpoint_store)
+
+        has_existing_artifacts = existing_artifacts_before_lock and not restart
+        if has_existing_artifacts and not resume and not restart:
+            raise ValueError(f"Output directory {output_dir} already contains experiment artifacts. Use --resume or --restart.")
+        if resume and not has_existing_artifacts:
+            raise ValueError(f"Cannot resume because {output_dir} does not contain experiment artifacts.")
+
+        checkpoint_store.ensure_layout()
+        manifest_path = output_dir / "run_manifest.json"
+
+        if resume:
+            run_state = checkpoint_store.load_run_state()
+            if run_state is None or not manifest_path.exists():
+                raise ValueError(f"Cannot resume because {output_dir} is missing run_state.json or run_manifest.json.")
+            _validate_resume_configuration(
+                manifest_path=manifest_path,
+                expected_manifest_payload=manifest_payload,
+                run_state=run_state,
+                config_fingerprint=config_fingerprint,
+            )
+        else:
+            run_state = RunState(
+                version=RUN_STATE_VERSION,
+                status=RunStatus.PENDING,
+                config_fingerprint=config_fingerprint,
+                planned_case_ids=list(planned_case_ids),
+                planned_selection_keys=[item.selection_key for item in plan_items],
+            )
+            checkpoint_store.save_run_state(run_state)
+            _write_run_manifest(
+                output_dir,
+                dataset_name=dataset_name,
+                split=split,
+                variant=variant,
+                study_preset=study_preset,
+                selector_preset=selector_preset,
+                resolved_selectors=[selector.name for selector in selectors],
+                resolved_token_budgets=token_budgets,
+                resolved_budget_ratios=budget_ratios,
+                case_ids_file=case_ids_file,
+                total_selected_cases=len(selected_cases),
+                control_selector_name=control_selector_name,
+                extra={
+                    key: value
+                    for key, value in manifest_payload.items()
+                    if key
+                    not in {
+                        "dataset_name",
+                        "split",
+                        "variant",
+                        "study_preset",
+                        "selector_preset",
+                        "resolved_selectors",
+                        "resolved_token_budgets",
+                        "resolved_budget_ratios",
+                        "case_ids_file",
+                        "total_selected_cases",
+                        "control_selector_name",
+                    }
+                },
+            )
+
+        evaluations, summary = _rebuild_public_outputs(
+            output_dir=output_dir,
+            plan_items=plan_items,
+            planned_case_ids=planned_case_ids,
+            store=checkpoint_store,
+            study_preset=study_preset,
+            control_selector_name=control_selector_name,
+            dataset_name=dataset_name,
+        )
+
+        if chunk_meta is not None:
+            chunk_payload = {
+                **chunk_meta,
+                "store_uri": str(store_uri) if store_uri is not None else None,
+                "selectors": [selector.name for selector in selectors],
+                "study_preset": study_preset,
+                "selector_preset": selector_preset,
+                "token_budgets": list(token_budgets) if token_budgets is not None else None,
+                "budget_ratios": list(budget_ratios) if budget_ratios is not None else None,
+                "case_ids_file": str(case_ids_file) if case_ids_file is not None else None,
+                "selector_provider": selector_provider,
+                "selector_model": selector_model,
+                "selector_base_url": selector_base_url,
+                "with_e2e": with_e2e,
+                "answerer_mode": answerer_mode,
+                "answer_model": answer_model if with_e2e and answerer_mode == "llm_fixed" else None,
+                "answer_api_key_env": answer_api_key_env if with_e2e and answerer_mode == "llm_fixed" else None,
+                "answer_base_url": answer_base_url if with_e2e and answerer_mode == "llm_fixed" else None,
+                "answer_cache_path": str(answer_cache_path) if answer_cache_path is not None else None,
+                "export_graphrag_inputs": export_graphrag_inputs,
+            }
+            atomic_write_text(output_dir / "chunk.json", json.dumps(chunk_payload, ensure_ascii=False, indent=2))
+
+        case_by_id = {str(case.case_id): case for case in selected_cases}
+        selector_by_name = {selector.name: selector for selector in selectors}
+        budget_by_label = {budget.budget_label: budget for budget in budgets}
+        selection_keys_by_case = _selection_keys_by_case(plan_items)
+
+        _notify_progress(
+            progress_observer,
+            dataset_name=dataset_name,
+            phase="evaluating",
+            total_cases=len(selected_cases),
+            completed_cases=len(evaluations),
+            summary=summary if summary.total_cases > 0 else None,
+        )
+
+        interrupt_controller = InterruptController()
+        interrupt_controller.install()
+        try:
+            completed_selection_keys = set(checkpoint_store.list_selection_keys())
+            run_state.status = RunStatus.RUNNING
+            run_state.completed_selection_keys = _ordered_completed_selection_keys(plan_items, completed_selection_keys)
+            run_state.completed_case_ids = _completed_case_ids(
+                planned_case_ids=planned_case_ids,
+                selection_keys_by_case=selection_keys_by_case,
+                completed_selection_keys=completed_selection_keys,
+            )
+            checkpoint_store.save_run_state(run_state)
+
+            for item in plan_items:
+                if item.selection_key in completed_selection_keys:
+                    continue
+                case = case_by_id[item.case_id]
+                run_state.current_case_id = item.case_id
+                run_state.current_selection_key = item.selection_key
+                checkpoint_store.save_run_state(run_state)
+                _notify_progress(
+                    progress_observer,
+                    dataset_name=dataset_name,
+                    phase="evaluating",
+                    total_cases=len(selected_cases),
+                    completed_cases=len(run_state.completed_case_ids),
+                    current_case_id=case.case_id,
+                    current_query=case.query,
+                    summary=summary if summary.total_cases > 0 else None,
+                )
+                case_graph = graph_for_case(case) if graph_for_case is not None else graph
+                bundle = _execute_selection(
+                    item=item,
+                    selector=selector_by_name[item.selector_name],
+                    graph=case_graph,
+                    case=case,
+                    budget=budget_by_label[item.budget_label],
+                    checkpoint_store=checkpoint_store,
+                    interrupt_controller=interrupt_controller,
+                    answerer=answerer,
+                    export_graphrag_inputs=export_graphrag_inputs,
+                    output_dir=output_dir,
+                )
+                completed_selection_keys.add(bundle.selection_key)
+                run_state.completed_selection_keys = _ordered_completed_selection_keys(plan_items, completed_selection_keys)
+                previous_completed_case_ids = set(run_state.completed_case_ids)
+                run_state.completed_case_ids = _completed_case_ids(
+                    planned_case_ids=planned_case_ids,
+                    selection_keys_by_case=selection_keys_by_case,
+                    completed_selection_keys=completed_selection_keys,
+                )
+                run_state.current_case_id = None
+                run_state.current_selection_key = None
+                checkpoint_store.save_run_state(run_state)
+                if set(run_state.completed_case_ids) != previous_completed_case_ids:
+                    evaluations, summary = _rebuild_public_outputs(
+                        output_dir=output_dir,
+                        plan_items=plan_items,
+                        planned_case_ids=planned_case_ids,
+                        store=checkpoint_store,
+                        study_preset=study_preset,
+                        control_selector_name=control_selector_name,
+                        dataset_name=dataset_name,
+                    )
+                    _notify_progress(
+                        progress_observer,
+                        dataset_name=dataset_name,
+                        phase="evaluating",
+                        total_cases=len(selected_cases),
+                        completed_cases=len(run_state.completed_case_ids),
+                        current_case_id=case.case_id,
+                        current_query=case.query,
+                        summary=summary if summary.total_cases > 0 else None,
+                    )
+                interrupt_controller.checkpoint()
+
+            _notify_progress(
+                progress_observer,
+                dataset_name=dataset_name,
+                phase="finalizing",
+                total_cases=len(selected_cases),
+                completed_cases=len(run_state.completed_case_ids),
+                summary=summary if summary.total_cases > 0 else None,
+            )
+            evaluations, summary = _rebuild_public_outputs(
+                output_dir=output_dir,
+                plan_items=plan_items,
+                planned_case_ids=planned_case_ids,
+                store=checkpoint_store,
+                study_preset=study_preset,
+                control_selector_name=control_selector_name,
+                dataset_name=dataset_name,
+            )
+            run_state.status = RunStatus.COMPLETED
+            run_state.current_case_id = None
+            run_state.current_selection_key = None
+            run_state.interrupted_reason = None
+            run_state.last_error = None
+            run_state.completed_selection_keys = _ordered_completed_selection_keys(plan_items, completed_selection_keys)
+            run_state.completed_case_ids = _completed_case_ids(
+                planned_case_ids=planned_case_ids,
+                selection_keys_by_case=selection_keys_by_case,
+                completed_selection_keys=completed_selection_keys,
+            )
+            checkpoint_store.save_run_state(run_state)
+        except StopRequested:
+            evaluations, summary = _rebuild_public_outputs(
+                output_dir=output_dir,
+                plan_items=plan_items,
+                planned_case_ids=planned_case_ids,
+                store=checkpoint_store,
+                study_preset=study_preset,
+                control_selector_name=control_selector_name,
+                dataset_name=dataset_name,
+            )
+            run_state.status = RunStatus.INTERRUPTED
+            run_state.interrupted_reason = "SIGINT"
+            checkpoint_store.save_run_state(run_state)
+        except HardStopRequested:
+            run_state.status = RunStatus.INTERRUPTED
+            run_state.interrupted_reason = "SIGINT(force)"
+            checkpoint_store.save_run_state(run_state)
+            raise
+        except Exception as exc:
+            run_state.status = RunStatus.FAILED
+            run_state.last_error = f"{type(exc).__name__}: {exc}"
+            checkpoint_store.save_run_state(run_state)
+            raise
+        finally:
+            interrupt_controller.uninstall()
+
+    return evaluations, summary
 
 
 def _consistent_chunk_value(chunk_metas: Sequence[dict[str, Any]], key: str) -> Any:

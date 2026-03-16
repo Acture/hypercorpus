@@ -13,8 +13,8 @@ from rich.text import Text
 from rich.console import Group
 
 from webwalker.experiments import (
-    ExperimentProgressObserver,
     ExperimentProgressUpdate,
+    ExperimentSummary,
     study_preset_choices_help,
     budget_ratio_choices_help,
     merge_hotpotqa_results,
@@ -220,6 +220,8 @@ def run_2wiki(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -257,6 +259,8 @@ def run_2wiki(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
     _print_summary(console, summary)
@@ -306,6 +310,8 @@ def run_iirc(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -343,6 +349,8 @@ def run_iirc(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
     _print_summary(console, summary)
@@ -392,6 +400,8 @@ def run_musique(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -429,6 +439,8 @@ def run_musique(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
     _print_summary(console, summary)
@@ -479,6 +491,8 @@ def run_hotpotqa(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     if variant not in {"distractor", "fullwiki"}:
         raise typer.BadParameter("--variant must be one of: distractor, fullwiki")
@@ -522,6 +536,8 @@ def run_hotpotqa(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
     _print_summary(console, summary)
@@ -572,6 +588,8 @@ def run_docs(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -610,6 +628,8 @@ def run_docs(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
     _print_summary(console, summary)
@@ -665,6 +685,8 @@ def run_2wiki_store(
         "--export-graphrag-inputs/--no-export-graphrag-inputs",
         help="Write GraphRAG-compatible CSV slices for each case/selector/budget",
     ),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -708,6 +730,8 @@ def run_2wiki_store(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
     _print_summary(console, summary)
@@ -765,6 +789,8 @@ def run_iirc_store(
     answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
     answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
     export_graphrag_inputs: bool = typer.Option(True, "--export-graphrag-inputs/--no-export-graphrag-inputs", help="Write GraphRAG-compatible CSV slices for each case/selector/budget"),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
@@ -806,6 +832,8 @@ def run_iirc_store(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
 
@@ -843,6 +871,8 @@ def run_musique_store(
     answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
     answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
     export_graphrag_inputs: bool = typer.Option(True, "--export-graphrag-inputs/--no-export-graphrag-inputs", help="Write GraphRAG-compatible CSV slices for each case/selector/budget"),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
@@ -884,6 +914,8 @@ def run_musique_store(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
 
@@ -921,6 +953,8 @@ def run_hotpotqa_store(
     answer_base_url: str | None = typer.Option(None, "--answer-base-url", help="Optional reader base URL override"),
     answer_cache_path: Path | None = typer.Option(None, "--answer-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for fixed reader outputs"),
     export_graphrag_inputs: bool = typer.Option(True, "--export-graphrag-inputs/--no-export-graphrag-inputs", help="Write GraphRAG-compatible CSV slices for each case/selector/budget"),
+    resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run from existing checkpoints"),
+    restart: bool = typer.Option(False, "--restart", help="Discard existing run artifacts and start over"),
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
@@ -962,6 +996,8 @@ def run_hotpotqa_store(
             answer_cache_path=answer_cache_path,
             export_graphrag_inputs=export_graphrag_inputs,
             progress_observer=progress_observer,
+            resume=resume,
+            restart=restart,
         ),
     )
 
