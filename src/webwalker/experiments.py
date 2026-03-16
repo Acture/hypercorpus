@@ -83,7 +83,7 @@ from webwalker.walker import walk_step_log_from_dict
 logger = logging.getLogger(__name__)
 
 
-ExperimentPhase = Literal["loading", "evaluating", "exporting", "finalizing", "completed"]
+ExperimentPhase = Literal["loading", "evaluating", "exporting", "finalizing", "completed", "interrupted", "failed"]
 StudyPresetName = Literal[
     "single_path_edge_ablation_local",
     "baseline_retest_local",
@@ -97,8 +97,16 @@ class ExperimentProgressUpdate:
     phase: ExperimentPhase
     total_cases: int | None = None
     completed_cases: int = 0
+    total_selections: int | None = None
+    completed_selections: int | None = None
     current_case_id: str | None = None
     current_query: str | None = None
+    current_selector_name: str | None = None
+    current_budget_label: str | None = None
+    case_total_selectors: int | None = None
+    case_completed_selectors: int | None = None
+    case_total_selections: int | None = None
+    case_completed_selections: int | None = None
     summary: ExperimentSummary | None = None
 
 
@@ -114,6 +122,18 @@ class StudyPresetSpec:
     token_budgets: tuple[int, ...] | None = None
     include_diagnostics: bool = True
     control_selector_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectionProgressSnapshot:
+    total_selections: int
+    completed_selections: int
+    current_selector_name: str | None
+    current_budget_label: str | None
+    case_total_selectors: int | None
+    case_completed_selectors: int | None
+    case_total_selections: int | None
+    case_completed_selections: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +268,7 @@ def run_dataset_experiment(
         token_budgets=resolved.token_budgets,
         budget_ratios=resolved.budget_ratios,
     )
+    total_selection_count = len(selected_cases) * len(selectors) * len(budgets)
     logger.info(
         "Running %s experiment (cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         dataset_label,
@@ -293,6 +314,8 @@ def run_dataset_experiment(
         phase="completed",
         total_cases=len(selected_cases),
         completed_cases=len(evaluations),
+        total_selections=total_selection_count,
+        completed_selections=total_selection_count,
         summary=summary,
     )
     logger.info("Completed %s experiment; results written to %s", dataset_label, output_dir)
@@ -805,6 +828,7 @@ def run_store_experiment(
         token_budgets=resolved.token_budgets,
         budget_ratios=resolved.budget_ratios,
     )
+    total_selection_count = len(selected_cases) * len(selectors) * len(budgets)
     logger.info(
         "Running store-backed %s experiment (split=%s, selected_cases=%s, selectors=%s, budgets=%s, with_e2e=%s, answerer=%s, export_graphrag_inputs=%s)",
         resolved_dataset_name,
@@ -856,6 +880,8 @@ def run_store_experiment(
         phase="completed",
         total_cases=len(selected_cases),
         completed_cases=len(evaluations),
+        total_selections=total_selection_count,
+        completed_selections=total_selection_count,
         summary=summary,
     )
     logger.info("Completed store-backed %s chunk; results written to %s", resolved_dataset_name, chunk_dir)
@@ -1341,6 +1367,51 @@ def _selection_keys_by_case(plan_items: Sequence[SelectionPlanItem]) -> dict[str
     for item in plan_items:
         grouped.setdefault(item.case_id, []).append(item.selection_key)
     return grouped
+
+
+def _selection_keys_by_case_selector(plan_items: Sequence[SelectionPlanItem]) -> dict[str, dict[str, list[str]]]:
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for item in plan_items:
+        case_group = grouped.setdefault(item.case_id, {})
+        case_group.setdefault(item.selector_name, []).append(item.selection_key)
+    return grouped
+
+
+def _selection_progress_snapshot(
+    *,
+    plan_items: Sequence[SelectionPlanItem],
+    completed_selection_keys: set[str],
+    selection_keys_by_case: dict[str, list[str]],
+    selection_keys_by_case_selector: dict[str, dict[str, list[str]]],
+    current_case_id: str | None,
+    current_selector_name: str | None = None,
+    current_budget_label: str | None = None,
+) -> _SelectionProgressSnapshot:
+    case_total_selectors: int | None = None
+    case_completed_selectors: int | None = None
+    case_total_selections: int | None = None
+    case_completed_selections: int | None = None
+    if current_case_id is not None:
+        case_selection_keys = selection_keys_by_case.get(current_case_id, [])
+        case_total_selections = len(case_selection_keys)
+        case_completed_selections = sum(1 for key in case_selection_keys if key in completed_selection_keys)
+        selector_groups = selection_keys_by_case_selector.get(current_case_id, {})
+        case_total_selectors = len(selector_groups)
+        case_completed_selectors = sum(
+            1
+            for selector_keys in selector_groups.values()
+            if selector_keys and all(key in completed_selection_keys for key in selector_keys)
+        )
+    return _SelectionProgressSnapshot(
+        total_selections=len(plan_items),
+        completed_selections=len(completed_selection_keys),
+        current_selector_name=current_selector_name,
+        current_budget_label=current_budget_label,
+        case_total_selectors=case_total_selectors,
+        case_completed_selectors=case_completed_selectors,
+        case_total_selections=case_total_selections,
+        case_completed_selections=case_completed_selections,
+    )
 
 
 def _ordered_completed_selection_keys(
@@ -2173,18 +2244,12 @@ def _run_loaded_experiment(
         selector_by_name = {selector.name: selector for selector in selectors}
         budget_by_label = {budget.budget_label: budget for budget in budgets}
         selection_keys_by_case = _selection_keys_by_case(plan_items)
-
-        _notify_progress(
-            progress_observer,
-            dataset_name=dataset_name,
-            phase="evaluating",
-            total_cases=len(selected_cases),
-            completed_cases=len(evaluations),
-            summary=summary if summary.total_cases > 0 else None,
-        )
+        selection_keys_by_case_selector = _selection_keys_by_case_selector(plan_items)
+        plan_items_by_key = {item.selection_key: item for item in plan_items}
 
         interrupt_controller = InterruptController()
         interrupt_controller.install()
+        completed_selection_keys: set[str] = set()
         try:
             completed_selection_keys = set(checkpoint_store.list_selection_keys())
             run_state.status = RunStatus.RUNNING
@@ -2196,6 +2261,24 @@ def _run_loaded_experiment(
             )
             checkpoint_store.save_run_state(run_state)
 
+            initial_progress = _selection_progress_snapshot(
+                plan_items=plan_items,
+                completed_selection_keys=completed_selection_keys,
+                selection_keys_by_case=selection_keys_by_case,
+                selection_keys_by_case_selector=selection_keys_by_case_selector,
+                current_case_id=None,
+            )
+            _notify_progress(
+                progress_observer,
+                dataset_name=dataset_name,
+                phase="evaluating",
+                total_cases=len(selected_cases),
+                completed_cases=len(run_state.completed_case_ids),
+                total_selections=initial_progress.total_selections,
+                completed_selections=initial_progress.completed_selections,
+                summary=summary if summary.total_cases > 0 else None,
+            )
+
             for item in plan_items:
                 if item.selection_key in completed_selection_keys:
                     continue
@@ -2203,6 +2286,15 @@ def _run_loaded_experiment(
                 run_state.current_case_id = item.case_id
                 run_state.current_selection_key = item.selection_key
                 checkpoint_store.save_run_state(run_state)
+                current_progress = _selection_progress_snapshot(
+                    plan_items=plan_items,
+                    completed_selection_keys=completed_selection_keys,
+                    selection_keys_by_case=selection_keys_by_case,
+                    selection_keys_by_case_selector=selection_keys_by_case_selector,
+                    current_case_id=case.case_id,
+                    current_selector_name=item.selector_name,
+                    current_budget_label=item.budget_label,
+                )
                 _notify_progress(
                     progress_observer,
                     dataset_name=dataset_name,
@@ -2211,6 +2303,14 @@ def _run_loaded_experiment(
                     completed_cases=len(run_state.completed_case_ids),
                     current_case_id=case.case_id,
                     current_query=case.query,
+                    total_selections=current_progress.total_selections,
+                    completed_selections=current_progress.completed_selections,
+                    current_selector_name=current_progress.current_selector_name,
+                    current_budget_label=current_progress.current_budget_label,
+                    case_total_selectors=current_progress.case_total_selectors,
+                    case_completed_selectors=current_progress.case_completed_selectors,
+                    case_total_selections=current_progress.case_total_selections,
+                    case_completed_selections=current_progress.case_completed_selections,
                     summary=summary if summary.total_cases > 0 else None,
                 )
                 case_graph = graph_for_case(case) if graph_for_case is not None else graph
@@ -2237,6 +2337,15 @@ def _run_loaded_experiment(
                 run_state.current_case_id = None
                 run_state.current_selection_key = None
                 checkpoint_store.save_run_state(run_state)
+                completed_progress = _selection_progress_snapshot(
+                    plan_items=plan_items,
+                    completed_selection_keys=completed_selection_keys,
+                    selection_keys_by_case=selection_keys_by_case,
+                    selection_keys_by_case_selector=selection_keys_by_case_selector,
+                    current_case_id=case.case_id,
+                    current_selector_name=item.selector_name,
+                    current_budget_label=item.budget_label,
+                )
                 if set(run_state.completed_case_ids) != previous_completed_case_ids:
                     evaluations, summary = _rebuild_public_outputs(
                         output_dir=output_dir,
@@ -2247,24 +2356,41 @@ def _run_loaded_experiment(
                         control_selector_name=control_selector_name,
                         dataset_name=dataset_name,
                     )
-                    _notify_progress(
-                        progress_observer,
-                        dataset_name=dataset_name,
-                        phase="evaluating",
-                        total_cases=len(selected_cases),
-                        completed_cases=len(run_state.completed_case_ids),
-                        current_case_id=case.case_id,
-                        current_query=case.query,
-                        summary=summary if summary.total_cases > 0 else None,
-                    )
+                _notify_progress(
+                    progress_observer,
+                    dataset_name=dataset_name,
+                    phase="evaluating",
+                    total_cases=len(selected_cases),
+                    completed_cases=len(run_state.completed_case_ids),
+                    total_selections=completed_progress.total_selections,
+                    completed_selections=completed_progress.completed_selections,
+                    current_case_id=case.case_id,
+                    current_query=case.query,
+                    current_selector_name=completed_progress.current_selector_name,
+                    current_budget_label=completed_progress.current_budget_label,
+                    case_total_selectors=completed_progress.case_total_selectors,
+                    case_completed_selectors=completed_progress.case_completed_selectors,
+                    case_total_selections=completed_progress.case_total_selections,
+                    case_completed_selections=completed_progress.case_completed_selections,
+                    summary=summary if summary.total_cases > 0 else None,
+                )
                 interrupt_controller.checkpoint()
 
+            final_progress = _selection_progress_snapshot(
+                plan_items=plan_items,
+                completed_selection_keys=completed_selection_keys,
+                selection_keys_by_case=selection_keys_by_case,
+                selection_keys_by_case_selector=selection_keys_by_case_selector,
+                current_case_id=None,
+            )
             _notify_progress(
                 progress_observer,
                 dataset_name=dataset_name,
                 phase="finalizing",
                 total_cases=len(selected_cases),
                 completed_cases=len(run_state.completed_case_ids),
+                total_selections=final_progress.total_selections,
+                completed_selections=final_progress.completed_selections,
                 summary=summary if summary.total_cases > 0 else None,
             )
             evaluations, summary = _rebuild_public_outputs(
@@ -2301,15 +2427,103 @@ def _run_loaded_experiment(
             run_state.status = RunStatus.INTERRUPTED
             run_state.interrupted_reason = "SIGINT"
             checkpoint_store.save_run_state(run_state)
+            interrupted_item = (
+                plan_items_by_key.get(run_state.current_selection_key) if run_state.current_selection_key is not None else None
+            )
+            interrupted_progress = _selection_progress_snapshot(
+                plan_items=plan_items,
+                completed_selection_keys=completed_selection_keys,
+                selection_keys_by_case=selection_keys_by_case,
+                selection_keys_by_case_selector=selection_keys_by_case_selector,
+                current_case_id=run_state.current_case_id,
+                current_selector_name=interrupted_item.selector_name if interrupted_item is not None else None,
+                current_budget_label=interrupted_item.budget_label if interrupted_item is not None else None,
+            )
+            _notify_progress(
+                progress_observer,
+                dataset_name=dataset_name,
+                phase="interrupted",
+                total_cases=len(selected_cases),
+                completed_cases=len(run_state.completed_case_ids),
+                total_selections=interrupted_progress.total_selections,
+                completed_selections=interrupted_progress.completed_selections,
+                current_case_id=run_state.current_case_id,
+                current_query=case_by_id[run_state.current_case_id].query if run_state.current_case_id in case_by_id else None,
+                current_selector_name=interrupted_progress.current_selector_name,
+                current_budget_label=interrupted_progress.current_budget_label,
+                case_total_selectors=interrupted_progress.case_total_selectors,
+                case_completed_selectors=interrupted_progress.case_completed_selectors,
+                case_total_selections=interrupted_progress.case_total_selections,
+                case_completed_selections=interrupted_progress.case_completed_selections,
+                summary=summary if summary.total_cases > 0 else None,
+            )
         except HardStopRequested:
             run_state.status = RunStatus.INTERRUPTED
             run_state.interrupted_reason = "SIGINT(force)"
             checkpoint_store.save_run_state(run_state)
+            interrupted_item = (
+                plan_items_by_key.get(run_state.current_selection_key) if run_state.current_selection_key is not None else None
+            )
+            interrupted_progress = _selection_progress_snapshot(
+                plan_items=plan_items,
+                completed_selection_keys=completed_selection_keys,
+                selection_keys_by_case=selection_keys_by_case,
+                selection_keys_by_case_selector=selection_keys_by_case_selector,
+                current_case_id=run_state.current_case_id,
+                current_selector_name=interrupted_item.selector_name if interrupted_item is not None else None,
+                current_budget_label=interrupted_item.budget_label if interrupted_item is not None else None,
+            )
+            _notify_progress(
+                progress_observer,
+                dataset_name=dataset_name,
+                phase="interrupted",
+                total_cases=len(selected_cases),
+                completed_cases=len(run_state.completed_case_ids),
+                total_selections=interrupted_progress.total_selections,
+                completed_selections=interrupted_progress.completed_selections,
+                current_case_id=run_state.current_case_id,
+                current_query=case_by_id[run_state.current_case_id].query if run_state.current_case_id in case_by_id else None,
+                current_selector_name=interrupted_progress.current_selector_name,
+                current_budget_label=interrupted_progress.current_budget_label,
+                case_total_selectors=interrupted_progress.case_total_selectors,
+                case_completed_selectors=interrupted_progress.case_completed_selectors,
+                case_total_selections=interrupted_progress.case_total_selections,
+                case_completed_selections=interrupted_progress.case_completed_selections,
+                summary=summary if summary.total_cases > 0 else None,
+            )
             raise
         except Exception as exc:
             run_state.status = RunStatus.FAILED
             run_state.last_error = f"{type(exc).__name__}: {exc}"
             checkpoint_store.save_run_state(run_state)
+            failed_item = plan_items_by_key.get(run_state.current_selection_key) if run_state.current_selection_key is not None else None
+            failed_progress = _selection_progress_snapshot(
+                plan_items=plan_items,
+                completed_selection_keys=completed_selection_keys,
+                selection_keys_by_case=selection_keys_by_case,
+                selection_keys_by_case_selector=selection_keys_by_case_selector,
+                current_case_id=run_state.current_case_id,
+                current_selector_name=failed_item.selector_name if failed_item is not None else None,
+                current_budget_label=failed_item.budget_label if failed_item is not None else None,
+            )
+            _notify_progress(
+                progress_observer,
+                dataset_name=dataset_name,
+                phase="failed",
+                total_cases=len(selected_cases),
+                completed_cases=len(run_state.completed_case_ids),
+                total_selections=failed_progress.total_selections,
+                completed_selections=failed_progress.completed_selections,
+                current_case_id=run_state.current_case_id,
+                current_query=case_by_id[run_state.current_case_id].query if run_state.current_case_id in case_by_id else None,
+                current_selector_name=failed_progress.current_selector_name,
+                current_budget_label=failed_progress.current_budget_label,
+                case_total_selectors=failed_progress.case_total_selectors,
+                case_completed_selectors=failed_progress.case_completed_selectors,
+                case_total_selections=failed_progress.case_total_selections,
+                case_completed_selections=failed_progress.case_completed_selections,
+                summary=summary if summary.total_cases > 0 else None,
+            )
             raise
         finally:
             interrupt_controller.uninstall()
@@ -2593,8 +2807,16 @@ def _notify_progress(
     phase: ExperimentPhase,
     total_cases: int | None,
     completed_cases: int,
+    total_selections: int | None = None,
+    completed_selections: int | None = None,
     current_case_id: str | None = None,
     current_query: str | None = None,
+    current_selector_name: str | None = None,
+    current_budget_label: str | None = None,
+    case_total_selectors: int | None = None,
+    case_completed_selectors: int | None = None,
+    case_total_selections: int | None = None,
+    case_completed_selections: int | None = None,
     summary: ExperimentSummary | None = None,
 ) -> None:
     if observer is None:
@@ -2605,8 +2827,16 @@ def _notify_progress(
             phase=phase,
             total_cases=total_cases,
             completed_cases=completed_cases,
+            total_selections=total_selections,
+            completed_selections=completed_selections,
             current_case_id=current_case_id,
             current_query=current_query,
+            current_selector_name=current_selector_name,
+            current_budget_label=current_budget_label,
+            case_total_selectors=case_total_selectors,
+            case_completed_selectors=case_completed_selectors,
+            case_total_selections=case_total_selections,
+            case_completed_selections=case_completed_selections,
             summary=summary,
         )
     )

@@ -1,10 +1,15 @@
 import csv
 from dataclasses import asdict
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from webwalker.experiments import (
+    _build_selection_plan,
+    _selection_keys_by_case,
+    _selection_keys_by_case_selector,
+    _selection_progress_snapshot,
     _summarize_result_records,
     available_study_presets,
     merge_2wiki_results,
@@ -18,7 +23,7 @@ from webwalker.experiments import (
     run_2wiki_store_experiment,
 )
 from webwalker.resume import StopRequested
-from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
+from webwalker.eval import EvaluationBudget, ExperimentSummary, SelectorBudgetSummary
 from webwalker.reports import (
     SUBSET_COMPARISON_FIELDNAMES,
     STUDY_COMPARISON_FIELDNAMES,
@@ -664,6 +669,78 @@ def test_run_2wiki_experiment_writes_partial_results_and_progress_updates(two_wi
     assert "evaluating" in observed_phases
     assert "finalizing" in observed_phases
     assert "completed" in observed_phases
+
+
+def test_selection_progress_snapshot_counts_selector_and_selection_progress():
+    budgets = [
+        EvaluationBudget(token_budget_tokens=128, token_budget_ratio=None),
+        EvaluationBudget(token_budget_tokens=256, token_budget_ratio=None),
+    ]
+    selectors = [
+        SimpleNamespace(name="selector_a"),
+        SimpleNamespace(name="selector_b"),
+    ]
+    cases = [SimpleNamespace(case_id="q1")]
+    plan_items = _build_selection_plan(cases=cases, budgets=budgets, selectors=selectors)
+    selection_keys_by_case = _selection_keys_by_case(plan_items)
+    selection_keys_by_case_selector = _selection_keys_by_case_selector(plan_items)
+    completed_selection_keys = {
+        plan_items[0].selection_key,
+        plan_items[2].selection_key,
+        plan_items[3].selection_key,
+    }
+
+    snapshot = _selection_progress_snapshot(
+        plan_items=plan_items,
+        completed_selection_keys=completed_selection_keys,
+        selection_keys_by_case=selection_keys_by_case,
+        selection_keys_by_case_selector=selection_keys_by_case_selector,
+        current_case_id="q1",
+        current_selector_name="selector_b",
+        current_budget_label="tokens-256",
+    )
+
+    assert snapshot.total_selections == 4
+    assert snapshot.completed_selections == 3
+    assert snapshot.case_total_selectors == 2
+    assert snapshot.case_completed_selectors == 1
+    assert snapshot.case_total_selections == 4
+    assert snapshot.case_completed_selections == 3
+    assert snapshot.current_selector_name == "selector_b"
+    assert snapshot.current_budget_label == "tokens-256"
+
+
+def test_run_2wiki_experiment_emits_case_subprogress_updates(two_wiki_files, tmp_path):
+    questions_path, graph_path = two_wiki_files
+    output_dir = tmp_path / "case-subprogress"
+    updates = []
+
+    def _observer(update) -> None:
+        updates.append(update)
+
+    evaluations, summary = run_2wiki_experiment(
+        questions_path=questions_path,
+        graph_records_path=graph_path,
+        output_dir=output_dir,
+        limit=1,
+        selector_names=[CANONICAL_DENSE, CANONICAL_OVERLAP],
+        token_budgets=[128, 256],
+        with_e2e=False,
+        export_graphrag_inputs=False,
+        progress_observer=_observer,
+    )
+
+    assert len(evaluations) == 1
+    assert summary.total_cases == 1
+    evaluating_updates = [update for update in updates if update.phase == "evaluating" and update.current_case_id == "q1"]
+    assert evaluating_updates
+    assert evaluating_updates[0].case_total_selectors == 2
+    assert evaluating_updates[0].case_total_selections == 4
+    assert any(update.case_completed_selections == 1 and update.case_completed_selectors == 0 for update in evaluating_updates)
+    assert any(update.case_completed_selections == 3 and update.case_completed_selectors == 1 for update in evaluating_updates)
+    completed_update = next(update for update in updates if update.phase == "completed")
+    assert completed_update.total_selections == 4
+    assert completed_update.completed_selections == 4
 
 
 def test_run_2wiki_experiment_rejects_existing_output_without_resume_or_restart(two_wiki_files, tmp_path):

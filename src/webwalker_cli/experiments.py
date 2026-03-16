@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
+from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 from rich.console import Group
@@ -67,8 +68,16 @@ class _LiveDashboardState:
     phase: str = "loading"
     total_cases: int | None = None
     completed_cases: int = 0
+    total_selections: int | None = None
+    completed_selections: int | None = None
     current_case_id: str | None = None
     current_query: str | None = None
+    current_selector_name: str | None = None
+    current_budget_label: str | None = None
+    case_total_selectors: int | None = None
+    case_completed_selectors: int | None = None
+    case_total_selections: int | None = None
+    case_completed_selections: int | None = None
     summary: ExperimentSummary | None = None
 
     def apply(self, update: ExperimentProgressUpdate) -> None:
@@ -76,8 +85,16 @@ class _LiveDashboardState:
         self.phase = update.phase
         self.total_cases = update.total_cases
         self.completed_cases = update.completed_cases
+        self.total_selections = update.total_selections
+        self.completed_selections = update.completed_selections
         self.current_case_id = update.current_case_id
         self.current_query = update.current_query
+        self.current_selector_name = update.current_selector_name
+        self.current_budget_label = update.current_budget_label
+        self.case_total_selectors = update.case_total_selectors
+        self.case_completed_selectors = update.case_completed_selectors
+        self.case_total_selections = update.case_total_selections
+        self.case_completed_selections = update.case_completed_selections
         if update.summary is not None:
             self.summary = update.summary
 
@@ -148,7 +165,7 @@ def _run_with_optional_dashboard(
         state.apply(update)
 
     with dashboard_session(log_buffer=log_buffer, progress_state=progress_state):
-        with Live(renderable, console=console, refresh_per_second=4, transient=True):
+        with Live(renderable, console=console, refresh_per_second=4, transient=False):
             return runner(_observer)
 
 
@@ -1226,12 +1243,39 @@ def _build_dashboard_status_panel(
     grid.add_row("dataset", _plain(dataset_value))
     grid.add_row("phase", _plain(state.phase))
     grid.add_row("cases", _plain(cases_value))
+    if state.total_selections is not None and state.completed_selections is not None:
+        grid.add_row("selections", _plain(f"{state.completed_selections}/{state.total_selections}"))
     grid.add_row("elapsed", _plain(f"{state.elapsed_s:.1f}s"))
     grid.add_row("throughput", _plain(f"{state.throughput:.2f} case/s"))
     if state.current_case_id is not None:
         grid.add_row("current_case", _plain(state.current_case_id))
     if state.current_query:
         grid.add_row("query", _plain(state.current_query))
+    if state.case_total_selectors is not None and state.case_completed_selectors is not None:
+        grid.add_row(
+            "case selectors",
+            _build_progress_cell(
+                completed=state.case_completed_selectors,
+                total=state.case_total_selectors,
+                detail=state.current_selector_name,
+            ),
+        )
+    if state.case_total_selections is not None and state.case_completed_selections is not None:
+        selection_detail = None
+        if state.current_selector_name is not None and state.current_budget_label is not None:
+            selection_detail = f"{state.current_selector_name} @ {state.current_budget_label}"
+        elif state.current_selector_name is not None:
+            selection_detail = state.current_selector_name
+        elif state.current_budget_label is not None:
+            selection_detail = state.current_budget_label
+        grid.add_row(
+            "case selections",
+            _build_progress_cell(
+                completed=state.case_completed_selections,
+                total=state.case_total_selections,
+                detail=selection_detail,
+            ),
+        )
 
     task = progress_state.latest_task()
     if task is not None:
@@ -1244,6 +1288,18 @@ def _build_dashboard_status_panel(
         grid.add_row("task", _plain(task_value))
 
     return Panel(grid, title=f"{state.dataset_name} live status")
+
+
+def _build_progress_cell(*, completed: int, total: int, detail: str | None) -> Table:
+    normalized_total = max(total, 1)
+    bar = ProgressBar(total=normalized_total, completed=min(max(completed, 0), normalized_total))
+    detail_table = Table.grid(expand=True)
+    detail_table.add_column(ratio=5)
+    detail_table.add_column(justify="right", no_wrap=True)
+    detail_table.add_row(bar, Text(f"{completed}/{total}"))
+    if detail:
+        detail_table.add_row(Text(detail, overflow="ellipsis"), Text(""))
+    return detail_table
 
 
 def _build_log_panel(log_buffer: DashboardLogBuffer, *, max_lines: int = 12) -> Panel:

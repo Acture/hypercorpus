@@ -4,7 +4,12 @@ from typer.testing import CliRunner
 from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
 from webwalker.logging import DashboardLogBuffer, DashboardLogEntry, DashboardProgressState
 from webwalker_cli import app
-from webwalker_cli.experiments import _ExperimentDashboardRenderable, _LiveDashboardState, _print_summary
+from webwalker_cli.experiments import (
+    _ExperimentDashboardRenderable,
+    _LiveDashboardState,
+    _print_summary,
+    _run_with_optional_dashboard,
+)
 
 CANONICAL_DENSE = "top_1_seed__lexical_overlap__hop_0__dense"
 CANONICAL_OVERLAP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_overlap__lookahead_1"
@@ -656,8 +661,16 @@ def test_live_dashboard_renderable_includes_status_summary_health_and_logs():
         phase="evaluating",
         total_cases=2,
         completed_cases=1,
+        total_selections=8,
+        completed_selections=3,
         current_case_id="q2",
         current_query="Which city hosts the launch site?",
+        current_selector_name=CANONICAL_LLM,
+        current_budget_label="tokens-256",
+        case_total_selectors=4,
+        case_completed_selectors=1,
+        case_total_selections=8,
+        case_completed_selections=3,
         summary=summary,
     )
     progress_state = DashboardProgressState()
@@ -694,9 +707,46 @@ def test_live_dashboard_renderable_includes_status_summary_health_and_logs():
     assert "2wikimultihop live status" in output
     assert "run-2wiki-store" in output
     assert "2wikimultihop [dev]" in output
+    assert "selections" in output
+    assert "3/8" in output
+    assert "case selectors" in output
+    assert "1/4" in output
+    assert "case selections" in output
     assert "evaluate store-backed 2wiki cases" in output
+    assert "tokens-256" in output
     assert "2wikimultihop summary" in output
     assert "2wikimultihop selector health" in output
     assert "log tail" in output
     assert "evaluating q2" in output
     assert "retrying request" in output
+
+
+def test_run_with_optional_dashboard_keeps_final_panel(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeLive:
+        def __init__(self, renderable, *, console, refresh_per_second, transient):
+            captured["renderable"] = renderable
+            captured["console"] = console
+            captured["refresh_per_second"] = refresh_per_second
+            captured["transient"] = transient
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("webwalker_cli.experiments.Live", FakeLive)
+
+    console = Console(force_terminal=True, record=True, width=120)
+
+    result = _run_with_optional_dashboard(
+        console=console,
+        command_label="run-2wiki-store",
+        split="dev",
+        runner=lambda observer: "ok",
+    )
+
+    assert result == "ok"
+    assert captured["transient"] is False
