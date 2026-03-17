@@ -38,6 +38,7 @@ from webwalker.experiments import (
     selector_preset_choices_help,
     token_budget_choices_help,
 )
+from webwalker.baselines import EXTERNAL_MDR_SELECTOR_NAME
 from webwalker.logging import DashboardLogBuffer, DashboardProgressState, dashboard_session
 from webwalker.reports import export_report_bundle_from_file
 
@@ -775,6 +776,20 @@ def _run_store_command(
     _print_store_outputs(console=console, chunk_dir=chunk_dir, export_graphrag_inputs=export_graphrag_inputs)
 
 
+def _validate_external_mdr_requirements(
+    *,
+    selector_names: list[str] | None,
+    mdr_artifact_manifest: Path | None,
+) -> None:
+    if selector_names is None:
+        return
+    if EXTERNAL_MDR_SELECTOR_NAME in selector_names and mdr_artifact_manifest is None:
+        raise typer.BadParameter(
+            f"{EXTERNAL_MDR_SELECTOR_NAME} requires --mdr-artifact-manifest.",
+            param_hint="--mdr-artifact-manifest",
+        )
+
+
 @experiments_app.command("run-iirc-store")
 def run_iirc_store(
     store: str = typer.Option(..., "--store", help="Path or s3:// URI to a prepared IIRC store"),
@@ -798,6 +813,8 @@ def run_iirc_store(
     selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
     selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
     selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    mdr_home: Path | None = typer.Option(None, "--mdr-home", file_okay=False, help="Path to the pinned official MDR checkout"),
+    mdr_artifact_manifest: Path | None = typer.Option(None, "--mdr-artifact-manifest", exists=True, dir_okay=False, help="Artifact manifest produced by `webwalker-cli baselines build-mdr-index`"),
     sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
     sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
     sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
@@ -813,6 +830,11 @@ def run_iirc_store(
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
+    resolved_selector_names = parse_selector_names(selectors)
+    _validate_external_mdr_requirements(
+        selector_names=resolved_selector_names,
+        mdr_artifact_manifest=mdr_artifact_manifest,
+    )
     _run_store_command(
         console=console,
         command_label="run-iirc-store",
@@ -830,7 +852,7 @@ def run_iirc_store(
             case_limit=case_limit,
             chunk_size=chunk_size,
             chunk_index=chunk_index,
-            selector_names=parse_selector_names(selectors),
+            selector_names=resolved_selector_names,
             selector_preset=selector_preset,
             study_preset=study_preset,
             token_budgets=resolved_token_budgets,
@@ -840,6 +862,8 @@ def run_iirc_store(
             selector_api_key_env=selector_api_key_env,
             selector_base_url=selector_base_url,
             selector_cache_path=selector_cache_path,
+            mdr_home=mdr_home,
+            mdr_artifact_manifest=mdr_artifact_manifest,
             sentence_transformer_model=sentence_transformer_model,
             sentence_transformer_cache_path=sentence_transformer_cache_path,
             sentence_transformer_device=sentence_transformer_device,
@@ -880,6 +904,8 @@ def run_musique_store(
     selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
     selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
     selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    mdr_home: Path | None = typer.Option(None, "--mdr-home", file_okay=False, help="Path to the pinned official MDR checkout"),
+    mdr_artifact_manifest: Path | None = typer.Option(None, "--mdr-artifact-manifest", exists=True, dir_okay=False, help="Artifact manifest produced by `webwalker-cli baselines build-mdr-index`"),
     sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
     sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
     sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
@@ -895,6 +921,11 @@ def run_musique_store(
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
+    resolved_selector_names = parse_selector_names(selectors)
+    _validate_external_mdr_requirements(
+        selector_names=resolved_selector_names,
+        mdr_artifact_manifest=mdr_artifact_manifest,
+    )
     _run_store_command(
         console=console,
         command_label="run-musique-store",
@@ -912,7 +943,7 @@ def run_musique_store(
             case_limit=case_limit,
             chunk_size=chunk_size,
             chunk_index=chunk_index,
-            selector_names=parse_selector_names(selectors),
+            selector_names=resolved_selector_names,
             selector_preset=selector_preset,
             study_preset=study_preset,
             token_budgets=resolved_token_budgets,
@@ -922,6 +953,8 @@ def run_musique_store(
             selector_api_key_env=selector_api_key_env,
             selector_base_url=selector_base_url,
             selector_cache_path=selector_cache_path,
+            mdr_home=mdr_home,
+            mdr_artifact_manifest=mdr_artifact_manifest,
             sentence_transformer_model=sentence_transformer_model,
             sentence_transformer_cache_path=sentence_transformer_cache_path,
             sentence_transformer_device=sentence_transformer_device,
@@ -962,6 +995,8 @@ def run_hotpotqa_store(
     selector_api_key_env: str | None = typer.Option(None, "--selector-api-key-env", help="Env var containing the selector LLM API key"),
     selector_base_url: str | None = typer.Option(None, "--selector-base-url", help="Optional selector base URL override for OpenAI-compatible providers"),
     selector_cache_path: Path | None = typer.Option(None, "--selector-cache-path", file_okay=True, dir_okay=False, help="Optional JSONL cache path for selector LLM outputs"),
+    mdr_home: Path | None = typer.Option(None, "--mdr-home", file_okay=False, help="Path to the pinned official MDR checkout"),
+    mdr_artifact_manifest: Path | None = typer.Option(None, "--mdr-artifact-manifest", exists=True, dir_okay=False, help="Artifact manifest produced by `webwalker-cli baselines build-mdr-index`"),
     sentence_transformer_model: str = typer.Option("multi-qa-MiniLM-L6-cos-v1", "--sentence-transformer-model", help="Local sentence-transformer model name for seed/scorer retrieval"),
     sentence_transformer_cache_path: Path | None = typer.Option(None, "--sentence-transformer-cache-path", file_okay=True, dir_okay=False, help="Optional SQLite cache path for sentence-transformer embeddings"),
     sentence_transformer_device: str | None = typer.Option(None, "--sentence-transformer-device", help="Optional sentence-transformer device override, for example cpu or mps"),
@@ -977,6 +1012,11 @@ def run_hotpotqa_store(
 ) -> None:
     console = Console()
     resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(token_budgets=token_budgets, budget_ratios=budget_ratios)
+    resolved_selector_names = parse_selector_names(selectors)
+    _validate_external_mdr_requirements(
+        selector_names=resolved_selector_names,
+        mdr_artifact_manifest=mdr_artifact_manifest,
+    )
     _run_store_command(
         console=console,
         command_label="run-hotpotqa-store",
@@ -994,7 +1034,7 @@ def run_hotpotqa_store(
             case_limit=case_limit,
             chunk_size=chunk_size,
             chunk_index=chunk_index,
-            selector_names=parse_selector_names(selectors),
+            selector_names=resolved_selector_names,
             selector_preset=selector_preset,
             study_preset=study_preset,
             token_budgets=resolved_token_budgets,
@@ -1004,6 +1044,8 @@ def run_hotpotqa_store(
             selector_api_key_env=selector_api_key_env,
             selector_base_url=selector_base_url,
             selector_cache_path=selector_cache_path,
+            mdr_home=mdr_home,
+            mdr_artifact_manifest=mdr_artifact_manifest,
             sentence_transformer_model=sentence_transformer_model,
             sentence_transformer_cache_path=sentence_transformer_cache_path,
             sentence_transformer_device=sentence_transformer_device,

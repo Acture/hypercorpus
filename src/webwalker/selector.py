@@ -2932,6 +2932,8 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 
 
 def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
+    from webwalker.baselines.mdr import EXTERNAL_MDR_SELECTOR_NAME
+
     names: list[str] = []
     for seed_strategy in ("sentence_transformer", "lexical_overlap"):
         names.extend(
@@ -2975,6 +2977,7 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
             )
     if include_diagnostics:
         names.extend(_DIAGNOSTIC_SELECTORS)
+    names.append(EXTERNAL_MDR_SELECTOR_NAME)
     return names
 
 
@@ -3020,7 +3023,19 @@ def build_selector(
     sentence_transformer_cache_path: str | Path | None = None,
     sentence_transformer_device: str | None = None,
     sentence_transformer_embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder] | None = None,
+    mdr_home: str | Path | None = None,
+    mdr_artifact_manifest: str | Path | None = None,
 ) -> CorpusSelector:
+    from webwalker.baselines.mdr import EXTERNAL_MDR_SELECTOR_NAME, ExternalMDRSelector
+
+    if name == EXTERNAL_MDR_SELECTOR_NAME:
+        if mdr_artifact_manifest is None:
+            raise ValueError(f"{EXTERNAL_MDR_SELECTOR_NAME} requires mdr_artifact_manifest.")
+        return ExternalMDRSelector(
+            name=name,
+            artifact_manifest_path=mdr_artifact_manifest,
+            mdr_home=mdr_home,
+        )
     spec = parse_selector_spec(name)
     llm_config = SelectorLLMConfig(
         provider=selector_provider,
@@ -3130,6 +3145,8 @@ def select_selectors(
     sentence_transformer_cache_path: str | Path | None = None,
     sentence_transformer_device: str | None = None,
     sentence_transformer_embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder] | None = None,
+    mdr_home: str | Path | None = None,
+    mdr_artifact_manifest: str | Path | None = None,
 ) -> list[CorpusSelector]:
     selector_names = list(names) if names is not None else selector_names_for_preset(
         preset,
@@ -3148,6 +3165,8 @@ def select_selectors(
             sentence_transformer_cache_path=sentence_transformer_cache_path,
             sentence_transformer_device=sentence_transformer_device,
             sentence_transformer_embedder_factory=sentence_transformer_embedder_factory,
+            mdr_home=mdr_home,
+            mdr_artifact_manifest=mdr_artifact_manifest,
         )
         for name in selector_names
     ]
