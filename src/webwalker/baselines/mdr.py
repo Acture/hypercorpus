@@ -34,6 +34,13 @@ _REQUIRED_MDR_PATHS: tuple[str, ...] = (
 )
 
 
+def _default_repo_mdr_home() -> Path | None:
+    candidate = Path(__file__).resolve().parents[3] / "baselines" / "mdr"
+    if candidate.exists():
+        return candidate
+    return None
+
+
 @dataclass(slots=True)
 class MDRExportManifest:
     dataset_name: str
@@ -543,9 +550,11 @@ class ExternalMDRSelector:
                 candidate = Path(env_value).resolve()
             elif manifest.mdr_home:
                 candidate = Path(manifest.mdr_home).resolve()
+            else:
+                candidate = _default_repo_mdr_home()
         if candidate is None:
             raise ValueError(
-                f"External MDR selector requires --mdr-home or {_MDR_HOME_ENV}; no official MDR checkout was resolved."
+                f"External MDR selector requires --mdr-home, {_MDR_HOME_ENV}, or a checkout at ./baselines/mdr; no official MDR checkout was resolved."
             )
         return candidate
 
@@ -738,9 +747,11 @@ def _validate_and_patch_mdr_checkout(mdr_home: str | Path | None) -> tuple[Path,
 
 def _resolve_mdr_home(mdr_home: str | Path | None) -> Path:
     raw = mdr_home or os.environ.get(_MDR_HOME_ENV)
-    if raw is None:
-        raise ValueError(f"MDR checkout path is required. Pass --mdr-home or set {_MDR_HOME_ENV}.")
-    path = Path(raw).resolve()
+    path = _default_repo_mdr_home() if raw is None else Path(raw).resolve()
+    if path is None:
+        raise ValueError(
+            f"MDR checkout path is required. Pass --mdr-home, set {_MDR_HOME_ENV}, or add the pinned checkout at ./baselines/mdr."
+        )
     if not path.exists():
         raise FileNotFoundError(f"MDR checkout does not exist: {path}")
     return path

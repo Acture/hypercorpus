@@ -45,7 +45,7 @@ def train_mdr(
     export_manifest: Path = typer.Option(..., "--export-manifest", exists=True, dir_okay=False, help="Export manifest produced by export-mdr-iirc"),
     output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Wrapper output directory for official MDR training"),
     init_checkpoint: Path | None = typer.Option(None, "--init-checkpoint", exists=True, dir_okay=False, help="Public checkpoint used to initialize MDR"),
-    mdr_home: Path | None = typer.Option(None, "--mdr-home", file_okay=False, help="Path to the pinned official MDR checkout"),
+    mdr_home: Path | None = typer.Option(None, "--mdr-home", file_okay=False, help="Path to the pinned official MDR checkout. Defaults to ./baselines/mdr when present."),
     model_name: str = typer.Option("roberta-base", "--model-name", help="Official MDR model name"),
     shared_encoder: bool = typer.Option(False, "--shared-encoder/--no-shared-encoder", help="Forward the shared-encoder flag to official MDR"),
 ) -> None:
@@ -72,7 +72,7 @@ def build_index(
     output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for encoded corpus artifacts"),
     checkpoint: Path | None = typer.Option(None, "--checkpoint", exists=True, dir_okay=False, help="Trained or public MDR checkpoint"),
     train_manifest: Path | None = typer.Option(None, "--train-manifest", exists=True, dir_okay=False, help="Optional training manifest from train-mdr"),
-    mdr_home: Path | None = typer.Option(None, "--mdr-home", file_okay=False, help="Path to the pinned official MDR checkout"),
+    mdr_home: Path | None = typer.Option(None, "--mdr-home", file_okay=False, help="Path to the pinned official MDR checkout. Defaults to ./baselines/mdr when present."),
     model_name: str | None = typer.Option(None, "--model-name", help="Override the model name used for corpus encoding"),
     shared_encoder: bool | None = typer.Option(None, "--shared-encoder/--no-shared-encoder", help="Override the shared-encoder flag used for corpus encoding"),
     max_q_len: int = typer.Option(70, "--max-q-len", min=1, help="Question encoder max length"),

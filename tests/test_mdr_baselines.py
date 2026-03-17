@@ -11,6 +11,7 @@ from webwalker.baselines import (
     MDRArtifactManifest,
     export_iirc_store_to_mdr,
 )
+from webwalker.baselines.mdr import _resolve_mdr_home
 from webwalker.datasets.store import prepare_store_from_records
 from webwalker.eval import EvaluationBudget, EvaluationCase
 from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
@@ -163,6 +164,12 @@ def test_export_iirc_store_to_mdr_writes_expected_schema_and_is_stable(tmp_path)
 
     corpus_sample = json.loads((export_dir_a / "corpus.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert set(corpus_sample) == {"title", "text"}
+
+
+def test_resolve_mdr_home_defaults_to_repo_submodule(monkeypatch):
+    monkeypatch.delenv("WEBWALKER_MDR_HOME", raising=False)
+    resolved = _resolve_mdr_home(None)
+    assert resolved == Path("/Users/acture/repos/hypercorpus/baselines/mdr")
 
 
 def test_external_mdr_selector_flattens_paths_and_applies_budget():
