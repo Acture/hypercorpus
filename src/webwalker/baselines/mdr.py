@@ -597,7 +597,7 @@ class _OfficialMDRBackend:
         model, tokenizer, torch = self._load_model_stack()
         topk = max(1, min(int(beam_size), len(self.docs)))
 
-        batch_q = tokenizer.batch_encode_plus(
+        batch_q = tokenizer(
             [query.rstrip("?")],
             max_length=self.manifest.max_q_len,
             padding="max_length",
@@ -624,7 +624,7 @@ class _OfficialMDRBackend:
                 first_scores_row[rank] = float("-inf")
             query_pairs.append((query.rstrip("?"), doc_text))
 
-        batch_q_sp = tokenizer.batch_encode_plus(
+        batch_q_sp = tokenizer(
             query_pairs,
             max_length=self.manifest.max_q_sp_len,
             padding="max_length",

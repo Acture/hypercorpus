@@ -1,0 +1,3 @@
+[submodule "baselines/mdr"]
+	path = baselines/mdr
+	url = git@github.com:Acture/multihop_dense_retrieval.git
