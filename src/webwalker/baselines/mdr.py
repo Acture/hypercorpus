@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import os
@@ -58,6 +58,13 @@ class MDRExportManifest:
     dropped_no_bridge: int
     dropped_no_negatives: int
     export_manifest_path: str | None = None
+    dropped_cases_path: str | None = None
+    total_train_cases: int = 0
+    eligible_train_cases: int = 0
+    distinct_support_ge_2_cases: int = 0
+    dropped_no_bridge_with_distinct_support_ge_2: int = 0
+    train_type_counts: dict[str, int] = field(default_factory=dict)
+    val_type_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -109,6 +116,16 @@ class MDRPathResult:
 class MDRQueryResult:
     paths: list[MDRPathResult]
     runtime_s: float
+
+
+@dataclass(slots=True)
+class MDRCaseSupportAnalysis:
+    start_doc: str | None
+    second_doc: str | None
+    question_type: str
+    support_nodes: list[str]
+    candidate_bridge_docs: list[str]
+    distinct_support_ge_2: bool
 
 
 class _MDRRetrievalBackend(Protocol):
@@ -169,33 +186,58 @@ def export_iirc_store_to_mdr(
     val_path = output_root / "val.jsonl"
     dev_eval_path = output_root / "dev_eval.jsonl"
     manifest_path = output_root / "mdr_export_manifest.json"
+    dropped_cases_path = output_root / "dropped_cases.jsonl"
 
     corpus_records = [_corpus_record(store, node_id) for node_id in node_ids]
     _write_jsonl(corpus_path, corpus_records)
 
     train_records: list[dict[str, Any]] = []
     val_records: list[dict[str, Any]] = []
+    dropped_case_records: list[dict[str, Any]] = []
     dropped_missing_start = 0
     dropped_no_bridge = 0
     dropped_no_negatives = 0
+    total_train_cases = len(train_cases)
+    eligible_train_cases = 0
+    distinct_support_ge_2_cases = 0
+    dropped_no_bridge_with_distinct_support_ge_2 = 0
+    train_type_counts: dict[str, int] = {}
+    val_type_counts: dict[str, int] = {}
+    node_set = set(node_ids)
 
     for case in train_cases:
-        sample, drop_reason = _build_training_sample(store, case, node_ids=node_ids)
+        analysis = _analyze_case_support(store, case, node_set=node_set)
+        if analysis.distinct_support_ge_2:
+            distinct_support_ge_2_cases += 1
+
+        sample, drop_reason = _build_training_sample(
+            store,
+            case,
+            node_ids=node_ids,
+            analysis=analysis,
+        )
         if sample is None:
             if drop_reason == "missing_start":
                 dropped_missing_start += 1
             elif drop_reason == "no_bridge":
                 dropped_no_bridge += 1
+                if analysis.distinct_support_ge_2:
+                    dropped_no_bridge_with_distinct_support_ge_2 += 1
             elif drop_reason == "no_negatives":
                 dropped_no_negatives += 1
+            dropped_case_records.append(_build_dropped_case_record(case, analysis, drop_reason))
             continue
+        eligible_train_cases += 1
         if _is_val_case(case.case_id):
             val_records.append(sample)
+            _increment_count(val_type_counts, sample["type"])
         else:
             train_records.append(sample)
+            _increment_count(train_type_counts, sample["type"])
 
     _write_jsonl(train_path, train_records)
     _write_jsonl(val_path, val_records)
+    _write_jsonl(dropped_cases_path, dropped_case_records)
 
     dev_records = [_build_eval_sample(store, case) for case in dev_cases]
     if dev_records:
@@ -217,6 +259,13 @@ def export_iirc_store_to_mdr(
         dropped_no_bridge=dropped_no_bridge,
         dropped_no_negatives=dropped_no_negatives,
         export_manifest_path=str(manifest_path.resolve()),
+        dropped_cases_path=str(dropped_cases_path.resolve()),
+        total_train_cases=total_train_cases,
+        eligible_train_cases=eligible_train_cases,
+        distinct_support_ge_2_cases=distinct_support_ge_2_cases,
+        dropped_no_bridge_with_distinct_support_ge_2=dropped_no_bridge_with_distinct_support_ge_2,
+        train_type_counts=train_type_counts,
+        val_type_counts=val_type_counts,
     )
     _write_manifest(manifest_path, manifest)
     return manifest
@@ -817,22 +866,25 @@ def _build_training_sample(
     case: Any,
     *,
     node_ids: list[str],
+    analysis: MDRCaseSupportAnalysis | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    node_set = set(node_ids)
-    start_doc = _select_start_doc(case, node_set)
-    if start_doc is None:
+    support = analysis or _analyze_case_support(store, case, node_set=set(node_ids))
+    if support.start_doc is None:
         return None, "missing_start"
 
-    bridge_doc = _select_bridge_doc(store, case, start_doc=start_doc, node_set=node_set)
-    if bridge_doc is None:
+    if support.second_doc is None:
         return None, "no_bridge"
 
     negatives = _select_negative_docs(
         store,
         case,
         node_ids=node_ids,
-        excluded={start_doc, bridge_doc, *getattr(case, "gold_support_nodes", [])},
-        start_doc=start_doc,
+        excluded={
+            *{str(node_id) for node_id in (getattr(case, "gold_support_nodes", ()) or ())},
+            support.start_doc,
+            support.second_doc,
+        },
+        start_doc=support.start_doc,
     )
     if len(negatives) < 2:
         return None, "no_negatives"
@@ -840,22 +892,21 @@ def _build_training_sample(
     return {
         "_id": str(case.case_id),
         "question": str(case.query),
-        "type": "bridge",
-        "bridge": bridge_doc,
-        "pos_paras": [_doc_payload(store, start_doc), _doc_payload(store, bridge_doc)],
+        "type": support.question_type,
+        "bridge": support.second_doc,
+        "pos_paras": [_doc_payload(store, support.start_doc), _doc_payload(store, support.second_doc)],
         "neg_paras": [_doc_payload(store, node_id) for node_id in negatives[:2]],
-        "sp": [start_doc, bridge_doc],
+        "sp": [support.start_doc, support.second_doc],
     }, None
 
 
 def _build_eval_sample(store: ShardedDocumentStore, case: Any) -> dict[str, Any]:
-    start_doc = _select_start_doc(case, set(store.nodes))
-    bridge_doc = _select_bridge_doc(store, case, start_doc=start_doc, node_set=set(store.nodes))
-    sp = [node for node in (start_doc, bridge_doc) if node is not None]
+    analysis = _analyze_case_support(store, case, node_set=set(store.nodes))
+    sp = [node for node in (analysis.start_doc, analysis.second_doc) if node is not None]
     payload = {
         "_id": str(case.case_id),
         "question": str(case.query),
-        "type": "bridge",
+        "type": analysis.question_type,
         "sp": sp,
     }
     expected_answer = getattr(case, "expected_answer", None)
@@ -879,24 +930,112 @@ def _select_bridge_doc(
     start_doc: str | None,
     node_set: set[str],
 ) -> str | None:
-    if start_doc is None:
-        return None
-    path_nodes = list(getattr(case, "gold_path_nodes", ()) or ())
-    for node_id in path_nodes[1:]:
-        candidate = str(node_id)
-        if candidate != start_doc and candidate in node_set:
-            return candidate
+    analysis = _analyze_case_support(store, case, node_set=node_set, start_doc=start_doc)
+    return analysis.second_doc
 
-    support_nodes = [str(node_id) for node_id in getattr(case, "gold_support_nodes", ()) or ()]
-    gold_support = {node_id for node_id in support_nodes if node_id in node_set and node_id != start_doc}
-    for neighbor in store.neighbors(start_doc):
-        if neighbor in gold_support:
-            return neighbor
-    for neighbor in store.neighbors(start_doc):
-        for second_hop in store.neighbors(neighbor):
-            if second_hop in gold_support:
-                return second_hop
-    return None
+
+def _analyze_case_support(
+    store: ShardedDocumentStore,
+    case: Any,
+    *,
+    node_set: set[str],
+    start_doc: str | None = None,
+) -> MDRCaseSupportAnalysis:
+    resolved_start = start_doc if start_doc is not None else _select_start_doc(case, node_set)
+    support_nodes = _ordered_unique(
+        str(node_id) for node_id in (getattr(case, "gold_support_nodes", ()) or ()) if str(node_id) in node_set
+    )
+    support_candidates = [node_id for node_id in support_nodes if node_id != resolved_start]
+    path_candidates = _ordered_unique(
+        str(node_id)
+        for node_id in list(getattr(case, "gold_path_nodes", ()) or ())[1:]
+        if str(node_id) != resolved_start and str(node_id) in node_set
+    )
+
+    candidate_bridge_docs = _ordered_unique(
+        [
+            *path_candidates,
+            *_rank_support_candidates(store, resolved_start, support_candidates),
+        ]
+    )
+    distinct_support_ge_2 = len(support_nodes) >= 2
+    question_type = "bridge" if path_candidates else ("comparison" if distinct_support_ge_2 else "bridge")
+    second_doc = candidate_bridge_docs[0] if candidate_bridge_docs else None
+    return MDRCaseSupportAnalysis(
+        start_doc=resolved_start,
+        second_doc=second_doc,
+        question_type=question_type,
+        support_nodes=support_nodes,
+        candidate_bridge_docs=candidate_bridge_docs,
+        distinct_support_ge_2=distinct_support_ge_2,
+    )
+
+
+def _rank_support_candidates(
+    store: ShardedDocumentStore,
+    start_doc: str | None,
+    support_candidates: list[str],
+) -> list[str]:
+    if start_doc is None or not support_candidates:
+        return list(support_candidates)
+
+    direct_neighbors = list(store.neighbors(start_doc))
+    direct_neighbor_set = set(direct_neighbors)
+    direct_hits = [node_id for node_id in support_candidates if node_id in direct_neighbor_set]
+
+    second_hop_set: set[str] = set()
+    for neighbor in direct_neighbors:
+        second_hop_set.update(store.neighbors(neighbor))
+    second_hop_hits = [
+        node_id for node_id in support_candidates if node_id not in direct_neighbor_set and node_id in second_hop_set
+    ]
+    remaining_hits = [
+        node_id for node_id in support_candidates if node_id not in direct_neighbor_set and node_id not in second_hop_set
+    ]
+    return [*direct_hits, *second_hop_hits, *remaining_hits]
+
+
+def _ordered_unique(values: list[str] | tuple[str, ...] | Any) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        candidate = str(value)
+        if candidate in seen:
+            continue
+        ordered.append(candidate)
+        seen.add(candidate)
+    return ordered
+
+
+def _build_dropped_case_record(
+    case: Any,
+    analysis: MDRCaseSupportAnalysis,
+    drop_reason: str | None,
+) -> dict[str, Any]:
+    raw_support_nodes = _ordered_unique(str(node_id) for node_id in (getattr(case, "gold_support_nodes", ()) or ()))
+    return {
+        "case_id": str(case.case_id),
+        "drop_reason": drop_reason,
+        "support_nodes": raw_support_nodes,
+        "support_nodes_in_store": list(analysis.support_nodes),
+        "start_doc": analysis.start_doc,
+        "candidate_bridge_docs": list(analysis.candidate_bridge_docs),
+        "question_type_guess": _guess_question_type(case),
+    }
+
+
+def _increment_count(counter: dict[str, int], key: str) -> None:
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _guess_question_type(case: Any) -> str:
+    raw_path_candidates = _ordered_unique(str(node_id) for node_id in list(getattr(case, "gold_path_nodes", ()) or ())[1:])
+    if raw_path_candidates:
+        return "bridge"
+    raw_support_nodes = _ordered_unique(str(node_id) for node_id in (getattr(case, "gold_support_nodes", ()) or ()))
+    if len(raw_support_nodes) >= 2:
+        return "comparison"
+    return "bridge"
 
 
 def _select_negative_docs(

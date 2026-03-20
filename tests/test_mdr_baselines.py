@@ -53,6 +53,13 @@ def _prepare_iirc_train_dev_store(tmp_path: Path) -> Path:
             "gold_path_nodes": ["Moon Launch Program", "Cape Canaveral", "Florida"],
         },
         {
+            "case_id": "train-comp",
+            "question": "Which program launches rockets and which agency runs missions?",
+            "answer": "Moon Launch Program and NASA",
+            "gold_support_nodes": ["Moon Launch Program", "NASA"],
+            "gold_start_nodes": ["Moon Launch Program"],
+        },
+        {
             "case_id": "train-drop",
             "question": "Which program launches rockets?",
             "answer": "Moon Launch Program",
@@ -142,10 +149,17 @@ def test_export_iirc_store_to_mdr_writes_expected_schema_and_is_stable(tmp_path)
     manifest_b = export_iirc_store_to_mdr(store_uri=store_root, output_dir=export_dir_b)
 
     assert manifest_a.corpus_documents == 5
-    assert manifest_a.train_examples + manifest_a.val_examples == 2
+    assert manifest_a.total_train_cases == 4
+    assert manifest_a.train_examples + manifest_a.val_examples == 3
+    assert manifest_a.eligible_train_cases == 3
     assert manifest_a.dev_examples == 1
+    assert manifest_a.distinct_support_ge_2_cases == 3
     assert manifest_a.dropped_no_bridge == 1
+    assert manifest_a.dropped_no_bridge_with_distinct_support_ge_2 == 0
     assert Path(manifest_a.export_manifest_path).exists()
+    assert Path(manifest_a.dropped_cases_path).exists()
+    assert sum(manifest_a.train_type_counts.values()) + sum(manifest_a.val_type_counts.values()) == 3
+    assert manifest_a.train_type_counts.get("comparison", 0) + manifest_a.val_type_counts.get("comparison", 0) == 1
 
     train_lines_a = (export_dir_a / "train.jsonl").read_text(encoding="utf-8").splitlines()
     val_lines_a = (export_dir_a / "val.jsonl").read_text(encoding="utf-8").splitlines()
@@ -154,7 +168,8 @@ def test_export_iirc_store_to_mdr_writes_expected_schema_and_is_stable(tmp_path)
     assert train_lines_a == train_lines_b
     assert val_lines_a == val_lines_b
 
-    sample = json.loads((train_lines_a or val_lines_a)[0])
+    exported_samples = [json.loads(line) for line in [*train_lines_a, *val_lines_a]]
+    sample = next(item for item in exported_samples if item["_id"] == "train-a")
     assert sample["type"] == "bridge"
     assert sample["bridge"] == "Cape Canaveral"
     assert len(sample["pos_paras"]) == 2
@@ -162,8 +177,29 @@ def test_export_iirc_store_to_mdr_writes_expected_schema_and_is_stable(tmp_path)
     assert sample["pos_paras"][0]["title"] == "Moon Launch Program"
     assert sample["sp"] == ["Moon Launch Program", "Cape Canaveral"]
 
+    comparison_sample = next(item for item in exported_samples if item["_id"] == "train-comp")
+    assert comparison_sample["type"] == "comparison"
+    assert comparison_sample["bridge"] == "NASA"
+    assert comparison_sample["sp"] == ["Moon Launch Program", "NASA"]
+
     corpus_sample = json.loads((export_dir_a / "corpus.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert set(corpus_sample) == {"title", "text"}
+
+    dropped_cases = [
+        json.loads(line)
+        for line in (export_dir_a / "dropped_cases.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert dropped_cases == [
+        {
+            "case_id": "train-drop",
+            "drop_reason": "no_bridge",
+            "support_nodes": ["Moon Launch Program"],
+            "support_nodes_in_store": ["Moon Launch Program"],
+            "start_doc": "Moon Launch Program",
+            "candidate_bridge_docs": [],
+            "question_type_guess": "bridge",
+        }
+    ]
 
 
 def test_resolve_mdr_home_defaults_to_repo_submodule(monkeypatch):
@@ -288,3 +324,4 @@ def test_export_mdr_iirc_cli_smoke(tmp_path):
     assert (export_dir / "train.jsonl").exists()
     assert (export_dir / "val.jsonl").exists()
     assert (export_dir / "mdr_export_manifest.json").exists()
+    assert (export_dir / "dropped_cases.jsonl").exists()
