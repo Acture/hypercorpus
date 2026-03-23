@@ -18,6 +18,7 @@ This subsection establishes the evaluation landscape and motivates the problem. 
 - **MuSiQue** (Min et al., 2022, TACL). Harder multi-hop benchmark via single-hop composition with strict filtering against shortcut solvability. Tests whether webwalker's link-following genuinely covers required hops.
 - **IIRC** (Ferguson et al., 2020, EMNLP). Reading comprehension where the initial paragraph is incomplete and the reader must follow links to external documents. The most naturally aligned benchmark for webwalker's "follow natural links to fill evidence gaps" hypothesis. Primary paper-facing dataset.
 - **Compositional Questions Do Not Necessitate Multi-hop Reasoning** (Min et al., 2019, ACL). Critical paper showing many multi-hop questions are solvable via single-hop shortcuts. Essential context for why webwalker evaluates evidence coverage (support F1) rather than only answer correctness.
+- **FRAMES** (Krishna et al., 2024, arXiv). Multi-hop RAG benchmark that tests factuality, retrieval, and reasoning jointly. SOTA models achieve 0.40 accuracy without retrieval, 0.66 with multi-step retrieval. Does not include explicit budget/efficiency metrics, but supports the problem motivation that multi-hop retrieval quality remains a bottleneck.
 
 ### Differentiation from webwalker
 
@@ -25,7 +26,7 @@ These benchmarks define the evaluation surface but not the method. Webwalker tre
 
 ### Citation priority
 
-All five are mandatory citations. HotpotQA, IIRC, and MuSiQue appear in the experiments; 2WikiMultiHopQA appears as calibration. Min et al. (2019) is needed to justify the evidence-first evaluation design.
+The first five are mandatory citations. HotpotQA, IIRC, and MuSiQue appear in the experiments; 2WikiMultiHopQA appears as calibration. Min et al. (2019) is needed to justify the evidence-first evaluation design. FRAMES is a supporting citation for the problem motivation.
 
 ---
 
@@ -59,6 +60,9 @@ This section positions webwalker relative to systems that also use graph structu
 
 - **GraphRetriever** (Asai et al., 2020, ICLR). Treats Wikipedia as a graph and trains a retriever to follow reasoning paths. The closest learned ancestor to webwalker in spirit. Key difference: GraphRetriever learns task-specific path policies, while webwalker uses zero-shot dense-started selection over existing hyperlink structure without per-dataset training.
 - **HippoRAG** (Gutierrez et al., 2024, NeurIPS). Combines knowledge graphs, Personalized PageRank, and LLMs into a neurobiologically inspired long-term memory retrieval framework. Strong multi-hop QA performance. Key difference: HippoRAG builds an explicit knowledge graph eagerly, while webwalker operates directly on natural hyperlinks at query time without prior graph construction.
+- **HippoRAG 2** (Gutierrez et al., 2025, arXiv 2502.14802). Extends HippoRAG with a multi-memory architecture and improved Personalized PageRank, framed as "non-parametric continual learning." Achieves 7% improvement over competing embedding models. Key difference: even with reduced construction overhead, HippoRAG 2 still requires indexing-time graph building, while webwalker operates on existing hyperlinks requiring no construction step. The "non-parametric continual learning" framing adds a new angle vs. webwalker's "budgeted corpus selection" framing.
+- **EcphoryRAG** (Liao, 2025, arXiv 2510.08958). Entity-centric retrieval with 94% token reduction vs. comparable systems, improving average EM from 0.392 to 0.474 over HippoRAG. Directly competes with HippoRAG on the same benchmarks and claims token efficiency. Strengthens the narrative that token cost matters in graph-based RAG, which supports webwalker's budget-awareness emphasis.
+- **GNN-RAG** (Mavromatis and Karypis, 2025, ACL). Uses GNNs to reason over knowledge graphs, then retrieves shortest paths as LLM context. Represents the learned graph-reasoning approach. Key difference: GNN-RAG requires trained GNN components, while webwalker uses zero-shot scoring over existing hyperlink structure. Strengthens the zero-shot vs. learned contrast in Section 3.
 - **KG2RAG** (Zhu et al., 2025, NAACL). Uses knowledge graphs to expand initial semantic retrieval chunks and reorganize context. Shares webwalker's "semantic seed then graph expansion" skeleton but operates over constructed KGs rather than natural hyperlinks.
 - **Walk&Retrieve** (Bockling et al., 2025, IR-RAG@SIGIR). Zero-shot retrieval via knowledge graph walks. The closest system to webwalker's walk-based approach, but its graph is an explicit KG rather than a natural hyperlink graph.
 - **PathRAG** (Chen et al., 2025, arXiv). Prunes graph-based RAG with relational paths. Relevant for path-scoring and path-pruning design decisions.
@@ -68,6 +72,9 @@ This section positions webwalker relative to systems that also use graph structu
 
 - **RAPTOR** (Sarthi et al., 2024, arXiv). Recursive abstractive tree-organized retrieval. Represents the "eager global structuring" approach that webwalker avoids.
 - **LightRAG** (Guo et al., 2024, arXiv). Efficiency-oriented GraphRAG with graph-structured indexing. Useful as an engineering-efficiency reference point.
+- **LEGO-GraphRAG** (Cao et al., 2025, PVLDB). Modular decomposition of GraphRAG workflow with systematic classification of techniques. Provides empirical tradeoff studies on reasoning quality vs. efficiency. Useful for positioning webwalker's approach within the broader GraphRAG design space at a top database venue.
+- **Hierarchical Lexical Graph** (Ghassel et al., 2025, KDD). Lexical graph hierarchy for multi-hop retrieval. Graph-structured multi-hop retrieval at a top venue. Different from webwalker (lexical graph vs. natural hyperlink graph) but occupies the same problem space.
+- **Graph-O1** (Liu, 2025, arXiv). MCTS + RL for stepwise graph reasoning with selective subgraph retrieval. High cost (RL training + MCTS inference), which strengthens webwalker's lightweight-walk argument by contrast.
 
 ### Differentiation from webwalker
 
@@ -75,27 +82,51 @@ Webwalker differs from all graph-based systems on three axes: (1) it does not re
 
 ### Citation priority
 
-GraphRetriever and HippoRAG are the two most important narrative comparators. GraphRAG survey and KG2RAG are important for positioning. Walk&Retrieve is important because of its methodological proximity. RAPTOR and LightRAG are boundary-defining citations.
+GraphRetriever and HippoRAG/HippoRAG 2 are the two most important narrative comparators. GNN-RAG and EcphoryRAG strengthen the contrast between learned and zero-shot graph approaches. GraphRAG survey and KG2RAG are important for positioning. Walk&Retrieve is important because of its methodological proximity. LEGO-GraphRAG and Hierarchical Lexical Graph ensure coverage of current top-venue work. RAPTOR, LightRAG, and Graph-O1 are boundary-defining citations.
 
 ---
 
 ## 4. Budget-Aware and Adaptive Retrieval
 
-This is the novel niche where webwalker makes its most distinctive contribution. Explicit token-budget control over evidence assembly is underexplored in the literature.
+This is the novel niche where webwalker makes its most distinctive contribution. Explicit token-budget control over evidence *discovery via graph traversal* is novel, though token-budget-aware post-retrieval selection is an emerging research area.
 
-### Key papers
+### 4A. Adaptive retrieval controllers
 
 - **Adaptive-RAG** (Jeong et al., 2024, NAACL). Dynamically selects no-retrieval, single-shot, or iterative retrieval based on question complexity. Relevant as an adaptive controller, but adapts the retrieval strategy, not the token budget of the selected evidence.
 - **Self-RAG** (Asai et al., 2024, ICLR). Learns when to retrieve, how to critique, and when to stop via self-reflection tokens. The strongest learned-controller comparator for webwalker's "when to stop walking" decision, but operates at the generation level, not at the pre-RAG selection level.
 - **IRCoT** (Trivedi et al., 2022, arXiv). Interleaves chain-of-thought with retrieval, using reasoning output to guide the next retrieval step. Key iterative retrieval comparator. Differs from webwalker in that it uses CoT-generated queries rather than hyperlink structure to decide the next step.
 
+### 4B. Token-budget-aware context selection (post-retrieval)
+
+This is the most important sub-area for novelty differentiation. These systems operate on already-retrieved flat passage sets, selecting what to include under a token budget. Webwalker differs by performing budget-aware *graph discovery* -- deciding which links to follow and when to stop walking -- rather than post-retrieval compression.
+
+- **AdaGReS** (Peng et al., 2025, arXiv 2512.25052). Greedy context selection under token budget with submodularity guarantees. Balances relevance and redundancy with theoretical near-optimality proof. **The most direct differentiator in Section 4.** Key distinction from webwalker: AdaGReS operates on already-retrieved flat passage sets (post-retrieval selection), while webwalker performs budget-aware graph discovery. The submodularity framing is worth engaging with in the paper.
+- **Stronger Baselines for RAG with Long-Context LMs** (Laitenberger, Manning, and Liu, 2025, arXiv 2506.03989). Systematically evaluates RAG under scaled token budgets. Finds that simple document-order-preserving single-stage retrieval (DOS RAG) matches or beats complex pipelines (ReadAgent, RAPTOR). Their "just scale the budget" finding directly challenges complex selection schemes. Webwalker must argue that budget-aware graph traversal provides value beyond simply stuffing more tokens.
+- **Fishing for Answers** (Lin et al., 2025, arXiv 2509.04820). Compares one-shot adaptive chunk selection under token budget vs. iterative agentic retrieval for legal/regulatory QA. Directly compares one-shot-under-budget vs. iterative strategies, which maps onto webwalker's budget-constrained walk vs. MDR-style iteration.
+- **SF-RAG** (Yu et al., 2026, arXiv 2602.13647). Structure-fidelity retrieval for academic QA. Preserves hierarchical paper structure during retrieval with path-guided retrieval under fixed token budget. Analogous to webwalker exploiting document link structure, but for hierarchical (tree) rather than graph (hyperlink) structure.
+- **Core-based Hierarchies for Efficient GraphRAG** (Hossain and Sariyuce, 2026, arXiv 2603.05207). Replaces Leiden clustering with k-core decomposition for deterministic GraphRAG hierarchies. Implements token-budget-aware sampling strategy. Different approach (community-based summarization) but shares the budget-awareness theme.
+
+### 4C. Agentic reasoning-integrated retrieval
+
+A rapidly growing paradigm where retrieval is embedded as an action within LLM reasoning chains. These systems compete with webwalker's structured-graph-walk approach but spend token budget on reasoning tokens rather than evidence tokens.
+
+- **Search-o1** (Li et al., 2025, EMNLP). Integrates agentic RAG into reasoning chains with a document analysis module for noise filtering. Represents the reasoning+retrieval fusion paradigm. The comparison point: webwalker uses corpus structure (hyperlinks) as navigation signal, while Search-o1 uses LLM reasoning chains to decide what to retrieve next from a flat index.
+- **R1-Searcher** (Song et al., 2025, arXiv 2503.05592). Uses reinforcement learning to train LLM search capability, enabling autonomous decisions about when and what to retrieve during reasoning. Part of the agentic retrieval family alongside Search-o1 and ReSearch.
+- **ReSearch** (Chen et al., 2025, arXiv 2503.19470). RL-trained reasoning+search integration. Completes the Search-o1 / R1-Searcher / ReSearch family of agentic retrieval systems.
+- **MemoRAG** (Qian et al., 2024, arXiv 2409.05591). Memory-inspired knowledge discovery with a global memory module for retrieval clue generation followed by targeted retrieval. Structurally parallel to webwalker's dense-seed-then-walk approach, but operates over flat corpora rather than linked graphs.
+- **OneGen** (Zhang et al., 2024, EMNLP Findings). Unifies generation and retrieval in a single forward pass. Represents the opposite architectural choice from webwalker's selector-first design. Useful as a "why not end-to-end?" foil in the related work.
+
 ### Differentiation from webwalker
 
-No existing system treats explicit token-budget-constrained evidence selection as the primary problem. Adaptive-RAG and Self-RAG adapt retrieval behavior but do not impose or optimize for a fixed token budget on the selected evidence set. IRCoT interleaves retrieval and reasoning but does not account for cumulative token cost. Webwalker's `budget_fill_relative_drop` and its budget-aware stopping are the cleanest novel components in this space.
+The key novelty claim should be refined: **budget-aware evidence *discovery via graph traversal* is novel**. The distinction has two levels:
+
+1. **vs. post-retrieval budget selectors (AdaGReS, Stronger Baselines, SF-RAG)**: These systems optimize what to include from an already-retrieved passage set. Webwalker's budget constraint operates at the *discovery/selection* level -- deciding which links to follow and when to stop walking -- not at the context compression level. The `budget_fill_relative_drop` stopping criterion operates during walk expansion, not during context packing.
+
+2. **vs. agentic retrieval systems (Search-o1, R1-Searcher, ReSearch)**: These systems use LLM calls at every retrieval step, spending budget on reasoning tokens. Webwalker's lightweight scoring (anchor overlap, embedding similarity) keeps costs low. Under a fixed token budget, agentic systems spend budget on reasoning tokens, while webwalker spends budget on evidence tokens.
 
 ### Citation priority
 
-All three are important. IRCoT is the most direct iterative comparator. Adaptive-RAG and Self-RAG frame the adaptive-retrieval design space that webwalker extends with explicit budget control.
+AdaGReS is the single most important new citation for this section -- it is the most direct threat to the novelty claim and must be carefully differentiated. IRCoT remains the most direct iterative comparator. Stronger Baselines is important because it challenges the value of complex selection under scaled budgets. Adaptive-RAG and Self-RAG frame the adaptive-retrieval design space. Search-o1 represents the agentic paradigm. The other agentic papers (R1-Searcher, ReSearch) and budget papers (Fishing for Answers, SF-RAG, Core-based GraphRAG) are supporting citations.
 
 ---
 
@@ -132,10 +163,12 @@ This section provides the adjacent-domain inspiration for webwalker's hyperlink-
 - **TREC Complex Answer Retrieval (CAR)** (Nanni et al., 2017, ICTIR). Benchmark for retrieving passages that compose into complex answers. The closest IR-community formulation to webwalker's "evidence discovery" problem, though without explicit hyperlink navigation.
 - **Characterizing Question Facets for CAR** (MacAvaney et al., 2018, SIGIR). Facet-utility modeling for complex answer retrieval. Relevant for making webwalker's link-expansion decisions sensitive to query structure and facet utility rather than flat similarity.
 - **Topic-Sensitive PageRank** (Haveliwala, 2002, WWW). Query-biased PageRank scores. Classic reference for query-conditioned graph priors, relevant to webwalker's dense-started seed selection.
+- **HLP** (Zhou et al., 2022, arXiv 2203.06942). Hyperlink-induced pre-training for passage retrieval. Uses hyperlink topology for dense retriever pre-training. Validates that hyperlinks as retrieval signals is an established idea.
+- **PHP** (Wu et al., 2022, arXiv 2209.06583). Progressive hyperlink prediction for IR pre-training. Together with HLP, shows that hyperlinks were explored for pre-training but not for budgeted selection -- which strengthens webwalker's distinctive contribution.
 
 ### Differentiation from webwalker
 
-Web navigation and crawling work operates on open web graphs with broader objectives (topic harvesting, goal completion). Webwalker adapts the link-following paradigm to a retrieval-evaluation setting: the graph is a bounded corpus with natural hyperlinks, the objective is compact evidence recovery, and success is measured by support F1 under token budgets rather than by page harvest rate or task completion.
+Web navigation and crawling work operates on open web graphs with broader objectives (topic harvesting, goal completion). Hyperlink pre-training work (HLP, PHP) uses link topology to improve dense retrievers at training time but does not use hyperlinks at query time for evidence discovery. Webwalker adapts the link-following paradigm to a retrieval-evaluation setting: the graph is a bounded corpus with natural hyperlinks, the objective is compact evidence recovery, and success is measured by support F1 under token budgets rather than by page harvest rate or task completion.
 
 ### Citation priority
 
@@ -147,7 +180,7 @@ Nogueira and Cho (2016) is the most important single citation for the navigation
 
 ### Narrative flow
 
-The final related work section should follow this order: (1) briefly establish the multi-hop QA evaluation landscape, (2) cover dense and iterative retrieval as the primary baseline family, (3) discuss graph-based retrieval as the closest systems conceptually, (4) highlight the budget-aware retrieval gap, (5) note the corpus/subgraph selection lineage, and (6) briefly mention the web-navigation inspiration. Themes 4 and 5 are where webwalker's novelty is strongest.
+The final related work section should follow this order: (1) briefly establish the multi-hop QA evaluation landscape, (2) cover dense and iterative retrieval as the primary baseline family, (3) discuss graph-based retrieval as the closest systems conceptually (now including HippoRAG 2, GNN-RAG, EcphoryRAG at top venues), (4) highlight the budget-aware retrieval landscape with clear differentiation between post-retrieval budget selection (AdaGReS), budget scaling (Stronger Baselines), agentic retrieval (Search-o1 family), and webwalker's discovery-time budget control, (5) note the corpus/subgraph selection lineage, and (6) briefly mention the web-navigation inspiration. Theme 4 is now richer and requires a more nuanced differentiation than before; the novelty argument is "budget-aware discovery via graph traversal" rather than "budget-aware retrieval is entirely new."
 
 ### What to emphasize
 
@@ -157,10 +190,11 @@ The final related work section should follow this order: (1) briefly establish t
 
 ### What not to overclaim
 
-- Do not write as if the paper already beats all graph-based or learned retrievers (GraphRetriever, HippoRAG are not yet directly compared).
+- Do not write as if the paper already beats all graph-based or learned retrievers (GraphRetriever, HippoRAG/HippoRAG 2 are not yet directly compared).
 - Do not describe `mdr_light` as direct `MDR` -- the paper must use real MDR for the comparison.
 - Do not let related work pull the paper into a full QA-system or end-to-end RAG comparison frame.
-- Do not claim budget-aware retrieval is entirely unprecedented -- Adaptive-RAG and Self-RAG touch on adaptive behavior. The claim is that explicit token-budget-constrained evidence selection as the primary problem formulation is novel.
+- Do not claim budget-aware retrieval is entirely unprecedented -- AdaGReS, Stronger Baselines, and others directly address token-budget-aware context assembly. The refined claim is that explicit **token-budget-constrained evidence *discovery via graph traversal*** is novel. Post-retrieval budget-aware selection (AdaGReS) and budget scaling studies (Stronger Baselines) are acknowledged as related but operate at a different level (post-retrieval compression vs. discovery-time traversal).
+- Do not ignore the agentic retrieval paradigm (Search-o1, R1-Searcher, ReSearch) -- it must be acknowledged as a competing approach with a clear cost/budget differentiation.
 
 ### Approximate length
 
