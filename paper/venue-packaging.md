@@ -26,6 +26,27 @@
   - conference: `2026-07-20` to `2026-07-24`
   - keep `SIGIR` as the default packaging target, but treat `CIKM 2026` as the nearest realistic live submission window unless `SIGIR 2027` dates are published in time
 
+## CCF And Fit Snapshot
+- `SIGIR`: `CCF A`
+  - current best fit for the project's retrieval and evidence-discovery story
+- `KDD`: `CCF A`
+  - viable only if the final paper clears a stronger algorithmic-generalization bar
+- `WWW`: `CCF A`
+  - strongest only if hyperlink navigation becomes the dominant narrative
+- `CIKM`: `CCF B`
+  - the most pragmatic near-term submission window if the project is not ready for `SIGIR 2027`
+
+## 2027 Planning Assumption
+- Treat these as planning assumptions, not official deadlines.
+- If the cycle remains similar:
+  - `WWW 2027`: likely around `2026-09/10`
+  - `SIGIR 2027`: likely around `2027-01`
+  - `KDD 2027`: likely around `2027-02`
+  - `CIKM 2027`: likely around `2027-05`
+- Practical interpretation:
+  - `WWW 2027` is not a fallback after missing `SIGIR 2027`; it likely arrives earlier.
+  - `CIKM 2027` is the timeline-friendly fallback if the project is not ready by the likely `SIGIR 2027` window.
+
 ## SIGIR Package
 - Lead with:
   - evidence discovery over naturally linked corpora
@@ -51,4 +72,5 @@
 ## Venue Decision Rule
 - Stay with `SIGIR` unless the full-IIRC + real `MDR` results clearly justify a stronger algorithmic or hyperlink-navigation framing.
 - If the project needs the nearest realistic 2026 submission window, prefer `CIKM 2026`.
+- If the project misses the likely `SIGIR 2027` window, treat `CIKM 2027` as the default fallback rather than `WWW 2027`.
 - Do not optimize for multiple venues at once during the current closure phase.
