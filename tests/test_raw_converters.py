@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from webwalker.datasets import (
     convert_hotpotqa_raw_dataset,
     convert_iirc_raw_dataset,
@@ -10,6 +13,39 @@ from webwalker.datasets import (
     load_musique_graph,
     load_musique_questions,
 )
+
+
+def _write_iirc_html_raw_dir(tmp_path: Path) -> Path:
+    raw_dir = tmp_path / "iirc-html-raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    payload = [
+        {
+            "title": "Moon Launch Program",
+            "text": "Moon Launch Program launches from Cape Canaveral.",
+            "links": [{"target": "Cape Canaveral", "indices": [33, 48]}],
+            "questions": [
+                {
+                    "qid": "iirc-html-1",
+                    "question": "Which state contains the launch city?",
+                    "answer": {"type": "span", "answer_spans": [{"text": "Florida", "passage": "florida"}]},
+                    "question_links": ["Cape Canaveral", "cape canaveral"],
+                    "context": [
+                        {"passage": "main", "text": "Moon Launch Program launches from Cape Canaveral."},
+                        {"passage": "cape canaveral", "text": "Cape Canaveral is in Florida."},
+                        {"passage": "Florida", "text": "Florida is a state in the United States."},
+                    ],
+                }
+            ],
+        }
+    ]
+    context_articles = {
+        "cape canaveral": 'Cape Canaveral is in <a href="Florida">Florida</a>.',
+        "florida": 'Florida is a state in the <a href="United%20States">United States</a>.',
+    }
+    (raw_dir / "train.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    (raw_dir / "dev.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    (raw_dir / "context_articles.json").write_text(json.dumps(context_articles, ensure_ascii=False), encoding="utf-8")
+    return raw_dir
 
 
 def test_convert_hotpotqa_raw_distractor_builds_case_local_graph(hotpotqa_raw_split_files, tmp_path):
@@ -65,4 +101,24 @@ def test_convert_iirc_raw_flattens_nested_questions_and_context(iirc_raw_archive
 
     assert cases[0].gold_start_nodes == ["Moon Launch Program"]
     assert cases[0].gold_support_nodes == ["Moon Launch Program", "Cape Canaveral", "Florida"]
+    assert "main" not in cases[0].gold_support_nodes
+    assert len({node.lower() for node in cases[0].gold_support_nodes}) == len(cases[0].gold_support_nodes)
     assert set(graph.nodes) == {"Moon Launch Program", "Cape Canaveral", "Florida"}
+
+
+def test_convert_iirc_raw_supports_html_context_articles_and_title_aliases(tmp_path):
+    raw_dir = _write_iirc_html_raw_dir(tmp_path)
+
+    layout = convert_iirc_raw_dataset(raw_dir, tmp_path / "normalized-iirc-html")
+
+    cases = load_iirc_questions(layout.question_paths["dev"])
+    graph = load_iirc_graph(layout.graph_path)
+
+    assert cases[0].gold_start_nodes == ["Moon Launch Program"]
+    assert cases[0].gold_support_nodes == ["Moon Launch Program", "Cape Canaveral", "Florida"]
+    assert cases[0].gold_path_nodes == ["Moon Launch Program", "Cape Canaveral"]
+    assert "main" not in cases[0].gold_support_nodes
+    assert "cape canaveral" not in cases[0].gold_support_nodes
+    assert set(graph.nodes) >= {"Moon Launch Program", "Cape Canaveral", "Florida"}
+    assert graph.links_between("Cape Canaveral", "Florida")[0].anchor_text == "Florida"
+    assert graph.links_between("Florida", "United States")[0].anchor_text == "United States"
