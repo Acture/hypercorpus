@@ -1,4 +1,4 @@
-from webwalker.graph import LinkContextGraph
+from hypercorpus.graph import LinkContextGraph
 
 
 def test_from_2wikimultihop_records_builds_semantic_links():

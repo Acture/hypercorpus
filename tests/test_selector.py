@@ -1,8 +1,8 @@
 import pytest
 
-from webwalker.eval import EvaluationBudget, EvaluationCase
-from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
-from webwalker.selector import (
+from hypercorpus.eval import EvaluationBudget, EvaluationCase
+from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
+from hypercorpus.selector import (
     SelectorBudget,
     SelectionMode,
     SemanticAStarSelector,
@@ -13,7 +13,7 @@ from webwalker.selector import (
     build_selector,
     parse_selector_spec,
 )
-from webwalker.walker import DynamicWalker, LinkContextOverlapStepScorer, WalkBudget
+from hypercorpus.walker import DynamicWalker, LinkContextOverlapStepScorer, WalkBudget
 
 
 class FakeEmbedder:

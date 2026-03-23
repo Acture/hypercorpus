@@ -1,6 +1,6 @@
 # Corpus-Selection Literature Guide
 
-Purpose: paper-facing related-work guide for `webwalker`.
+Purpose: paper-facing related-work guide for `hypercorpus`.
 Canonical for: narrative order, baseline priority, comparator taxonomy, and rebuttal-ready talking points.
 Not for / See also: full annotated inventory lives in `literature-map.md`; framing lives in `paper-positioning.md`; evidence-backed comparator claims live in `phase-decisions.md`.
 
@@ -58,7 +58,7 @@ These works support two points at once: query-conditioned movement on a linked g
 
 ### 4. Use Graph-Retrieval Systems As Comparators, Not The Main Head-To-Head Yet
 
-For the current paper stage, use graph retrieval systems to locate `webwalker` in the literature:
+For the current paper stage, use graph retrieval systems to locate `hypercorpus` in the literature:
 
 - `GraphRetriever`
 - `HippoRAG`
@@ -72,7 +72,7 @@ These are important comparators, but the current evidence does not yet support c
 
 ### 5. Keep End-To-End GraphRAG Systems Secondary
 
-Use these mostly to define the boundary of what `webwalker` is not:
+Use these mostly to define the boundary of what `hypercorpus` is not:
 
 - `GraphRAG`
 - `RAPTOR`
@@ -111,7 +111,7 @@ These are the closest systems conceptually, but not yet the first baselines to i
 - `LightRAG`
 - `RAPTOR`
 
-Use them to define system boundaries and motivate why `webwalker` focuses on pre-RAG corpus selection instead of full-stack retrieval-and-generation.
+Use them to define system boundaries and motivate why `hypercorpus` focuses on pre-RAG corpus selection instead of full-stack retrieval-and-generation.
 
 ## Comparator Taxonomy
 

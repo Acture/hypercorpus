@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from webwalker_cli import app
+from hypercorpus_cli import app
 
 
 def test_fetch_2wiki_cli_downloads_question_and_graph(two_wiki_archives, tmp_path, monkeypatch):
@@ -9,27 +9,27 @@ def test_fetch_2wiki_cli_downloads_question_and_graph(two_wiki_archives, tmp_pat
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "webwalker.datasets.fetch.TWOWIKI_QUESTIONS_URL",
+        "hypercorpus.datasets.fetch.TWOWIKI_QUESTIONS_URL",
         questions_zip.as_uri(),
     )
     monkeypatch.setattr(
-        "webwalker.datasets.TWOWIKI_QUESTIONS_URL",
+        "hypercorpus.datasets.TWOWIKI_QUESTIONS_URL",
         questions_zip.as_uri(),
     )
     monkeypatch.setattr(
-        "webwalker_cli.datasets.TWOWIKI_QUESTIONS_URL",
+        "hypercorpus_cli.datasets.TWOWIKI_QUESTIONS_URL",
         questions_zip.as_uri(),
     )
     monkeypatch.setattr(
-        "webwalker.datasets.fetch.TWOWIKI_GRAPH_URL",
+        "hypercorpus.datasets.fetch.TWOWIKI_GRAPH_URL",
         graph_zip.as_uri(),
     )
     monkeypatch.setattr(
-        "webwalker.datasets.TWOWIKI_GRAPH_URL",
+        "hypercorpus.datasets.TWOWIKI_GRAPH_URL",
         graph_zip.as_uri(),
     )
     monkeypatch.setattr(
-        "webwalker_cli.datasets.TWOWIKI_GRAPH_URL",
+        "hypercorpus_cli.datasets.TWOWIKI_GRAPH_URL",
         graph_zip.as_uri(),
     )
 

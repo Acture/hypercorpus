@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from webwalker.datasets import (
+from hypercorpus.datasets import (
     convert_hotpotqa_raw_dataset,
     convert_iirc_raw_dataset,
     convert_musique_raw_dataset,

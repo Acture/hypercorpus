@@ -1,6 +1,6 @@
 # Hypercorpus Venue Packaging
 
-Purpose: venue-specific formatting notes and submission strategy for the webwalker paper.
+Purpose: venue-specific formatting notes and submission strategy for the hypercorpus paper.
 SIGIR is the default venue. KDD and WWW are packaging alternatives only.
 
 ---

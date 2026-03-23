@@ -2,7 +2,7 @@ import json
 
 from typer.testing import CliRunner
 
-from webwalker_cli import app
+from hypercorpus_cli import app
 
 
 def test_prepare_iirc_store_cli_creates_store(iirc_files, tmp_path):

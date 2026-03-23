@@ -1,6 +1,6 @@
 import json
 
-from webwalker.experiments import (
+from hypercorpus.experiments import (
     merge_hotpotqa_results,
     merge_iirc_results,
     merge_musique_results,

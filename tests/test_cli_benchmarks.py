@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from webwalker_cli import app
+from hypercorpus_cli import app
 
 
 CANONICAL_DENSE = "top_1_seed__lexical_overlap__hop_0__dense"

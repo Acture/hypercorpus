@@ -5,17 +5,17 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from webwalker.baselines import (
+from hypercorpus.baselines import (
     EXTERNAL_MDR_SELECTOR_NAME,
     ExternalMDRSelector,
     MDRArtifactManifest,
     export_iirc_store_to_mdr,
 )
-from webwalker.baselines.mdr import _resolve_mdr_home
-from webwalker.datasets.store import prepare_store_from_records
-from webwalker.eval import EvaluationBudget, EvaluationCase
-from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
-from webwalker_cli import app
+from hypercorpus.baselines.mdr import _resolve_mdr_home
+from hypercorpus.datasets.store import prepare_store_from_records
+from hypercorpus.eval import EvaluationBudget, EvaluationCase
+from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
+from hypercorpus_cli import app
 
 
 class _FakeMDRBackend:
@@ -23,7 +23,7 @@ class _FakeMDRBackend:
         self._paths = paths
 
     def retrieve(self, query: str, *, beam_size: int, topk_paths: int):
-        from webwalker.baselines.mdr import MDRPathResult, MDRQueryResult
+        from hypercorpus.baselines.mdr import MDRPathResult, MDRQueryResult
 
         del query, beam_size, topk_paths
         return MDRQueryResult(paths=list(self._paths), runtime_s=0.01)
@@ -241,7 +241,7 @@ def test_external_mdr_selector_flattens_paths_and_applies_budget():
         embedding_dim=768,
         artifact_manifest_path="/tmp/mdr_artifact_manifest.json",
     )
-    from webwalker.baselines.mdr import MDRPathResult
+    from hypercorpus.baselines.mdr import MDRPathResult
 
     selector = ExternalMDRSelector(
         artifact_manifest=artifact_manifest,

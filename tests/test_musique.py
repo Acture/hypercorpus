@@ -1,4 +1,4 @@
-from webwalker.datasets import MuSiQueAdapter, load_musique_graph, load_musique_questions
+from hypercorpus.datasets import MuSiQueAdapter, load_musique_graph, load_musique_questions
 
 
 def test_load_musique_graph_and_questions(musique_files):

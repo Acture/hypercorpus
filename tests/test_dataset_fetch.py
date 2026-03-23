@@ -6,15 +6,15 @@ import urllib.error
 
 import pytest
 
-from webwalker.datasets.fetch import (
+from hypercorpus.datasets.fetch import (
     fetch_hotpotqa_dataset,
     fetch_iirc_dataset,
     fetch_musique_dataset,
     fetch_2wiki_dataset,
     write_2wiki_sample_dataset,
 )
-from webwalker.datasets.twowiki_store import prepare_2wiki_store
-from webwalker.datasets.twowiki import load_2wiki_graph, load_2wiki_questions
+from hypercorpus.datasets.twowiki_store import prepare_2wiki_store
+from hypercorpus.datasets.twowiki import load_2wiki_graph, load_2wiki_questions
 
 
 def _write_iirc_archive(tmp_path: Path, *, include_context: bool, include_appledouble: bool = False) -> Path:
@@ -171,7 +171,7 @@ def test_fetch_iirc_dataset_extracts_archive_and_writes_source_manifest(iirc_raw
 def test_fetch_iirc_dataset_requires_context_by_default_when_built_in_context_fetch_fails(tmp_path, monkeypatch):
     archive_path = _write_iirc_archive(tmp_path, include_context=False)
     missing_context = tmp_path / "missing-context_articles.tar.gz"
-    monkeypatch.setattr("webwalker.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", missing_context.as_uri())
+    monkeypatch.setattr("hypercorpus.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", missing_context.as_uri())
 
     with pytest.raises(ValueError, match="context_articles.json"):
         fetch_iirc_dataset(tmp_path / "iirc-fetched", archive_url=archive_path.as_uri())
@@ -197,7 +197,7 @@ def test_fetch_iirc_dataset_can_materialize_context_from_local_path(tmp_path):
 def test_fetch_iirc_dataset_uses_built_in_context_source_by_default(tmp_path, monkeypatch):
     archive_path = _write_iirc_archive(tmp_path, include_context=False)
     context_archive = _write_iirc_context_archive(tmp_path)
-    monkeypatch.setattr("webwalker.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", context_archive.as_uri())
+    monkeypatch.setattr("hypercorpus.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", context_archive.as_uri())
 
     layout = fetch_iirc_dataset(tmp_path / "iirc-fetched", archive_url=archive_path.as_uri())
 
@@ -250,7 +250,7 @@ def test_fetch_iirc_dataset_prefers_archive_embedded_context_over_built_in_sourc
             return
         raise AssertionError(f"unexpected download: {source_url} -> {destination}")
 
-    monkeypatch.setattr("webwalker.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", "https://example.invalid/context_articles.tar.gz")
+    monkeypatch.setattr("hypercorpus.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", "https://example.invalid/context_articles.tar.gz")
     layout = fetch_iirc_dataset(
         tmp_path / "iirc-fetched",
         archive_url=iirc_raw_archive.as_uri(),
@@ -262,7 +262,7 @@ def test_fetch_iirc_dataset_prefers_archive_embedded_context_over_built_in_sourc
 
 def test_fetch_iirc_dataset_reports_built_in_context_download_failures(tmp_path, monkeypatch):
     archive_path = _write_iirc_archive(tmp_path, include_context=False)
-    monkeypatch.setattr("webwalker.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", "https://example.invalid/context_articles.tar.gz")
+    monkeypatch.setattr("hypercorpus.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", "https://example.invalid/context_articles.tar.gz")
 
     def _fail_download(source_url: str, destination: Path) -> None:
         if source_url == archive_path.as_uri():

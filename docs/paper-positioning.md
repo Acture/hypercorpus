@@ -1,12 +1,12 @@
 # Paper Positioning
 
-Purpose: canonical paper-facing framing for `webwalker`.
+Purpose: canonical paper-facing framing for `hypercorpus`.
 Canonical for: problem statement, thesis, stable research questions, safe claims, and novelty boundaries.
 Not for / See also: completed empirical support lives in `phase-decisions.md`; active experiment sequencing lives in `next-phase-experiments.md`; code capability lives in `current-implementation.md`; venue-specific packaging lives in `notes/venue-strategy.md`.
 
 ## Problem Framing
 
-`webwalker` targets a narrow problem:
+`hypercorpus` targets a narrow problem:
 
 `query-time budgeted subgraph/corpus discovery for naturally linked corpora before downstream RAG or GraphRAG`
 
@@ -70,7 +70,7 @@ These claims are not supported by current evidence and should stay out of the ma
 
 ### GraphRetriever
 
-`GraphRetriever` is the closest learned ancestor in spirit. It is a trained reasoning-path retriever over a paragraph graph. `webwalker` differs by targeting a dense-started, query-time selector over natural hyperlinks rather than a task-specific learned graph retriever. It is not a drop-in backend for the current framework.
+`GraphRetriever` is the closest learned ancestor in spirit. It is a trained reasoning-path retriever over a paragraph graph. `hypercorpus` differs by targeting a dense-started, query-time selector over natural hyperlinks rather than a task-specific learned graph retriever. It is not a drop-in backend for the current framework.
 
 ### HippoRAG
 

@@ -1,5 +1,5 @@
-from webwalker.answering import Answerer, LLMAnswerer, LLMAnswererConfig
-from webwalker.subgraph import SubgraphExtractor
+from hypercorpus.answering import Answerer, LLMAnswerer, LLMAnswererConfig
+from hypercorpus.subgraph import SubgraphExtractor
 
 
 def test_subgraph_extractor_keeps_query_relevant_context(sample_graph):

@@ -1,4 +1,4 @@
-from webwalker.datasets.twowiki import load_2wiki_graph, load_2wiki_questions
+from hypercorpus.datasets.twowiki import load_2wiki_graph, load_2wiki_questions
 
 
 def test_load_2wiki_graph_uses_titles_as_node_ids(two_wiki_files):

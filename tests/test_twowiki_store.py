@@ -3,7 +3,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from webwalker.datasets import (
+from hypercorpus.datasets import (
     ShardedLinkContextStore,
     StoreObjectInfo,
     inspect_2wiki_store,

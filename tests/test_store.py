@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from webwalker.datasets import PreparedDatasetStore, ShardedDocumentStore, prepare_normalized_graph_store
+from hypercorpus.datasets import PreparedDatasetStore, ShardedDocumentStore, prepare_normalized_graph_store
 
 
 def test_prepare_normalized_graph_store_round_trips_non_twowiki_dataset(iirc_files, tmp_path):

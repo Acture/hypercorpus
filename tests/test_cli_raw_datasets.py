@@ -5,7 +5,7 @@ import tarfile
 
 from typer.testing import CliRunner
 
-from webwalker_cli import app
+from hypercorpus_cli import app
 
 
 def _write_iirc_archive(tmp_path: Path, *, include_context: bool) -> Path:
@@ -102,7 +102,7 @@ def test_fetch_iirc_cli_reports_built_in_context_failures(tmp_path, monkeypatch)
     output_dir = tmp_path / "iirc-fetch"
     archive_path = _write_iirc_archive(tmp_path, include_context=False)
     missing_context = tmp_path / "missing-context_articles.tar.gz"
-    monkeypatch.setattr("webwalker.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", missing_context.as_uri())
+    monkeypatch.setattr("hypercorpus.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", missing_context.as_uri())
     result = runner.invoke(
         app,
         [
@@ -148,7 +148,7 @@ def test_fetch_iirc_cli_uses_built_in_context_source_by_default(tmp_path, monkey
     output_dir = tmp_path / "iirc-fetch"
     archive_path = _write_iirc_archive(tmp_path, include_context=False)
     context_archive = _write_iirc_context_archive(tmp_path)
-    monkeypatch.setattr("webwalker.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", context_archive.as_uri())
+    monkeypatch.setattr("hypercorpus.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", context_archive.as_uri())
     result = runner.invoke(
         app,
         [
@@ -269,7 +269,7 @@ def test_prepare_iirc_store_from_raw_cli_uses_built_in_context_source_by_default
     output_dir = tmp_path / "iirc-from-raw"
     archive_path = _write_iirc_archive(tmp_path, include_context=False)
     context_archive = _write_iirc_context_archive(tmp_path)
-    monkeypatch.setattr("webwalker.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", context_archive.as_uri())
+    monkeypatch.setattr("hypercorpus.datasets.fetch.IIRC_CONTEXT_ARTICLES_URL", context_archive.as_uri())
     result = runner.invoke(
         app,
         [

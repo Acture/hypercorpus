@@ -1,4 +1,4 @@
-from webwalker.text import answer_f1
+from hypercorpus.text import answer_f1
 
 
 def test_answer_f1_scores_partial_overlap():

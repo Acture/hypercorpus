@@ -234,7 +234,7 @@ If `IIRC` does not show that signal, do not invest in a long `HotpotQA fullwiki`
 
 If `HotpotQA fullwiki` is unlocked, only run:
 
-- webwalker shortlist:
+- hypercorpus shortlist:
   - `single_path winner`
   - at most one branchy winner, and only if `IIRC` showed a real gain
 - external baseline shortlist:

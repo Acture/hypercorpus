@@ -71,7 +71,7 @@ Interpretation:
 ## Command Template
 
 ```bash
-uv run webwalker-cli experiments run-iirc-store \
+uv run hypercorpus experiments run-iirc-store \
   --store dataset/iirc/store \
   --output-root /Users/acture/repos/hypercorpus/runs \
   --exp-name iirc-controller-shortlist-v1 \
@@ -86,7 +86,7 @@ uv run webwalker-cli experiments run-iirc-store \
   --selector-api-key-env ANTHROPIC_API_KEY \
   --selector-cache-path runs/iirc-controller-shortlist-v1/selector-cache.jsonl \
   --sentence-transformer-model multi-qa-MiniLM-L6-cos-v1 \
-  --sentence-transformer-cache-path ~/.cache/webwalker/embeddings.sqlite3 \
+  --sentence-transformer-cache-path ~/.cache/hypercorpus/embeddings.sqlite3 \
   --sentence-transformer-device mps \
   --no-e2e \
   --no-export-graphrag-inputs \

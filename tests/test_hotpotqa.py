@@ -1,4 +1,4 @@
-from webwalker.datasets import (
+from hypercorpus.datasets import (
     HotpotQAAdapter,
     build_hotpotqa_distractor_graph_for_case,
     load_hotpotqa_graph,

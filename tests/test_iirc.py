@@ -1,4 +1,4 @@
-from webwalker.datasets.iirc import load_iirc_graph, load_iirc_questions
+from hypercorpus.datasets.iirc import load_iirc_graph, load_iirc_questions
 
 
 def test_load_iirc_graph_builds_link_graph(iirc_files):

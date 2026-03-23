@@ -72,7 +72,7 @@
   2. Constrained hyperlink-local walk with link-context scoring.
   3. Budget-aware fill (budget_fill_relative_drop).
 - Show `LinkContextGraph` structure: nodes (documents), edges (hyperlinks with anchor text + sentence context).
-- Source: `docs/current-implementation.md`, `src/webwalker/graph.py`, `src/webwalker/selector.py`
+- Source: `docs/current-implementation.md`, `src/hypercorpus/graph.py`, `src/hypercorpus/selector.py`
 
 ### Figure 2. Cost-Quality Curve
 

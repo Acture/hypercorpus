@@ -1,6 +1,6 @@
 import pytest
 
-from webwalker.eval import (
+from hypercorpus.eval import (
     CaseEvaluation,
     EndToEndResult,
     EvaluationBudget,
@@ -12,8 +12,8 @@ from webwalker.eval import (
     SelectionResult,
     summarize_evaluations,
 )
-from webwalker.selector import available_selector_names, parse_selector_spec, selector_names_for_preset, select_selectors
-from webwalker.selector import SelectorMetadata, SelectorUsage
+from hypercorpus.selector import available_selector_names, parse_selector_spec, selector_names_for_preset, select_selectors
+from hypercorpus.selector import SelectorMetadata, SelectorUsage
 
 
 def test_available_selector_names_are_canonical_only():

@@ -1,12 +1,12 @@
 # Current Implementation
 
-Purpose: canonical implementation-status document for `webwalker`.
+Purpose: canonical implementation-status document for `hypercorpus`.
 Canonical for: current pipeline shape, supported selector families, evaluation contract, missing pieces, and test coverage.
 Not for / See also: paper-facing claims live in `phase-decisions.md`; active experiment sequencing lives in `next-phase-experiments.md`; framing lives in `paper-positioning.md`.
 
 ## Positioning
 
-`webwalker` currently implements a selector-first experimentation pipeline:
+`hypercorpus` currently implements a selector-first experimentation pipeline:
 
 `query -> start retrieval -> budgeted subgraph/corpus discovery over natural hyperlinks -> lazy extraction -> optional answer synthesis -> evaluation`
 

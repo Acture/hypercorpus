@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from webwalker.experiments import (
+from hypercorpus.experiments import (
     _build_selection_plan,
     _selection_keys_by_case,
     _selection_keys_by_case_selector,
@@ -22,9 +22,9 @@ from webwalker.experiments import (
     run_2wiki_experiment,
     run_2wiki_store_experiment,
 )
-from webwalker.resume import StopRequested
-from webwalker.eval import EvaluationBudget, ExperimentSummary, SelectorBudgetSummary
-from webwalker.reports import (
+from hypercorpus.resume import StopRequested
+from hypercorpus.eval import EvaluationBudget, ExperimentSummary, SelectorBudgetSummary
+from hypercorpus.reports import (
     SUBSET_COMPARISON_FIELDNAMES,
     STUDY_COMPARISON_FIELDNAMES,
     SUMMARY_REPORT_FIELDNAMES,
@@ -33,7 +33,7 @@ from webwalker.reports import (
     subset_comparison_rows,
     summary_report_rows,
 )
-from webwalker.selector import build_selector
+from hypercorpus.selector import build_selector
 
 
 CANONICAL_DENSE = "top_1_seed__lexical_overlap__hop_0__dense"
@@ -290,7 +290,7 @@ def test_run_2wiki_experiment_passes_selector_preset_when_selectors_are_omitted(
         observed["preset"] = kwargs["preset"]
         return [build_selector(CANONICAL_DENSE)]
 
-    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+    monkeypatch.setattr("hypercorpus.experiments.select_selectors", _fake_select_selectors)
 
     evaluations, summary = run_2wiki_experiment(
         questions_path=questions_path,
@@ -319,7 +319,7 @@ def test_run_2wiki_experiment_uses_study_preset_defaults(two_wiki_files, tmp_pat
         observed["include_diagnostics"] = kwargs["include_diagnostics"]
         return [build_selector(CANONICAL_DENSE)]
 
-    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+    monkeypatch.setattr("hypercorpus.experiments.select_selectors", _fake_select_selectors)
 
     evaluations, summary = run_2wiki_experiment(
         questions_path=questions_path,
@@ -347,7 +347,7 @@ def test_run_2wiki_experiment_explicit_selector_preset_overrides_study_selector_
         observed["preset"] = kwargs["preset"]
         return [build_selector(CANONICAL_DENSE)]
 
-    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+    monkeypatch.setattr("hypercorpus.experiments.select_selectors", _fake_select_selectors)
 
     run_2wiki_experiment(
         questions_path=questions_path,
@@ -373,7 +373,7 @@ def test_run_2wiki_experiment_explicit_selectors_override_study_selector_default
         observed["preset"] = kwargs["preset"]
         return [build_selector(CANONICAL_DENSE)]
 
-    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
+    monkeypatch.setattr("hypercorpus.experiments.select_selectors", _fake_select_selectors)
 
     run_2wiki_experiment(
         questions_path=questions_path,
@@ -808,8 +808,8 @@ def test_run_2wiki_experiment_resume_only_runs_remaining_selection(two_wiki_file
             if checkpoint_limit["value"] is not None and self.count >= checkpoint_limit["value"]:
                 raise StopRequested()
 
-    monkeypatch.setattr("webwalker.experiments.select_selectors", _fake_select_selectors)
-    monkeypatch.setattr("webwalker.experiments.InterruptController", ControlledInterruptController)
+    monkeypatch.setattr("hypercorpus.experiments.select_selectors", _fake_select_selectors)
+    monkeypatch.setattr("hypercorpus.experiments.InterruptController", ControlledInterruptController)
 
     partial_evaluations, partial_summary = run_2wiki_experiment(
         questions_path=questions_path,

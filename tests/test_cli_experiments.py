@@ -1,10 +1,10 @@
 from rich.console import Console
 from typer.testing import CliRunner
 
-from webwalker.eval import ExperimentSummary, SelectorBudgetSummary
-from webwalker.logging import DashboardLogBuffer, DashboardLogEntry, DashboardProgressState
-from webwalker_cli import app
-from webwalker_cli.experiments import (
+from hypercorpus.eval import ExperimentSummary, SelectorBudgetSummary
+from hypercorpus.logging import DashboardLogBuffer, DashboardLogEntry, DashboardProgressState
+from hypercorpus_cli import app
+from hypercorpus_cli.experiments import (
     _ExperimentDashboardRenderable,
     _LiveDashboardState,
     _print_summary,
@@ -145,7 +145,7 @@ def test_run_2wiki_cli_forwards_selector_preset_when_selectors_are_omitted(two_w
         captured.update(kwargs)
         return [], ExperimentSummary(dataset_name="2wikimultihop", total_cases=0, selector_budgets=[])
 
-    monkeypatch.setattr("webwalker_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
+    monkeypatch.setattr("hypercorpus_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
 
     result = runner.invoke(
         app,
@@ -184,7 +184,7 @@ def test_run_2wiki_cli_forwards_study_preset_and_case_ids_file(two_wiki_files, t
         captured.update(kwargs)
         return [], ExperimentSummary(dataset_name="2wikimultihop", total_cases=0, selector_budgets=[])
 
-    monkeypatch.setattr("webwalker_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
+    monkeypatch.setattr("hypercorpus_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
 
     result = runner.invoke(
         app,
@@ -268,7 +268,7 @@ def test_run_2wiki_cli_passes_explicit_selectors_alongside_selector_preset(two_w
         captured.update(kwargs)
         return [], ExperimentSummary(dataset_name="2wikimultihop", total_cases=0, selector_budgets=[])
 
-    monkeypatch.setattr("webwalker_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
+    monkeypatch.setattr("hypercorpus_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment)
 
     result = runner.invoke(
         app,
@@ -679,8 +679,8 @@ def test_live_dashboard_renderable_includes_status_summary_health_and_logs():
     log_buffer = DashboardLogBuffer()
     log_buffer.append(
         DashboardLogEntry(
-            rendered="[12:00:00] INFO webwalker.experiments: evaluating q2",
-            logger_name="webwalker.experiments",
+            rendered="[12:00:00] INFO hypercorpus.experiments: evaluating q2",
+            logger_name="hypercorpus.experiments",
             level_name="INFO",
             levelno=20,
         )
@@ -737,7 +737,7 @@ def test_run_with_optional_dashboard_keeps_final_panel(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    monkeypatch.setattr("webwalker_cli.experiments.Live", FakeLive)
+    monkeypatch.setattr("hypercorpus_cli.experiments.Live", FakeLive)
 
     console = Console(force_terminal=True, record=True, width=120)
 

@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from webwalker.eval import EvaluationBudget, EvaluationCase
-from webwalker.selector import build_selector, select_selectors
-from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
-from webwalker.selector_llm import AnthropicBackendAdapter, BackendCompletion
+from hypercorpus.eval import EvaluationBudget, EvaluationCase
+from hypercorpus.selector import build_selector, select_selectors
+from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
+from hypercorpus.selector_llm import AnthropicBackendAdapter, BackendCompletion
 
 SINGLE_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_1"
 TWO_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_2"

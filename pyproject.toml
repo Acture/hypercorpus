@@ -1,5 +1,5 @@
 [project]
-name = "webwalker"
+name = "hypercorpus"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-webwalker-cli = "webwalker_cli:app"
+hypercorpus = "hypercorpus_cli:app"
 
 [build-system]
 requires = ["uv>=0.5.26,<0.6"]
@@ -34,4 +34,4 @@ dev = [
 
 
 [tool.uv.build-backend]
-module-name = ["webwalker", "webwalker_cli"]
+module-name = ["hypercorpus", "hypercorpus_cli"]

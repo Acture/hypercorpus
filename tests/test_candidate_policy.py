@@ -1,5 +1,5 @@
-from webwalker.candidate import select_starting_candidate, select_starting_candidates
-from webwalker.candidate.policy import MaxPhiOverAnchors, SelectByCosTopK
+from hypercorpus.candidate import select_starting_candidate, select_starting_candidates
+from hypercorpus.candidate.policy import MaxPhiOverAnchors, SelectByCosTopK
 
 
 def test_max_phi_over_anchors_returns_ranked_list(sample_graph):

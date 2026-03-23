@@ -51,7 +51,7 @@ For naturally linked corpora, a dense-started, budgeted selector can assemble st
   - `LinkContextGraph G = (V, E)` with edge semantics `(anchor_text, sentence, sent_idx)`.
   - `SelectorBudget B = (token_budget, max_steps, top_k)`.
   - Objective: `argmax_{S subset V, tokens(S) <= B} support_f1(S, gold)`.
-- Source: `docs/paper-positioning.md`, `src/webwalker/graph.py`, `src/webwalker/selector.py`
+- Source: `docs/paper-positioning.md`, `src/hypercorpus/graph.py`, `src/hypercorpus/selector.py`
 
 ### 3. Method (~2 pages)
 

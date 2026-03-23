@@ -1,10 +1,10 @@
-# webwalker
+# hypercorpus
 
 Purpose: repo entrypoint, docs map, and source-of-truth guide.
 Canonical for: project overview, reading order, documentation boundaries, paper workspace pointers, and minimal commands.
 Not for / See also: paper-facing claims live in `docs/phase-decisions.md`; experiment sequencing lives in `docs/next-phase-experiments.md`; live execution status lives outside the repo in the active Linear project; exploratory notes live under `docs/notes/`.
 
-`webwalker` is a `query-time budgeted subgraph/corpus discovery` prototype for naturally linked corpora.
+`hypercorpus` is a `query-time budgeted subgraph/corpus discovery` prototype for naturally linked corpora.
 
 ## What It Is
 
@@ -23,7 +23,7 @@ Not for / See also: paper-facing claims live in `docs/phase-decisions.md`; exper
 
 This repo is organized around one paper-facing question:
 
-`how should webwalker be argued as query-time budgeted subgraph/corpus discovery over naturally linked corpora`
+`how should hypercorpus be argued as query-time budgeted subgraph/corpus discovery over naturally linked corpora`
 
 ### Recommended Reading Order
 
@@ -80,7 +80,7 @@ uv run pytest -q
 Run the current store-backed 2Wiki experiment flow:
 
 ```bash
-uv run webwalker-cli experiments run-2wiki-store \
+uv run hypercorpus experiments run-2wiki-store \
   --store /data/2wiki-store \
   --exp-name pilot-2wiki \
   --split dev \

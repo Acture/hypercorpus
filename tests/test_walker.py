@@ -1,4 +1,4 @@
-from webwalker.walker import DynamicWalker, StopReason, WalkBudget
+from hypercorpus.walker import DynamicWalker, StopReason, WalkBudget
 
 
 def test_dynamic_walker_follows_best_scoring_path(sample_graph):

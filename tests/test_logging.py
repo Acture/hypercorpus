@@ -2,12 +2,12 @@ import logging
 
 from rich.console import Console
 
-from webwalker.logging import DashboardLogBuffer, DashboardProgressState, create_progress, dashboard_session, setup_rich_logging
+from hypercorpus.logging import DashboardLogBuffer, DashboardProgressState, create_progress, dashboard_session, setup_rich_logging
 
 
 def test_dashboard_log_buffer_captures_first_party_info_and_third_party_warnings():
-    setup_rich_logging("webwalker", console=Console(record=True), force=True)
-    first_party = logging.getLogger("webwalker.experiments")
+    setup_rich_logging("hypercorpus", console=Console(record=True), force=True)
+    first_party = logging.getLogger("hypercorpus.experiments")
     third_party = logging.getLogger("urllib3.connectionpool")
     log_buffer = DashboardLogBuffer()
 

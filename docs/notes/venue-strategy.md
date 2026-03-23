@@ -1,6 +1,6 @@
 # Venue Strategy Notes
 
-Purpose: venue-specific packaging note for `webwalker`.
+Purpose: venue-specific packaging note for `hypercorpus`.
 Canonical for: per-venue narrative deltas, fit criteria, and current submission risks.
 Not for / See also: shared framing lives in `../paper-positioning.md`; completed evidence lives in `../phase-decisions.md`; active plan lives in `../next-phase-experiments.md`.
 

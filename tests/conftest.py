@@ -7,8 +7,8 @@ from pathlib import Path
 
 from pytest import fixture
 
-from webwalker.datasets import prepare_2wiki_store, prepare_normalized_graph_store
-from webwalker.graph import DocumentNode, LinkContext, LinkContextGraph
+from hypercorpus.datasets import prepare_2wiki_store, prepare_normalized_graph_store
+from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
 
 
 @fixture

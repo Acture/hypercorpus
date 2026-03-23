@@ -1,4 +1,4 @@
-from webwalker.datasets.docs import load_docs_graph, load_docs_questions
+from hypercorpus.datasets.docs import load_docs_graph, load_docs_questions
 
 
 def test_load_docs_graph_parses_internal_links(docs_files):
