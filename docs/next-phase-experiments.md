@@ -1,12 +1,12 @@
 # Next-Phase Experiments
 
-Purpose: single working plan and run-status log for active experiments.
+Purpose: working sequencing note for active experiments.
 Canonical for: current sequencing, entry criteria, local recovery commands, and immediate next actions.
-Not for / See also: completed claim support lives in `phase-decisions.md`; implementation surface lives in `current-implementation.md`; stable framing lives in `paper-positioning.md`.
+Not for / See also: completed claim support lives in `phase-decisions.md`; implementation surface lives in `current-implementation.md`; stable framing lives in `paper-positioning.md`; live execution status and handoffs live in Linear; milestone-level conclusions live in Notion.
 
-Date: `2026-03-13`
+Date: `2026-03-23`
 
-This document is the working experiment plan. Keep completed, paper-facing decisions in `phase-decisions.md`. Do not create sibling status notes under `runs/` for the current phase; put recovery state here.
+This document is the working experiment sequencing note. Keep completed, paper-facing decisions in `phase-decisions.md`. Do not use this file as a multi-worktree sync board. Keep run-level blocker state, owner changes, and handoff notes in Linear, not in repo-local status prose.
 
 ## Headline Policy Shift
 

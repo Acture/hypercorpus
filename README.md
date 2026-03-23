@@ -1,8 +1,8 @@
 # webwalker
 
 Purpose: repo entrypoint, docs map, and source-of-truth guide.
-Canonical for: project overview, reading order, documentation boundaries, and minimal commands.
-Not for / See also: paper-facing claims live in `docs/phase-decisions.md`; active experiment plan/status lives in `docs/next-phase-experiments.md`; exploratory notes live under `docs/notes/`.
+Canonical for: project overview, reading order, documentation boundaries, paper workspace pointers, and minimal commands.
+Not for / See also: paper-facing claims live in `docs/phase-decisions.md`; experiment sequencing lives in `docs/next-phase-experiments.md`; live execution status lives outside the repo in the active Linear project; exploratory notes live under `docs/notes/`.
 
 `webwalker` is a `query-time budgeted subgraph/corpus discovery` prototype for naturally linked corpora.
 
@@ -41,9 +41,18 @@ This repo is organized around one paper-facing question:
 - [docs/paper-positioning.md](docs/paper-positioning.md): problem framing, thesis, safe claims, and novelty boundaries.
 - [docs/phase-decisions.md](docs/phase-decisions.md): evidence-backed experiment conclusions, remaining ablations, and not-yet-compared systems.
 - [docs/current-implementation.md](docs/current-implementation.md): implementation surface, evaluation contract, current gaps, and test coverage.
-- [docs/next-phase-experiments.md](docs/next-phase-experiments.md): active experiment plan, execution order, local run state, and recovery commands.
+- [docs/next-phase-experiments.md](docs/next-phase-experiments.md): active experiment sequencing, entry criteria, and recovery commands. Live execution state and handoffs belong in Linear.
 - [docs/corpus-selection-literature.md](docs/corpus-selection-literature.md): paper-facing related-work guide and baseline priority.
 - [docs/literature-map.md](docs/literature-map.md): full annotated literature inventory derived from `docs/literature-map.tsv`.
+
+### Paper Workspace
+
+- `paper/outline.md`: working paper skeleton.
+- `paper/claim-ledger.md`: claim-to-evidence tracker for the current draft.
+- `paper/tables-and-figures.md`: main table and figure plan.
+- `paper/open-risks.md`: reviewer and drafting risk tracker.
+- `paper/related-work-outline.md`: section-level related-work plan.
+- `paper/venue-packaging.md`: default venue and alternative packaging notes.
 
 ### Notes
 
@@ -55,7 +64,8 @@ This repo is organized around one paper-facing question:
 - Problem framing belongs in `docs/paper-positioning.md`, not in ad hoc notes.
 - Claim support belongs in `docs/phase-decisions.md`, not in narrative or strategy docs.
 - Implementation status belongs in `docs/current-implementation.md`, not in experiment logs.
-- Active execution order and run recovery belong in `docs/next-phase-experiments.md`.
+- Active sequencing and recovery commands belong in `docs/next-phase-experiments.md`.
+- Live execution status, blockers, and handoffs should not live in repo-local files; keep them in Linear.
 - Bibliography truth lives in `docs/literature-map.tsv`; prose literature guidance lives in `docs/corpus-selection-literature.md`.
 - Notes under `docs/notes/` may inform future work, but they are not canonical claim or implementation documents.
 
