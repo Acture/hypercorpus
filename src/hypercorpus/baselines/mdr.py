@@ -472,13 +472,11 @@ class ExternalMDRSelector:
             SelectorMetadata,
             SelectorUsage,
             _apply_budget_to_ranked_nodes,
-            _finalize_corpus_selection_result,
             _link_key,
             _node_token_cost,
             _query_tokens,
             _runtime_budget_token_limit,
             _selection_coverage_ratio,
-            _selection_timing_scope,
         )
 
         backend = self._get_backend()
@@ -486,103 +484,102 @@ class ExternalMDRSelector:
         beam_size = self._beam_size or artifact_manifest.beam_size
         topk_paths = self._topk_paths or artifact_manifest.topk_paths
 
-        with _selection_timing_scope(case, self.name, budget):
-            started_at = time.perf_counter()
-            retrieval = backend.retrieve(case.query, beam_size=beam_size, topk_paths=topk_paths)
-            ranked_nodes: list[ScoredNode] = []
-            ranked_links: list[ScoredLink] = []
-            trace: list[SelectionTraceStep] = []
-            debug_trace: list[str] = []
-            root_node_ids: list[str] = []
-            seen_nodes: set[str] = set()
-            seen_links: set[tuple[str, str, str, str, int, str | None]] = set()
+        started_at = time.perf_counter()
+        retrieval = backend.retrieve(case.query, beam_size=beam_size, topk_paths=topk_paths)
+        ranked_nodes: list[ScoredNode] = []
+        ranked_links: list[ScoredLink] = []
+        trace: list[SelectionTraceStep] = []
+        debug_trace: list[str] = []
+        root_node_ids: list[str] = []
+        seen_nodes: set[str] = set()
+        seen_links: set[tuple[str, str, str, str, int, str | None]] = set()
 
-            for path_index, path in enumerate(retrieval.paths):
-                debug_trace.append(f"path[{path_index}] score={path.score:.4f} nodes={path.node_ids}")
-                if path.node_ids:
-                    root_node_ids.append(path.node_ids[0])
-                for hop_index, node_id in enumerate(path.node_ids):
-                    if node_id in seen_nodes:
-                        continue
-                    seen_nodes.add(node_id)
-                    score = float(path.score - (path_index * 1e-3) - (hop_index * 1e-6))
-                    ranked_nodes.append(
-                        ScoredNode(
-                            node_id=node_id,
-                            score=score,
-                            source_strategy="external_mdr",
-                            selected_reason="ranked_path",
-                        )
-                    )
-                    trace.append(SelectionTraceStep(index=len(trace), node_id=node_id, score=score))
-
-                for source, target in zip(path.node_ids, path.node_ids[1:]):
-                    links = graph.links_between(source, target)
-                    if not links:
-                        continue
-                    scored_link = ScoredLink.from_link(
-                        links[0],
-                        score=float(path.score),
+        for path_index, path in enumerate(retrieval.paths):
+            debug_trace.append(f"path[{path_index}] score={path.score:.4f} nodes={path.node_ids}")
+            if path.node_ids:
+                root_node_ids.append(path.node_ids[0])
+            for hop_index, node_id in enumerate(path.node_ids):
+                if node_id in seen_nodes:
+                    continue
+                seen_nodes.add(node_id)
+                score = float(path.score - (path_index * 1e-3) - (hop_index * 1e-6))
+                ranked_nodes.append(
+                    ScoredNode(
+                        node_id=node_id,
+                        score=score,
                         source_strategy="external_mdr",
-                        selected_reason="retrieved_path",
+                        selected_reason="ranked_path",
                     )
-                    key = _link_key(scored_link)
-                    if key in seen_links:
-                        continue
-                    seen_links.add(key)
-                    ranked_links.append(scored_link)
+                )
+                trace.append(SelectionTraceStep(index=len(trace), node_id=node_id, score=score))
 
-            runtime_budget = SelectorBudget(
-                max_nodes=None,
-                max_hops=2,
-                max_tokens=_runtime_budget_token_limit(graph, budget),
-            )
-            selected_node_ids, token_cost_estimate = _apply_budget_to_ranked_nodes(graph, ranked_nodes, runtime_budget)
-            selected_node_set = set(selected_node_ids)
-            selected_links = [
-                link
-                for link in ranked_links
-                if link.source in selected_node_set and link.target in selected_node_set
-            ]
-            metadata = SelectorMetadata(
-                scorer_kind="baseline",
-                backend="mdr_official",
-                provider="official",
-                model=artifact_manifest.model_name,
-                seed_strategy="mdr_two_hop_dense",
-                seed_backend="mdr_official",
-                seed_model=artifact_manifest.model_name,
-                seed_top_k=beam_size,
-                hop_budget=2,
-                search_structure="two_hop_dense_retrieval",
-            )
-            usage = SelectorUsage(
-                llm_calls=0,
-                prompt_tokens=0,
-                completion_tokens=0,
-                total_tokens=0,
-            )
-            result = CorpusSelectionResult(
-                selector_name=self.name,
-                query=case.query,
-                ranked_nodes=ranked_nodes,
-                ranked_links=ranked_links,
-                selected_node_ids=selected_node_ids,
-                selected_links=selected_links,
-                token_cost_estimate=token_cost_estimate,
-                strategy="external_mdr",
-                mode=SelectionMode.STANDALONE,
-                debug_trace=debug_trace,
-                coverage_ratio=_selection_coverage_ratio(_query_tokens(case.query), selected_links),
-                root_node_ids=_dedupe(root_node_ids),
-                trace=trace,
-                stop_reason="topk_paths" if retrieval.paths else "no_paths",
-                selector_metadata=metadata,
-                selector_usage=usage,
-                selector_logs=[],
-            )
-            runtime_s = max(time.perf_counter() - started_at, retrieval.runtime_s)
-        return _finalize_corpus_selection_result(result, runtime_s=runtime_s)
+            for source, target in zip(path.node_ids, path.node_ids[1:]):
+                links = graph.links_between(source, target)
+                if not links:
+                    continue
+                scored_link = ScoredLink.from_link(
+                    links[0],
+                    score=float(path.score),
+                    source_strategy="external_mdr",
+                    selected_reason="retrieved_path",
+                )
+                key = _link_key(scored_link)
+                if key in seen_links:
+                    continue
+                seen_links.add(key)
+                ranked_links.append(scored_link)
+
+        runtime_budget = SelectorBudget(
+            max_nodes=None,
+            max_hops=2,
+            max_tokens=_runtime_budget_token_limit(graph, budget),
+        )
+        selected_node_ids, token_cost_estimate = _apply_budget_to_ranked_nodes(graph, ranked_nodes, runtime_budget)
+        selected_node_set = set(selected_node_ids)
+        selected_links = [
+            link
+            for link in ranked_links
+            if link.source in selected_node_set and link.target in selected_node_set
+        ]
+        runtime_s = max(time.perf_counter() - started_at, retrieval.runtime_s)
+        metadata = SelectorMetadata(
+            scorer_kind="baseline",
+            backend="mdr_official",
+            provider="official",
+            model=artifact_manifest.model_name,
+            seed_strategy="mdr_two_hop_dense",
+            seed_backend="mdr_official",
+            seed_model=artifact_manifest.model_name,
+            seed_top_k=beam_size,
+            hop_budget=2,
+            search_structure="two_hop_dense_retrieval",
+        )
+        usage = SelectorUsage(
+            runtime_s=runtime_s,
+            llm_calls=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+        )
+        return CorpusSelectionResult(
+            selector_name=self.name,
+            query=case.query,
+            ranked_nodes=ranked_nodes,
+            ranked_links=ranked_links,
+            selected_node_ids=selected_node_ids,
+            selected_links=selected_links,
+            token_cost_estimate=token_cost_estimate,
+            strategy="external_mdr",
+            mode=SelectionMode.STANDALONE,
+            debug_trace=debug_trace,
+            coverage_ratio=_selection_coverage_ratio(_query_tokens(case.query), selected_links),
+            root_node_ids=_dedupe(root_node_ids),
+            trace=trace,
+            stop_reason="topk_paths" if retrieval.paths else "no_paths",
+            selector_metadata=metadata,
+            selector_usage=usage,
+            selector_logs=[],
+        )
 
     def _get_artifact_manifest(self) -> MDRArtifactManifest:
         if self._artifact_manifest is None:
