@@ -89,57 +89,11 @@ Current conclusion:
 - `lookahead_2 + sentence_transformer + st_future_heavy` is the clear Phase 1 single-path winner.
 - The current overlap control does not remain competitive on the `100`-case sample.
 
-### In-Progress Recovery
-
 #### Baseline Retest
 
 - Run: `runs/2wiki-baseline-retest-s100-v1`
 - Study preset: `baseline_retest_local`
-- Status: interrupted for connectivity reasons
-- Do not merge this run yet.
-
-Chunk state:
-
-- complete: `chunk-00000`
-- complete: `chunk-00001`
-- complete: `chunk-00002`
-- partial, must rerun: `chunk-00003`
-- not started: `chunk-00004`
-
-Important note:
-
-- `chunk-00003` has partial artifacts and should be treated as invalid until rerun to completion.
-
-Resume commands:
-
-```bash
-uv run webwalker-cli experiments run-2wiki-store \
-  --store data/2wiki-store-1k \
-  --exp-name 2wiki-baseline-retest-s100-v1 \
-  --output-root runs \
-  --split dev \
-  --case-ids-file runs/2wiki-sample-s100-v1/evaluated_case_ids.txt \
-  --study-preset baseline_retest_local \
-  --chunk-size 20 \
-  --chunk-index 3 \
-  --no-e2e \
-  --no-export-graphrag-inputs
-
-uv run webwalker-cli experiments run-2wiki-store \
-  --store data/2wiki-store-1k \
-  --exp-name 2wiki-baseline-retest-s100-v1 \
-  --output-root runs \
-  --split dev \
-  --case-ids-file runs/2wiki-sample-s100-v1/evaluated_case_ids.txt \
-  --study-preset baseline_retest_local \
-  --chunk-size 20 \
-  --chunk-index 4 \
-  --no-e2e \
-  --no-export-graphrag-inputs
-
-uv run webwalker-cli experiments merge-2wiki-results \
-  --run-dir runs/2wiki-baseline-retest-s100-v1
-```
+- Status: completed (all 5 chunks finished)
 
 ## 2Wiki Wrap-Up Only
 
@@ -152,6 +106,19 @@ Required remaining work:
 3. Record the current repo-native baseline ordering.
 4. Record the delta between the current `single_path` winner and the best repo-native baseline.
 5. Export subset-aware comparison rows so harder-case signals are visible separately from all-case averages.
+
+Repo-native baseline ordering on `tokens-256` (from `runs/2wiki-baseline-retest-s100-v1`, 100-case sample):
+
+| Rank | Selector | `support_f1_zero_on_empty` |
+| --- | --- | --- |
+| 1 | `gold_support_context` | 1.0000 |
+| 2 | `top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop` | 0.3964 |
+| 3 | `top_3_seed__sentence_transformer__hop_2__iterative_dense__budget_fill_relative_drop` | 0.3852 |
+| 4 | `top_3_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop` | 0.3766 |
+| 5 | `top_3_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop` | 0.3759 |
+| 6 | `top_1_seed__sentence_transformer__hop_2__iterative_dense__budget_fill_relative_drop` | 0.3702 |
+| 7 | `top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop` | 0.3702 |
+| 8 | `full_corpus_upper_bound` | 0.0049 |
 
 Explicitly out of scope on `2Wiki`:
 
@@ -172,13 +139,11 @@ Current semantic-controller lane to develop next:
 - `top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2`
 - `top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2`
 
-Current `2Wiki` baseline retest recovery status:
+Current `2Wiki` baseline retest status:
 
 - run: `runs/2wiki-baseline-retest-s100-v1`
-- completed chunks: `chunk-00000`, `chunk-00001`, `chunk-00002`
-- partial and must rerun: `chunk-00003`
-- not started: `chunk-00004`
-- do not merge until `chunk-00003` and `chunk-00004` are completed and the run is merged cleanly
+- status: completed (all 5 chunks finished)
+
 After `2Wiki` wrap-up, the only internal conclusions to carry forward are:
 
 - the current best dense-anchored selector
@@ -187,11 +152,13 @@ After `2Wiki` wrap-up, the only internal conclusions to carry forward are:
 
 Immediate next actions:
 
-1. Resume and complete `baseline_retest_local`.
-2. Merge the run and write down the best repo-native baseline ordering plus the delta to the `single_path` winner.
+1. ~~Resume and complete `baseline_retest_local`.~~ Done.
+2. ~~Merge the run and write down the best repo-native baseline ordering plus the delta to the `single_path` winner.~~ Done; see table above.
 3. Move directly to `IIRC`; do not reopen extra `2Wiki` confirmation work first.
 
 ## IIRC As The Main Next Phase
+
+> **Deprecation notice (2026-03-23):** All runs in this section that reference `--store dataset/iirc/store` used the partial store (5,184 articles). The full-context store (61,304 articles) is now canonical. These results are retained for historical reference only and must not be cited as evidence in the paper.
 
 `IIRC` is the only required harder-dataset mainline for the next phase.
 
