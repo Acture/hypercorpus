@@ -1,0 +1,65 @@
+---
+title: "Figure 1: webwalker — Budgeted Evidence Discovery Pipeline"
+---
+flowchart LR
+    subgraph Inputs
+        Q["Query q"]
+        G["Linked Corpus G<br/><i>(documents + hyperlinks<br/>with anchor text,<br/>sentence context)</i>"]
+    end
+
+    subgraph S1["Stage 1: Dense Seed Retrieval"]
+        ST["Sentence-Transformer<br/>topk_similar(q, G, k)"]
+    end
+
+    subgraph S2["Stage 2: Hyperlink Walk"]
+        direction TB
+        WALK["Link-Context Scoring"]
+        SC1["Anchor Overlap"]
+        SC2["Embedding"]
+        SC3["LLM"]
+        WALK --- SC1
+        WALK --- SC2
+        WALK --- SC3
+    end
+
+    subgraph S3["Stage 3: Budget Backfill"]
+        direction TB
+        FILL["budget_fill_relative_drop<br/><i>Fill remaining budget via dense</i>"]
+        BAR["🟩 walk | 🟨 backfill<br/><i>Token Budget B</i>"]
+        FILL --- BAR
+    end
+
+    subgraph Output
+        OUT["Selected Evidence S<br/><i>tokens(S) ≤ B</i>"]
+    end
+
+    subgraph DS["Downstream (optional)"]
+        RAG["RAG / GraphRAG"]
+    end
+
+    Q --> ST
+    G --> ST
+    G -- "graph structure" --> WALK
+    ST -- "seeds" --> WALK
+    WALK -- "walk nodes" --> FILL
+    FILL --> OUT
+    OUT -. "compact evidence" .-> RAG
+
+    style Q fill:#e8f0fe,stroke:#5a7bbf
+    style G fill:#e8f0fe,stroke:#5a7bbf
+    style ST fill:#fff3e0,stroke:#e09b3d
+    style WALK fill:#fff3e0,stroke:#e09b3d
+    style SC1 fill:#fff,stroke:#999
+    style SC2 fill:#fff,stroke:#999
+    style SC3 fill:#fff,stroke:#999
+    style FILL fill:#fff3e0,stroke:#e09b3d
+    style BAR fill:#fff3e0,stroke:#e09b3d
+    style OUT fill:#e8f5e9,stroke:#4a8c5c
+    style RAG fill:#f5f5f5,stroke:#999,stroke-dasharray: 5 5
+
+    style Inputs fill:none,stroke:#5a7bbf
+    style S1 fill:#fff8f0,stroke:#e09b3d
+    style S2 fill:#fff8f0,stroke:#e09b3d
+    style S3 fill:#fff8f0,stroke:#e09b3d
+    style Output fill:#f0f8f0,stroke:#4a8c5c
+    style DS fill:none,stroke:#999,stroke-dasharray: 5 5

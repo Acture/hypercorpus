@@ -15,5 +15,6 @@ graphrag/output
 *.db
 
 data/
+!paper/data/
 runs/
 .claude/
