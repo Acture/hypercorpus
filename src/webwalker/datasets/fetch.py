@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import shutil
 import tarfile
 import tempfile
 import urllib.parse
@@ -19,6 +20,7 @@ TWOWIKI_GRAPH_URL = "https://www.dropbox.com/s/wlhw26kik59wbh8/para_with_hyperli
 TWOWIKI_GRAPH_BASENAME = "para_with_hyperlink.jsonl"
 TWOWIKI_SPLITS = ("train", "dev", "test")
 IIRC_ARCHIVE_URL = "https://iirc-dataset.s3.us-west-2.amazonaws.com/iirc_train_dev.tgz"
+IIRC_CONTEXT_ARTICLES_URL = "https://iirc-dataset.s3.us-west-2.amazonaws.com/context_articles.tar.gz"
 MUSIQUE_FULL_SPLIT_URLS = {
     "train": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_full_v1.0_train.jsonl",
     "dev": "https://huggingface.co/datasets/voidful/MuSiQue/resolve/main/musique_full_v1.0_dev.jsonl",
@@ -159,6 +161,8 @@ def fetch_iirc_dataset(
     output_dir: str | Path,
     *,
     archive_url: str | None = None,
+    context_source: str | Path | None = None,
+    require_context: bool = True,
     overwrite: bool = False,
     downloader: DownloadFn = None,
 ) -> RawDatasetLayout:
@@ -180,6 +184,36 @@ def fetch_iirc_dataset(
             if path.is_file():
                 path.unlink()
     _extract_tgz_json_members(archive_path, destination_root=extracted_dir, overwrite=overwrite)
+    context_destination = extracted_dir / "context_articles.json"
+    context_source_ref: str | None = None
+    context_artifact_name: str | None = None
+    if not context_destination.exists():
+        if context_source is not None or require_context:
+            resolved_context_source = context_source if context_source is not None else IIRC_CONTEXT_ARTICLES_URL
+            try:
+                context_source_ref, context_artifact_name = _materialize_iirc_context_source(
+                    resolved_context_source,
+                    archives_dir=archives_dir,
+                    destination=context_destination,
+                    overwrite=overwrite,
+                    downloader=download_impl,
+                )
+            except (FileNotFoundError, tarfile.TarError, urllib.error.URLError, ValueError) as exc:
+                if context_source is not None:
+                    raise
+                if require_context:
+                    raise ValueError(
+                        "IIRC archive did not contain context_articles.json and the built-in context corpus "
+                        f"download failed from {IIRC_CONTEXT_ARTICLES_URL}. Pass --context-source "
+                        "/path/or/url/to/context_articles.json or context_articles.tar.gz, or use "
+                        "--question-only to allow a partial fetch."
+                    ) from exc
+        if require_context and not context_destination.exists():
+            raise ValueError(
+                "IIRC archive did not contain context_articles.json. "
+                "Pass --context-source /path/or/url/to/context_articles.json or context_articles.tar.gz, "
+                "or use --question-only to allow a partial fetch."
+            )
     artifacts = _collect_relative_files(extracted_dir)
     layout = RawDatasetLayout(
         output_dir=resolved_output,
@@ -187,13 +221,19 @@ def fetch_iirc_dataset(
         dataset_name="iirc",
         artifact_paths={path.stem: path for path in artifacts},
     )
+    source_urls = {"archive": source_url}
+    manifest_paths: dict[str, Path] = {"archive": archive_path, **{path.name: path for path in artifacts}}
+    if context_source_ref is not None and context_artifact_name is not None:
+        source_urls[context_artifact_name] = context_source_ref
+        if context_artifact_name == "context_archive":
+            manifest_paths["context_archive"] = archives_dir / "context_articles.tar.gz"
     layout.source_manifest_path = _write_source_manifest(
         raw_dir,
         dataset_name="iirc",
         variant=None,
         artifacts=_manifest_artifacts(
-            {"archive": archive_path, **{path.name: path for path in artifacts}},
-            source_urls={"archive": source_url},
+            manifest_paths,
+            source_urls=source_urls,
         ),
     )
     return layout
@@ -388,10 +428,13 @@ def _extract_tgz_json_members(archive_path: Path, *, destination_root: Path, ove
         for member in archive.getmembers():
             if not member.isfile():
                 continue
+            member_basename = Path(member.name).name
+            if member_basename.startswith("._"):
+                continue
             suffixes = [suffix.lower() for suffix in Path(member.name).suffixes]
             if not suffixes or suffixes[-1] not in {".json", ".jsonl"}:
                 continue
-            destination = destination_root / Path(member.name).name
+            destination = destination_root / member_basename
             if destination.exists() and not overwrite:
                 continue
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -402,9 +445,43 @@ def _extract_tgz_json_members(archive_path: Path, *, destination_root: Path, ove
                 copy_stream_with_progress(
                     src,
                     dst,
-                    description=f"extract {Path(member.name).name}",
+                    description=f"extract {member_basename}",
                     total=member.size,
                 )
+
+
+def _extract_tgz_member_by_basename(
+    archive_path: Path,
+    *,
+    basename: str,
+    destination: Path,
+    overwrite: bool,
+) -> None:
+    if destination.exists() and not overwrite:
+        return
+
+    with tarfile.open(archive_path, "r:*") as archive:
+        member = next(
+            (
+                candidate
+                for candidate in archive.getmembers()
+                if candidate.isfile() and Path(candidate.name).name == basename
+            ),
+            None,
+        )
+        if member is None:
+            raise FileNotFoundError(f"Archive {archive_path} does not contain {basename}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            raise FileNotFoundError(f"Archive {archive_path} member {basename} could not be extracted")
+        with extracted as src, destination.open("wb") as dst:
+            copy_stream_with_progress(
+                src,
+                dst,
+                description=f"extract {basename}",
+                total=member.size,
+            )
 
 
 def _find_member_by_basename(names: list[str], basename: str) -> str | None:
@@ -514,6 +591,76 @@ def _download_google_drive(source_url: str, destination: Path) -> None:
                 return
         with destination.open("wb") as handle:
             handle.write(body)
+
+
+def _materialize_iirc_context_source(
+    source: str | Path,
+    *,
+    archives_dir: Path,
+    destination: Path,
+    overwrite: bool,
+    downloader: DownloadFn,
+) -> tuple[str, str]:
+    if destination.exists() and not overwrite:
+        return destination.resolve().as_uri(), "context_articles.json"
+
+    source_path = source if isinstance(source, Path) else Path(urllib.parse.urlparse(source).path)
+    suffixes = [suffix.lower() for suffix in source_path.suffixes]
+    is_archive = len(suffixes) >= 2 and suffixes[-2:] == [".tar", ".gz"]
+
+    if isinstance(source, Path):
+        resolved_source = source.expanduser().resolve()
+        if not resolved_source.exists():
+            raise FileNotFoundError(f"IIRC context source does not exist: {resolved_source}")
+        if is_archive:
+            archive_destination = archives_dir / "context_articles.tar.gz"
+            archive_destination.parent.mkdir(parents=True, exist_ok=True)
+            if overwrite or not archive_destination.exists():
+                shutil.copy2(resolved_source, archive_destination)
+            _extract_tgz_member_by_basename(
+                archive_destination,
+                basename="context_articles.json",
+                destination=destination,
+                overwrite=overwrite,
+            )
+            return resolved_source.as_uri(), "context_archive"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(resolved_source, destination)
+        return resolved_source.as_uri(), "context_articles.json"
+
+    parsed = urllib.parse.urlparse(source)
+    if parsed.scheme:
+        if is_archive:
+            archive_destination = archives_dir / "context_articles.tar.gz"
+            downloader(source, archive_destination)
+            _extract_tgz_member_by_basename(
+                archive_destination,
+                basename="context_articles.json",
+                destination=destination,
+                overwrite=overwrite,
+            )
+            return source, "context_archive"
+        downloader(source, destination)
+        return source, "context_articles.json"
+
+    resolved_source = Path(source).expanduser().resolve()
+    if not resolved_source.exists():
+        raise FileNotFoundError(f"IIRC context source does not exist: {resolved_source}")
+    if is_archive:
+        archive_destination = archives_dir / "context_articles.tar.gz"
+        archive_destination.parent.mkdir(parents=True, exist_ok=True)
+        if overwrite or not archive_destination.exists():
+            shutil.copy2(resolved_source, archive_destination)
+        _extract_tgz_member_by_basename(
+            archive_destination,
+            basename="context_articles.json",
+            destination=destination,
+            overwrite=overwrite,
+        )
+        return resolved_source.as_uri(), "context_archive"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(resolved_source, destination)
+    return resolved_source.as_uri(), "context_articles.json"
 
 
 def _normalize_dropbox_url(source_url: str) -> str:

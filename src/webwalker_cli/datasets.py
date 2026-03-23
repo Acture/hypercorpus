@@ -82,7 +82,7 @@ def fetch_2wiki(
             keep_archives=keep_archives,
             overwrite=overwrite,
         )
-    except ValueError as exc:
+    except (ValueError, FileNotFoundError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
     _print_dataset_layout(console, layout)
@@ -106,15 +106,24 @@ def write_2wiki_sample(
 def fetch_iirc(
     output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory for downloaded raw artifacts"),
     archive_url: str = typer.Option(IIRC_ARCHIVE_URL, "--archive-url", help="Override URL for the IIRC train/dev archive"),
+    context_source: str | None = typer.Option(None, "--context-source", help="Override the built-in IIRC context source with a local path or URL to context_articles.json or context_articles.tar.gz"),
+    question_only: bool = typer.Option(False, "--question-only", help="Skip downloading the built-in IIRC context corpus and allow a partial fetch"),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing downloaded/extracted files"),
 ) -> None:
     console = Console()
-    layout = fetch_iirc_dataset(
-        output_dir,
-        archive_url=archive_url,
-        overwrite=overwrite,
-    )
+    try:
+        layout = fetch_iirc_dataset(
+            output_dir,
+            archive_url=archive_url,
+            context_source=context_source,
+            require_context=not question_only,
+            overwrite=overwrite,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
     _print_raw_layout(console, layout)
+    if question_only:
+        console.print("warning: fetched IIRC raw artifacts do not guarantee a complete context graph; convert/store results may be partial.")
     console.print("next:")
     console.print(f"uv run webwalker-cli datasets convert-iirc-raw --raw-dir {layout.raw_dir / 'iirc'} --output-dir {output_dir / 'normalized'}")
 
@@ -238,6 +247,8 @@ def convert_hotpotqa_raw(
 def prepare_iirc_store_from_raw(
     output_dir: Path = typer.Option(..., "--output-dir", file_okay=False, help="Directory containing raw/ normalized/ store/"),
     archive_url: str = typer.Option(IIRC_ARCHIVE_URL, "--archive-url", help="Override URL for the IIRC train/dev archive"),
+    context_source: str | None = typer.Option(None, "--context-source", help="Override the built-in IIRC context source with a local path or URL to context_articles.json or context_articles.tar.gz"),
+    question_only: bool = typer.Option(False, "--question-only", help="Skip downloading the built-in IIRC context corpus and allow a partial fetch"),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite any existing outputs under output-dir"),
     min_free_gib: float = typer.Option(DEFAULT_MIN_FREE_GIB, "--min-free-gib", min=1.0, help="Minimum free space to preserve"),
 ) -> None:
@@ -245,7 +256,16 @@ def prepare_iirc_store_from_raw(
     raw_root = output_dir / "raw-fetch"
     normalized_root = output_dir / "normalized"
     store_root = output_dir / "store"
-    layout = fetch_iirc_dataset(raw_root, archive_url=archive_url, overwrite=overwrite)
+    try:
+        layout = fetch_iirc_dataset(
+            raw_root,
+            archive_url=archive_url,
+            context_source=context_source,
+            require_context=not question_only,
+            overwrite=overwrite,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     normalized = convert_iirc_raw_dataset(
         layout.raw_dir / "iirc",
         normalized_root,
