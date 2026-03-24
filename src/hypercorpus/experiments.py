@@ -1470,6 +1470,7 @@ def _case_from_selection_record(record: dict[str, Any]) -> EvaluationCase:
             if record.get("gold_path_nodes") is None
             else [str(node_id) for node_id in record.get("gold_path_nodes", [])]
         ),
+        question_type=None if record.get("question_type") is None else str(record["question_type"]),
     )
 
 
@@ -1526,6 +1527,7 @@ def _selection_result_from_record(
             support_precision=metrics_payload.get("support_precision"),
             support_f1=metrics_payload.get("support_f1"),
             support_f1_zero_on_empty=metrics_payload.get("support_f1_zero_on_empty"),
+            support_set_em=metrics_payload.get("support_set_em"),
             path_hit=metrics_payload.get("path_hit"),
         ),
         trace=[selection_trace_step_from_dict(step) for step in selection_payload.get("trace", [])],
@@ -2932,6 +2934,7 @@ def _selection_record(evaluation: CaseEvaluation, selection) -> dict[str, Any]:
         "gold_support_nodes": evaluation.case.gold_support_nodes,
         "gold_start_nodes": evaluation.case.gold_start_nodes,
         "gold_path_nodes": evaluation.case.gold_path_nodes,
+        "question_type": evaluation.case.question_type,
         "selector": selection.selector_name,
         "budget_mode": selection.budget.budget_mode,
         "budget_value": selection.budget.budget_value,
@@ -3074,6 +3077,11 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
             for row in rows
             if row["selection"]["metrics"].get("support_f1_zero_on_empty") is not None
         ]
+        support_set_em = [
+            float(row["selection"]["metrics"]["support_set_em"])
+            for row in rows
+            if row["selection"]["metrics"].get("support_set_em") is not None
+        ]
         path_hits = [
             1.0 if row["selection"]["metrics"]["path_hit"] else 0.0
             for row in rows
@@ -3157,6 +3165,7 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
                 "avg_support_precision": _average_or_none(support_precision),
                 "avg_support_f1": _average_or_none(support_f1),
                 "avg_support_f1_zero_on_empty": _average_or_none(support_f1_zero_on_empty),
+                "avg_support_set_em": _average_or_none(support_set_em),
                 "avg_path_hit": _average_or_none(path_hits),
                 "avg_selected_nodes": _average_or_none(selected_nodes) or 0.0,
                 "avg_selected_token_estimate": _average_or_none(selected_tokens) or 0.0,

@@ -7,6 +7,7 @@ from typing import Any
 from hypercorpus.datasets.common import (
     BaseDatasetAdapter,
     NormalizedDatasetLayout,
+    coerce_question_type,
     dedupe_strings,
     load_json_records,
     pick_first,
@@ -61,6 +62,7 @@ def load_musique_questions(
                 gold_support_nodes=support_nodes,
                 gold_start_nodes=start_nodes,
                 gold_path_nodes=path_nodes,
+                question_type=coerce_question_type(pick_first(record, "question_type", "type")),
             )
         )
     return cases

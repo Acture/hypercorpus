@@ -20,6 +20,7 @@ from hypercorpus.walker import WalkStepLog
 
 DEFAULT_TOKEN_BUDGETS: tuple[int, ...] = (128, 256, 512, 1024)
 DEFAULT_BUDGET_RATIOS: tuple[float, ...] = (0.01, 0.02, 0.05, 0.10, 1.0)
+QuestionType = Literal["bridge", "comparison", "unknown"]
 
 
 @dataclass(slots=True)
@@ -31,12 +32,18 @@ class EvaluationCase:
     gold_support_nodes: list[str] = field(default_factory=list)
     gold_start_nodes: list[str] = field(default_factory=list)
     gold_path_nodes: list[str] | None = None
+    question_type: QuestionType | None = None
 
     def __post_init__(self) -> None:
         self.gold_support_nodes = _dedupe(self.gold_support_nodes)
         self.gold_start_nodes = _dedupe(self.gold_start_nodes or self.gold_support_nodes)
         if self.gold_path_nodes is not None:
             self.gold_path_nodes = _dedupe(self.gold_path_nodes)
+        self.question_type = _normalize_or_infer_question_type(
+            self.question_type,
+            gold_support_nodes=self.gold_support_nodes,
+            gold_path_nodes=self.gold_path_nodes,
+        )
 
 
 @dataclass(slots=True)
@@ -104,6 +111,7 @@ class SelectionMetrics:
     support_precision: float | None = None
     support_f1: float | None = None
     support_f1_zero_on_empty: float | None = None
+    support_set_em: float | None = None
     path_hit: bool | None = None
 
 
@@ -176,6 +184,7 @@ class SelectorBudgetSummary:
     avg_selector_parse_failure_rate: float | None
     avg_answer_em: float | None
     avg_answer_f1: float | None
+    avg_support_set_em: float | None = None
 
 
 @dataclass(slots=True)
@@ -226,6 +235,7 @@ class _SelectorBudgetAccumulator:
     avg_empty_selection_rate: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selection_runtime_s: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_support_f1_zero_on_empty: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+    avg_support_set_em: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selector_prompt_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selector_completion_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
     avg_selector_total_tokens: _AverageAccumulator = field(default_factory=_AverageAccumulator)
@@ -253,6 +263,7 @@ class _SelectorBudgetAccumulator:
         self.avg_empty_selection_rate.add(1.0 if metrics.empty_selection else 0.0)
         self.avg_selection_runtime_s.add(metrics.selection_runtime_s)
         self.avg_support_f1_zero_on_empty.add(metrics.support_f1_zero_on_empty)
+        self.avg_support_set_em.add(metrics.support_set_em)
         if usage is not None:
             self.avg_selector_prompt_tokens.add(float(usage.prompt_tokens))
             self.avg_selector_completion_tokens.add(float(usage.completion_tokens))
@@ -290,6 +301,7 @@ class _SelectorBudgetAccumulator:
             avg_empty_selection_rate=self.avg_empty_selection_rate.average_or_zero(),
             avg_selection_runtime_s=self.avg_selection_runtime_s.average_or_zero(),
             avg_support_f1_zero_on_empty=self.avg_support_f1_zero_on_empty.average(),
+            avg_support_set_em=self.avg_support_set_em.average(),
             avg_selector_prompt_tokens=self.avg_selector_prompt_tokens.average(),
             avg_selector_completion_tokens=self.avg_selector_completion_tokens.average(),
             avg_selector_total_tokens=self.avg_selector_total_tokens.average(),
@@ -437,6 +449,7 @@ def _selection_result_from_raw(
         support_precision=_precision(corpus.node_ids, case.gold_support_nodes),
         support_f1=_support_f1(corpus.node_ids, case.gold_support_nodes),
         support_f1_zero_on_empty=_support_f1_zero_on_empty(corpus.node_ids, case.gold_support_nodes),
+        support_set_em=_support_set_em(corpus.node_ids, case.gold_support_nodes),
         path_hit=_path_hit(corpus.node_ids, case.gold_path_nodes),
     )
     return SelectionResult(
@@ -588,6 +601,12 @@ def _support_f1_zero_on_empty(selected_nodes: Sequence[str], gold_nodes: Sequenc
     return None
 
 
+def _support_set_em(selected_nodes: Sequence[str], gold_nodes: Sequence[str]) -> float | None:
+    if not gold_nodes:
+        return None
+    return 1.0 if set(gold_nodes).issubset(set(selected_nodes)) else 0.0
+
+
 def _path_hit(selected_nodes: Sequence[str], gold_path_nodes: Sequence[str] | None) -> bool | None:
     if not gold_path_nodes:
         return None
@@ -612,6 +631,23 @@ def _em(answer: str, expected_answer: str | None) -> float | None:
     if expected_answer is None:
         return None
     return 1.0 if normalize_answer(answer) == normalize_answer(expected_answer) else 0.0
+
+
+def _normalize_or_infer_question_type(
+    value: QuestionType | str | None,
+    *,
+    gold_support_nodes: Sequence[str],
+    gold_path_nodes: Sequence[str] | None,
+) -> QuestionType:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"bridge", "comparison", "unknown"}:
+            return normalized  # type: ignore[return-value]
+    if gold_path_nodes:
+        return "bridge"
+    if len(set(gold_support_nodes)) >= 2:
+        return "comparison"
+    return "unknown"
 
 
 __all__ = [

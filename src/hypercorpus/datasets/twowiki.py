@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, TextIO
 
-from hypercorpus.datasets.common import BaseDatasetAdapter
+from hypercorpus.datasets.common import BaseDatasetAdapter, coerce_question_type
 from hypercorpus.logging import create_progress, should_render_progress
 from hypercorpus.eval import EvaluationCase
 from hypercorpus.graph import LinkContextGraph
@@ -75,6 +75,7 @@ def load_2wiki_questions(
                 dataset_name="2wikimultihop",
                 gold_support_nodes=gold_support_nodes,
                 gold_start_nodes=list(gold_support_nodes),
+                question_type=coerce_question_type(record.get("type")),
             )
         )
 

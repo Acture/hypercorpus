@@ -38,6 +38,7 @@ SUMMARY_REPORT_FIELDNAMES = [
     "support_precision",
     "support_f1",
     "support_f1_zero_on_empty",
+    "support_set_em",
     "budget_utilization",
     "budget_adherence",
     "empty_selection_rate",
@@ -58,6 +59,7 @@ STUDY_COMPARISON_FIELDNAMES = [
     "budget_label",
     "control_selector_name",
     "avg_support_f1",
+    "avg_support_set_em",
     "avg_support_precision",
     "avg_support_recall",
     "avg_path_hit",
@@ -76,6 +78,7 @@ SUBSET_COMPARISON_FIELDNAMES = [
     "control_selector_name",
     "num_cases",
     "avg_support_f1_zero_on_empty",
+    "avg_support_set_em",
     "avg_support_precision",
     "avg_support_recall",
     "avg_path_hit",
@@ -216,6 +219,7 @@ def study_comparison_rows(
                     "budget_label": budget_label,
                     "control_selector_name": control_selector_name,
                     "avg_support_f1": selector_budget.avg_support_f1,
+                    "avg_support_set_em": selector_budget.avg_support_set_em,
                     "avg_support_precision": selector_budget.avg_support_precision,
                     "avg_support_recall": selector_budget.avg_support_recall,
                     "avg_path_hit": selector_budget.avg_path_hit,
@@ -311,6 +315,8 @@ def subset_comparison_rows(
     rows: list[dict[str, Any]] = []
     for subset_label, predicate in _subset_predicates():
         subset_records = [record for record in records if predicate(record)]
+        if not subset_records:
+            continue
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for record in subset_records:
             grouped.setdefault((str(record["selector"]), str(record["budget_label"])), []).append(record)
@@ -335,6 +341,7 @@ def subset_comparison_rows(
                     "control_selector_name": control_selector_name,
                     "num_cases": aggregate["num_cases"],
                     "avg_support_f1_zero_on_empty": aggregate["avg_support_f1_zero_on_empty"],
+                    "avg_support_set_em": aggregate["avg_support_set_em"],
                     "avg_support_precision": aggregate["avg_support_precision"],
                     "avg_support_recall": aggregate["avg_support_recall"],
                     "avg_path_hit": aggregate["avg_path_hit"],
@@ -409,6 +416,7 @@ def _selector_budget_report_row(dataset_name: str, selector_budget: SelectorBudg
         "support_precision": selector_budget.avg_support_precision,
         "support_f1": selector_budget.avg_support_f1,
         "support_f1_zero_on_empty": selector_budget.avg_support_f1_zero_on_empty,
+        "support_set_em": selector_budget.avg_support_set_em,
         "budget_utilization": selector_budget.avg_budget_utilization,
         "budget_adherence": selector_budget.avg_budget_adherence,
         "empty_selection_rate": selector_budget.avg_empty_selection_rate,
@@ -465,6 +473,8 @@ def _selector_spec_details(selector_name: str) -> dict[str, Any]:
 def _subset_predicates() -> list[tuple[str, Any]]:
     return [
         ("all_cases", lambda _record: True),
+        ("bridge", lambda record: _record_question_type(record) == "bridge"),
+        ("comparison", lambda record: _record_question_type(record) == "comparison"),
         ("support_count_ge_4", lambda record: len(record.get("gold_support_nodes", [])) >= 4),
         ("has_gold_path", lambda record: bool(record.get("gold_path_nodes"))),
         (
@@ -479,6 +489,7 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         return {
             "num_cases": 0,
             "avg_support_f1_zero_on_empty": None,
+            "avg_support_set_em": None,
             "avg_support_precision": None,
             "avg_support_recall": None,
             "avg_path_hit": None,
@@ -492,6 +503,11 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         float(record["selection"]["metrics"]["support_f1_zero_on_empty"])
         for record in rows
         if record["selection"]["metrics"].get("support_f1_zero_on_empty") is not None
+    ]
+    support_set_em = [
+        float(record["selection"]["metrics"]["support_set_em"])
+        for record in rows
+        if record["selection"]["metrics"].get("support_set_em") is not None
     ]
     support_precision = [
         float(record["selection"]["metrics"]["support_precision"])
@@ -530,6 +546,7 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return {
         "num_cases": len(rows),
         "avg_support_f1_zero_on_empty": _mean_or_none(support_f1),
+        "avg_support_set_em": _mean_or_none(support_set_em),
         "avg_support_precision": _mean_or_none(support_precision),
         "avg_support_recall": _mean_or_none(support_recall),
         "avg_path_hit": _mean_or_none(path_hit),
@@ -550,6 +567,19 @@ def _mean_or_none(values: Sequence[float]) -> float | None:
 def _mean_or_zero(values: Sequence[float]) -> float:
     value = _mean_or_none(values)
     return value if value is not None else 0.0
+
+
+def _record_question_type(record: dict[str, Any]) -> str:
+    raw = record.get("question_type")
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"bridge", "comparison", "unknown"}:
+            return normalized
+    if record.get("gold_path_nodes"):
+        return "bridge"
+    if len(set(record.get("gold_support_nodes", []))) >= 2:
+        return "comparison"
+    return "unknown"
 
 
 def _subset_delta(

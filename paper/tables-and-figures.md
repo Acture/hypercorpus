@@ -17,8 +17,10 @@
   - `gold_support_context` (oracle)
 - Columns:
   - `support_f1_zero_on_empty`
+  - `support_set_em`
   - `support_precision`
   - `support_recall`
+  - `avg_path_hit`
   - `budget_utilization`
   - `selection_runtime_s`
   - `selector_total_tokens` (LLM cost)
@@ -30,8 +32,11 @@
 **Status: BLOCKED on WS1/ACT-5.**
 
 - Same selector rows as Table 1.
-- Only harder slices (cases where dense control fails to recover any support).
-- Goal: show whether gains are concentrated on the difficult portion rather than only all-case averages.
+- Primary slices:
+  - `bridge`
+  - `comparison`
+  - harder slices where dense control fails to recover any support
+- Goal: show whether gains are concentrated on bridge-style evidence chaining and difficult cases rather than only all-case averages.
 - Data source: `subset_comparison_rows.csv` from full-IIRC runs.
 
 ### Table 3. 2Wiki Calibration Summary

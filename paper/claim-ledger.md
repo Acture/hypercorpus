@@ -11,7 +11,7 @@ Track which paper claims are already supported, which are still conditional, and
 | C2 | Dense-started hyperlink-local selection beats the flat dense control on `2Wiki`. | **Supported (calibration only)** | `runs/2wiki-single-path-edge-ablation-s100-v1`: single-path winner F1 = 0.4139 vs dense F1 = 0.3964 at tokens-256, 100 cases. Delta: +0.0175 F1, +0.09 recall. | Reframe as calibration evidence only. Not the main result. |
 | C3 | `2Wiki` should not be the main decision surface. | **Supported** | `docs/next-phase-experiments.md`. Dense control is already strong on 2Wiki; deltas are small. Harder dataset needed to show method value. | Close remaining 2Wiki wrap-up. |
 | C4 | Full-IIRC replaces the old partial-IIRC store as the only valid IIRC judgment surface. | **Supported on implementation facts** | Full-context fetch + conversion fix. Partial store: 5,184 articles. Full store: 61,304 articles (11.8x expansion). | Land the canonical full-IIRC artifact set under `dataset/iirc_full/`. **(WS1/ACT-5 dependency)** |
-| C5 | The project has a reviewer-acceptable external comparator through real `MDR`. | **In progress** | Official `MDR` integration exists in code (`baselines/mdr` submodule, `baselines/mdr.py`). | Close `export -> train -> index -> run` pipeline and generate paper-facing table. **(WS1/ACT-5 dependency)** |
+| C5 | The project has a reviewer-acceptable external comparator through real `MDR`. | **In progress** | Official `MDR` integration exists in code (`baselines/mdr` submodule, `baselines/mdr.py`). | Close `export -> train -> index -> run` pipeline, and surface reviewer-friendly diagnostics (`support_set_em`, `avg_path_hit`, `bridge/comparison` splits) in the same comparison surface. **(WS1/ACT-5 dependency)** |
 | C6 | Sentence-transformer seeds are stronger than lexical seeds. | **Supported** | `runs/phase-decision-30`: ST dense F1 = 0.4124 vs lexical dense F1 = 0.3535 (30 cases, budget 256). Confirmed on 100-case sample: ST start_hit = 0.97 vs lexical start_hit = 0.63. | Stable. |
 | C7 | `budget_fill_relative_drop` is an effective component. | **Supported** | `runs/phase-decision-30`: eliminates empty selections (0.0 empty rate). Improves all-case F1. Without fill, lexical dense has 26.7% empty rate and F1 drops from 0.3535 to 0.3022. | Stable. Can be written up as a contribution component. |
 | C8 | Under a fixed 256-token budget, wider/deeper graph search (beam, astar) hurts by collapsing precision. | **Supported on 2Wiki** | `runs/phase-decision-30`: beam overlap F1 = 0.2272, astar overlap F1 = 0.1472 vs dense F1 = 0.4124. Precision collapse is clear. | Needs IIRC confirmation that this pattern transfers. |
@@ -57,5 +57,6 @@ C12 (beats graph systems)        --> BLOCKED on C10, C11 + additional baselines
 2. **[WS1/ACT-5]** Close real `MDR` as a runnable comparator (export -> train -> index -> run).
 3. **[WS1/ACT-5]** Rerun IIRC controller shortlist on full store at budgets 384 and 512.
 4. **[WS1/ACT-5]** Generate the full-IIRC paper-facing table.
-5. **[CTRL/ACT-9]** Freeze the main claim boundary (CTRL gate 4) before drafting introduction and conclusion.
-6. **[WS3/ACT-6]** Begin prose drafting only after gate 4 is passed.
+5. **[WS1/ACT-5]** Land reviewer-friendly MDR-aligned diagnostics in the unified evaluation (`support_set_em`, `avg_path_hit`, `bridge/comparison` split).
+6. **[CTRL/ACT-9]** Freeze the main claim boundary (CTRL gate 4) before drafting introduction and conclusion.
+7. **[WS3/ACT-6]** Begin prose drafting only after gate 4 is passed.

@@ -9,7 +9,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from hypercorpus.datasets.common import BaseDatasetAdapter, dedupe_strings, load_json_records, pick_first
+from hypercorpus.datasets.common import BaseDatasetAdapter, coerce_question_type, dedupe_strings, load_json_records, pick_first
 from hypercorpus.eval import EvaluationCase
 from hypercorpus.graph import LinkContextGraph
 
@@ -59,6 +59,7 @@ def load_docs_questions(
                 gold_support_nodes=support_nodes,
                 gold_start_nodes=start_nodes,
                 gold_path_nodes=path_nodes,
+                question_type=coerce_question_type(pick_first(record, "question_type", "type")),
             )
         )
 

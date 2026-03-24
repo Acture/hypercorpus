@@ -224,6 +224,7 @@ def two_wiki_questions() -> list[dict]:
 			"_id": "q1",
 			"question": "Which city hosts the launch site?",
 			"answer": "Cape Canaveral",
+			"type": "bridge",
 			"supporting_facts": [
 				["Moon Launch Program", 0],
 				["Cape Canaveral", 0],
@@ -233,6 +234,7 @@ def two_wiki_questions() -> list[dict]:
 			"_id": "q2",
 			"question": "Who directed the Moon Launch Program?",
 			"answer": "Alice Johnson",
+			"type": "bridge",
 			"supporting_facts": [
 				["Moon Launch Program", 1],
 				["Alice Johnson", 0],

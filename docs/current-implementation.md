@@ -53,12 +53,16 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
   - `support_precision`
   - `support_f1`
   - `support_f1_zero_on_empty`
+  - `support_set_em`
   - `budget_adherence`
   - `budget_utilization`
   - `empty_selection`
   - `selection_runtime_s`
   - `selected_nodes_count`
   - `selected_token_estimate`
+- Reviewer-facing diagnostics also include:
+  - `avg_path_hit` as the unified path-level exactness metric (`Path Recall` analogue)
+  - `bridge` / `comparison` subset slices when `question_type` is available or inferable
 - Secondary metrics include:
   - `answer_em`
   - `answer_f1`

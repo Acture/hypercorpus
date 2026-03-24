@@ -18,7 +18,7 @@ DATA = ROOT / "paper" / "data"
 
 METRIC_COLS = [
     "support_recall", "support_precision", "support_f1",
-    "support_f1_zero_on_empty", "budget_utilization", "budget_adherence",
+    "support_f1_zero_on_empty", "support_set_em", "budget_utilization", "budget_adherence",
     "empty_selection_rate", "selected_nodes", "selected_token_estimate",
     "selection_runtime_s", "selector_total_tokens",
 ]

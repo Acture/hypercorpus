@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 from hypercorpus.datasets.common import (
     BaseDatasetAdapter,
     NormalizedDatasetLayout,
+    coerce_question_type,
     dedupe_strings,
     load_json_records,
     pick_first,
@@ -56,6 +57,7 @@ def load_iirc_questions(
                 gold_support_nodes=support_nodes,
                 gold_start_nodes=start_nodes,
                 gold_path_nodes=path_nodes,
+                question_type=coerce_question_type(pick_first(record, "question_type", "type")),
             )
         )
 
@@ -390,6 +392,7 @@ def _convert_iirc_questions_payload(payload: Any, *, title_aliases: Mapping[str,
                     gold_support_nodes=support_nodes,
                     gold_start_nodes=[source_title] if source_title else None,
                     gold_path_nodes=path_nodes or None,
+                    question_type=coerce_question_type(pick_first(question, "question_type", "type")),
                 )
             )
     return cases

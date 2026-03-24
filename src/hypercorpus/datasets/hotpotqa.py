@@ -8,6 +8,7 @@ from typing import Any, Literal
 from hypercorpus.datasets.common import (
     BaseDatasetAdapter,
     NormalizedDatasetLayout,
+    coerce_question_type,
     dedupe_strings,
     load_json_records,
     pick_first,
@@ -60,6 +61,7 @@ def load_hotpotqa_questions(
                 gold_support_nodes=support_nodes,
                 gold_start_nodes=list(support_nodes),
                 gold_path_nodes=list(support_nodes) if support_nodes else None,
+                question_type=coerce_question_type(pick_first(record, "question_type", "type")),
             )
         )
     return cases

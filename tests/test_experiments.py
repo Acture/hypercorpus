@@ -520,6 +520,7 @@ def test_study_comparison_rows_include_rank_and_control_deltas():
                 avg_selector_parse_failure_rate=None,
                 avg_answer_em=None,
                 avg_answer_f1=None,
+                avg_support_set_em=0.0,
             ),
             SelectorBudgetSummary(
                 name="candidate",
@@ -553,6 +554,7 @@ def test_study_comparison_rows_include_rank_and_control_deltas():
                 avg_selector_parse_failure_rate=None,
                 avg_answer_em=None,
                 avg_answer_f1=None,
+                avg_support_set_em=1.0,
             ),
         ],
     )
@@ -573,6 +575,7 @@ def test_study_comparison_rows_include_rank_and_control_deltas():
     assert rows[0]["selector_name"] == "candidate"
     assert rows[0]["rank_within_budget"] == 1
     assert rows[0]["delta_support_f1_vs_control"] == 0.20
+    assert rows[0]["avg_support_set_em"] == 1.0
     assert rows[1]["selector_name"] == "control"
     assert rows[1]["rank_within_budget"] == 2
     assert rows[1]["delta_support_precision_vs_control"] == 0.0
@@ -1109,16 +1112,71 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
     records = [
         {
             "dataset_name": "2wikimultihop",
+            "case_id": "bridge-case",
             "selector": "control",
             "budget_label": "tokens-256",
+            "question_type": "bridge",
             "gold_support_nodes": ["a", "b"],
             "gold_start_nodes": ["a", "b"],
-            "gold_path_nodes": None,
+            "gold_path_nodes": ["a", "b"],
             "selection": {
                 "metrics": {
                     "support_f1_zero_on_empty": 0.40,
+                    "support_set_em": 0.0,
                     "support_precision": 0.50,
                     "support_recall": 0.35,
+                    "path_hit": False,
+                },
+                "selector_usage": {
+                    "controller_calls": 0,
+                    "controller_stop_actions": 0,
+                    "controller_fork_actions": 0,
+                    "controller_backtrack_actions": 0,
+                    "controller_prefiltered_candidates": 0,
+                },
+            },
+        },
+        {
+            "dataset_name": "2wikimultihop",
+            "case_id": "bridge-case",
+            "selector": "candidate",
+            "budget_label": "tokens-256",
+            "question_type": "bridge",
+            "gold_support_nodes": ["a", "b"],
+            "gold_start_nodes": ["a", "b"],
+            "gold_path_nodes": ["a", "b"],
+            "selection": {
+                "metrics": {
+                    "support_f1_zero_on_empty": 0.55,
+                    "support_set_em": 1.0,
+                    "support_precision": 0.60,
+                    "support_recall": 0.50,
+                    "path_hit": True,
+                },
+                "selector_usage": {
+                    "controller_calls": 2,
+                    "controller_stop_actions": 1,
+                    "controller_fork_actions": 0,
+                    "controller_backtrack_actions": 0,
+                    "controller_prefiltered_candidates": 12,
+                },
+            },
+        },
+        {
+            "dataset_name": "2wikimultihop",
+            "case_id": "comparison-case",
+            "selector": "control",
+            "budget_label": "tokens-256",
+            "question_type": "comparison",
+            "gold_support_nodes": ["c", "d"],
+            "gold_start_nodes": ["c", "d"],
+            "gold_path_nodes": None,
+            "selection": {
+                "metrics": {
+                    "support_f1_zero_on_empty": 0.20,
+                    "support_set_em": 0.0,
+                    "support_precision": 0.30,
+                    "support_recall": 0.20,
                     "path_hit": None,
                 },
                 "selector_usage": {
@@ -1132,16 +1190,19 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
         },
         {
             "dataset_name": "2wikimultihop",
+            "case_id": "comparison-case",
             "selector": "candidate",
             "budget_label": "tokens-256",
-            "gold_support_nodes": ["a", "b"],
-            "gold_start_nodes": ["a", "b"],
+            "question_type": "comparison",
+            "gold_support_nodes": ["c", "d"],
+            "gold_start_nodes": ["c", "d"],
             "gold_path_nodes": None,
             "selection": {
                 "metrics": {
-                    "support_f1_zero_on_empty": 0.55,
-                    "support_precision": 0.60,
-                    "support_recall": 0.50,
+                    "support_f1_zero_on_empty": 0.45,
+                    "support_set_em": 0.0,
+                    "support_precision": 0.55,
+                    "support_recall": 0.40,
                     "path_hit": None,
                 },
                 "selector_usage": {
@@ -1149,7 +1210,7 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
                     "controller_stop_actions": 1,
                     "controller_fork_actions": 0,
                     "controller_backtrack_actions": 0,
-                    "controller_prefiltered_candidates": 12,
+                    "controller_prefiltered_candidates": 8,
                 },
             },
         },
@@ -1170,9 +1231,9 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
 
     assert {row["subset_label"] for row in rows} == {
         "all_cases",
-        "support_count_ge_4",
+        "bridge",
+        "comparison",
         "has_gold_path",
-        "start_not_equal_support",
     }
     control_all = next(
         row for row in rows if row["subset_label"] == "all_cases" and row["selector_name"] == "control"
@@ -1180,16 +1241,25 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
     candidate_all = next(
         row for row in rows if row["subset_label"] == "all_cases" and row["selector_name"] == "candidate"
     )
+    bridge_subset = next(
+        row for row in rows if row["subset_label"] == "bridge" and row["selector_name"] == "candidate"
+    )
+    comparison_subset = next(
+        row for row in rows if row["subset_label"] == "comparison" and row["selector_name"] == "candidate"
+    )
     hard_subset = next(
         row for row in rows if row["subset_label"] == "has_gold_path" and row["selector_name"] == "control"
     )
 
     assert control_all["delta_support_f1_vs_dense_control"] == 0.0
-    assert candidate_all["delta_support_f1_vs_dense_control"] == pytest.approx(0.15)
+    assert candidate_all["delta_support_f1_vs_dense_control"] == pytest.approx(0.20)
     assert candidate_all["avg_stop_rate"] == pytest.approx(0.5)
     assert candidate_all["avg_controller_calls"] == pytest.approx(2.0)
-    assert hard_subset["num_cases"] == 0
-    assert hard_subset["avg_path_hit"] is None
+    assert candidate_all["avg_support_set_em"] == pytest.approx(0.5)
+    assert bridge_subset["avg_support_set_em"] == pytest.approx(1.0)
+    assert comparison_subset["avg_support_set_em"] == pytest.approx(0.0)
+    assert hard_subset["num_cases"] == 1
+    assert hard_subset["avg_path_hit"] == 0.0
     assert hard_subset["delta_support_f1_vs_dense_control"] == 0.0
 
 
@@ -1482,6 +1552,7 @@ def test_summarize_result_records_tracks_empty_rate_and_f1_all():
                         "support_precision": None,
                         "support_f1": None,
                         "support_f1_zero_on_empty": 0.0,
+                        "support_set_em": 0.0,
                         "path_hit": False,
                         "selected_nodes_count": 0,
                         "selected_token_estimate": 0,
@@ -1523,6 +1594,7 @@ def test_summarize_result_records_tracks_empty_rate_and_f1_all():
                         "support_precision": 1.0,
                         "support_f1": 1.0,
                         "support_f1_zero_on_empty": 1.0,
+                        "support_set_em": 1.0,
                         "path_hit": True,
                         "selected_nodes_count": 1,
                         "selected_token_estimate": 64,
@@ -1552,6 +1624,7 @@ def test_summarize_result_records_tracks_empty_rate_and_f1_all():
     row = summary.selector_budgets[0]
     assert row.avg_support_f1 == 1.0
     assert row.avg_support_f1_zero_on_empty == 0.5
+    assert row.avg_support_set_em == 0.5
     assert row.avg_empty_selection_rate == 0.5
     assert row.avg_budget_utilization == 0.25
 
@@ -1574,6 +1647,7 @@ def test_run_iirc_experiment_handles_missing_path_supervision(iirc_files, tmp_pa
     assert summary.dataset_name == "iirc"
     first_record = json.loads((output_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()[0])
     assert first_record["dataset_name"] == "iirc"
+    assert first_record["question_type"] in {"bridge", "comparison", "unknown"}
     assert first_record["selection"]["metrics"]["path_hit"] is None
 
 

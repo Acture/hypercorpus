@@ -18,3 +18,4 @@ def test_load_2wiki_questions_maps_supporting_facts(two_wiki_files):
 	assert cases[0].gold_support_nodes == ["Moon Launch Program", "Cape Canaveral"]
 	assert cases[0].gold_start_nodes == ["Moon Launch Program", "Cape Canaveral"]
 	assert cases[0].dataset_name == "2wikimultihop"
+	assert cases[0].question_type == "bridge"

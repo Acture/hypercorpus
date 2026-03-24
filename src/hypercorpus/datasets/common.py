@@ -101,6 +101,15 @@ def pick_first(record: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
+def coerce_question_type(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"bridge", "comparison", "unknown"}:
+        return normalized
+    return None
+
+
 def evaluation_case_to_record(case: EvaluationCase) -> dict[str, Any]:
     return {
         "case_id": case.case_id,
@@ -110,6 +119,7 @@ def evaluation_case_to_record(case: EvaluationCase) -> dict[str, Any]:
         "gold_support_nodes": list(case.gold_support_nodes),
         "gold_start_nodes": list(case.gold_start_nodes) if case.gold_start_nodes is not None else None,
         "gold_path_nodes": list(case.gold_path_nodes) if case.gold_path_nodes is not None else None,
+        "question_type": case.question_type,
     }
 
 

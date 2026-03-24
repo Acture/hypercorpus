@@ -144,11 +144,32 @@ def test_evaluator_runs_canonical_selectors(sample_graph):
     assert set(results) == set(selector_names)
     assert results["gold_support_context"].metrics.support_precision == 1.0
     assert results["gold_support_context"].metrics.support_f1 == 1.0
+    assert results["gold_support_context"].metrics.support_set_em == 1.0
     assert results["top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_overlap__lookahead_1"].metrics.support_recall == 1.0
     assert results["top_1_seed__lexical_overlap__hop_0__dense"].metrics.selected_nodes_count == 1
+    assert results["top_1_seed__lexical_overlap__hop_0__dense"].metrics.support_set_em == 0.0
     assert results["full_corpus_upper_bound"].metrics.compression_ratio == 1.0
     assert results["top_1_seed__lexical_overlap__hop_1__topology_neighbors"].end_to_end is not None
     assert results["top_1_seed__lexical_overlap__hop_1__topology_neighbors"].end_to_end.em == 1.0
+
+
+def test_evaluation_case_infers_question_type_from_gold_fields():
+    assert EvaluationCase(
+        case_id="bridge",
+        query="bridge question",
+        gold_support_nodes=["a", "b"],
+        gold_path_nodes=["a", "b"],
+    ).question_type == "bridge"
+    assert EvaluationCase(
+        case_id="comparison",
+        query="comparison question",
+        gold_support_nodes=["a", "b"],
+    ).question_type == "comparison"
+    assert EvaluationCase(
+        case_id="unknown",
+        query="unknown question",
+        gold_support_nodes=["a"],
+    ).question_type == "unknown"
 
 
 def test_select_selectors_prefers_explicit_names_over_preset(monkeypatch):
@@ -219,6 +240,7 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
             support_precision=0.75,
             support_f1=0.6,
             support_f1_zero_on_empty=0.6,
+            support_set_em=0.0,
             path_hit=None,
         ),
         trace=[],
@@ -257,6 +279,7 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
             support_precision=1.0,
             support_f1=0.4,
             support_f1_zero_on_empty=0.4,
+            support_set_em=0.0,
             path_hit=False,
         ),
         trace=[],
@@ -286,6 +309,7 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
             support_precision=0.5,
             support_f1=2 / 3,
             support_f1_zero_on_empty=2 / 3,
+            support_set_em=1.0,
             path_hit=True,
         ),
         trace=[],
@@ -337,6 +361,7 @@ def test_incremental_experiment_aggregator_matches_batch_summary():
     assert llm_row.avg_budget_utilization == pytest.approx((0.25 + (48 / 128)) / 2)
     assert llm_row.avg_empty_selection_rate == 0.0
     assert llm_row.avg_support_f1_zero_on_empty == pytest.approx((0.6 + (2 / 3)) / 2)
+    assert llm_row.avg_support_set_em == 0.5
 
 
 def test_empty_selection_metrics_are_visible_without_changing_raw_f1():
@@ -370,6 +395,7 @@ def test_empty_selection_metrics_are_visible_without_changing_raw_f1():
             support_precision=None,
             support_f1=None,
             support_f1_zero_on_empty=0.0,
+            support_set_em=0.0,
             path_hit=False,
         ),
         trace=[],
@@ -399,6 +425,7 @@ def test_empty_selection_metrics_are_visible_without_changing_raw_f1():
             support_precision=1.0,
             support_f1=1.0,
             support_f1_zero_on_empty=1.0,
+            support_set_em=1.0,
             path_hit=True,
         ),
         trace=[],
@@ -431,5 +458,6 @@ def test_empty_selection_metrics_are_visible_without_changing_raw_f1():
     assert row.avg_support_precision == 1.0
     assert row.avg_support_f1 == 1.0
     assert row.avg_support_f1_zero_on_empty == 0.5
+    assert row.avg_support_set_em == 0.5
     assert row.avg_empty_selection_rate == 0.5
     assert row.avg_budget_utilization == 0.25
