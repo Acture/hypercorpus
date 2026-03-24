@@ -83,7 +83,7 @@ from hypercorpus.walker import walk_step_log_from_dict
 logger = logging.getLogger(__name__)
 
 
-ExperimentPhase = Literal["loading", "evaluating", "exporting", "finalizing", "completed", "interrupted", "failed"]
+ExperimentPhase = Literal["loading", "initializing", "evaluating", "exporting", "finalizing", "completed", "interrupted", "failed"]
 StudyPresetName = Literal[
     "single_path_edge_ablation_local",
     "baseline_retest_local",
@@ -2060,6 +2060,14 @@ def _execute_selection(
     return bundle
 
 
+def _warmup_selectors(selectors: Sequence[Any]) -> None:
+    """Pre-load heavy resources (e.g. sentence-transformer model) before the eval loop."""
+    for selector in selectors:
+        if hasattr(selector, '_get_embedder'):
+            logger.info('Warming up embedder for selector %s', selector.name)
+            selector._get_embedder()
+
+
 def _run_loaded_experiment(
     *,
     graph: Any,
@@ -2296,6 +2304,16 @@ def _run_loaded_experiment(
                 selection_keys_by_case_selector=selection_keys_by_case_selector,
                 current_case_id=None,
             )
+            # Warm up selector models (e.g. sentence-transformer) before evaluation
+            _notify_progress(
+                progress_observer,
+                dataset_name=dataset_name,
+                phase="initializing",
+                total_cases=len(selected_cases),
+                completed_cases=0,
+            )
+            _warmup_selectors(selectors)
+
             _notify_progress(
                 progress_observer,
                 dataset_name=dataset_name,
