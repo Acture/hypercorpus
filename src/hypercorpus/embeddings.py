@@ -121,38 +121,27 @@ class SentenceTransformerEmbedder:
         if missing_texts:
             model = self._get_model()
             batch_size = self.config.encode_batch_size
-            if len(missing_texts) > batch_size:
-                total_batches = (len(missing_texts) + batch_size - 1) // batch_size
+            total_batches = (len(missing_texts) + batch_size - 1) // batch_size
+            if total_batches > 1:
                 logger.info(
                     "Encoding %d texts in %d batches (batch_size=%d, device=%s)",
                     len(missing_texts), total_batches, batch_size, self.config.device or "cpu",
                 )
-                for batch_start in range(0, len(missing_texts), batch_size):
-                    batch_end = min(batch_start + batch_size, len(missing_texts))
-                    batch_num = batch_start // batch_size + 1
-                    logger.info("  batch %d/%d (%d texts)", batch_num, total_batches, batch_end - batch_start)
-                    encoded = model.encode(
-                        missing_texts[batch_start:batch_end],
-                        normalize_embeddings=True,
-                        show_progress_bar=False,
-                    )
-                    for offset, vector in enumerate(encoded):
-                        values = [float(value) for value in list(vector)]
-                        abs_idx = batch_start + offset
-                        cached_vectors[missing_indices[abs_idx]] = values
-                        if self.cache is not None:
-                            self.cache.put(model_name=self.model_name, text=missing_texts[abs_idx], embedding=values)
-            else:
+            for batch_start in range(0, len(missing_texts), batch_size):
+                batch_end = min(batch_start + batch_size, len(missing_texts))
+                if total_batches > 1:
+                    logger.info("  batch %d/%d (%d texts)", batch_start // batch_size + 1, total_batches, batch_end - batch_start)
                 encoded = model.encode(
-                    list(missing_texts),
+                    missing_texts[batch_start:batch_end],
                     normalize_embeddings=True,
                     show_progress_bar=False,
                 )
                 for offset, vector in enumerate(encoded):
                     values = [float(value) for value in list(vector)]
-                    cached_vectors[missing_indices[offset]] = values
+                    abs_idx = batch_start + offset
+                    cached_vectors[missing_indices[abs_idx]] = values
                     if self.cache is not None:
-                        self.cache.put(model_name=self.model_name, text=missing_texts[offset], embedding=values)
+                        self.cache.put(model_name=self.model_name, text=missing_texts[abs_idx], embedding=values)
 
         return [cached_vectors[index] for index in range(len(texts))]
 

@@ -3544,7 +3544,7 @@ def _runtime_budget_token_limit(graph: LinkContextGraph, budget: RuntimeBudget) 
 
 
 def _minimum_document_tokens(graph: LinkContextGraph) -> int:
-    token_counts = [_node_token_cost(graph, node_id) for node_id in graph.nodes if _node_token_cost(graph, node_id) > 0]
+    token_counts = [c for node_id in graph.nodes if (c := _node_token_cost(graph, node_id)) > 0]
     return min(token_counts) if token_counts else 0
 
 
@@ -3888,6 +3888,8 @@ def _corpus_selection_from_walk(
 
 
 def _graph_token_estimate(graph: LinkContextGraph) -> int:
+    if hasattr(graph, "total_token_estimate"):
+        return graph.total_token_estimate()
     return sum(_node_token_cost(graph, node_id) for node_id in graph.nodes)
 
 
