@@ -4,11 +4,15 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import heapq
+import logging
 import math
 import os
 from pathlib import Path
 import re
 import time
+
+logger = logging.getLogger(__name__)
+
 from typing import Any, Callable, Literal, Protocol, Sequence
 
 from hypercorpus.embeddings import (
@@ -3355,6 +3359,10 @@ def _lexical_seed_candidates(
     return scored[:top_k]
 
 
+_ST_PREFILTER_MULTIPLIER = 50
+_ST_PREFILTER_MIN = 200
+
+
 def _sentence_transformer_seed_candidates(
     graph: LinkContextGraph,
     query: str,
@@ -3366,6 +3374,16 @@ def _sentence_transformer_seed_candidates(
     node_ids = list(candidate_ids) if candidate_ids is not None else list(graph.nodes)
     if not node_ids:
         return []
+    # Pre-filter large candidate sets via lexical/FTS retrieval before encoding
+    prefilter_k = max(top_k * _ST_PREFILTER_MULTIPLIER, _ST_PREFILTER_MIN)
+    if len(node_ids) > prefilter_k and hasattr(graph, "topk_similar"):
+        original_count = len(node_ids)
+        prefiltered = graph.topk_similar(query, node_ids, k=prefilter_k)
+        node_ids = [node_id for node_id, _score in prefiltered]
+        logger.info(
+            "ST seed pre-filtered %d -> %d candidates via topk_similar",
+            original_count, len(node_ids),
+        )
     query_embedding = embedder.encode([query])[0]
     node_embeddings = embedder.encode([_node_text(graph, node_id) for node_id in node_ids])
     scored = [
