@@ -23,7 +23,7 @@ class _FakeMDRBackend:
 		self._paths = paths
 
 	def retrieve(self, query: str, *, beam_size: int, topk_paths: int):
-		from hypercorpus.baselines.mdr import MDRPathResult, MDRQueryResult
+		from hypercorpus.baselines.mdr import MDRQueryResult
 
 		del query, beam_size, topk_paths
 		return MDRQueryResult(paths=list(self._paths), runtime_s=0.01)

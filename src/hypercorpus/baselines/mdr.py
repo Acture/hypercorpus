@@ -501,7 +501,6 @@ class ExternalMDRSelector:
 			SelectorUsage,
 			_apply_budget_to_ranked_nodes,
 			_link_key,
-			_node_token_cost,
 			_query_tokens,
 			_runtime_budget_token_limit,
 			_selection_coverage_ratio,
