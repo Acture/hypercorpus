@@ -112,6 +112,21 @@ class _LiveDashboardState:
             return self.completed_selections / self.elapsed_s
         return self.completed_cases / self.elapsed_s
 
+    @property
+    def eta_s(self) -> float | None:
+        """Estimated seconds remaining based on selection throughput."""
+        if (
+            self.total_selections is None
+            or self.completed_selections is None
+            or self.completed_selections <= 0
+        ):
+            return None
+        remaining = self.total_selections - self.completed_selections
+        rate = self.completed_selections / self.elapsed_s
+        if rate <= 0:
+            return None
+        return remaining / rate
+
 
 class _ExperimentDashboardRenderable:
     def __init__(
@@ -1301,6 +1316,15 @@ def _build_dashboard_status_panel(
     else:
         tp_str = f"-- {unit}"
     grid.add_row("throughput", _plain(tp_str))
+    eta = state.eta_s
+    if eta is not None:
+        if eta >= 3600:
+            eta_str = f"{eta / 3600:.1f}h"
+        elif eta >= 60:
+            eta_str = f"{eta / 60:.1f}min"
+        else:
+            eta_str = f"{eta:.0f}s"
+        grid.add_row("eta", _plain(eta_str))
     if state.current_case_id is not None:
         grid.add_row("current_case", _plain(state.current_case_id))
     if state.current_query:
