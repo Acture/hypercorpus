@@ -6,7 +6,9 @@ def test_from_2wikimultihop_records_builds_semantic_links():
 		{
 			"id": "mission",
 			"title": "Moon Launch Program",
-			"sentences": ["Moon Launch Program uses Cape Canaveral as its launch site."],
+			"sentences": [
+				"Moon Launch Program uses Cape Canaveral as its launch site."
+			],
 			"mentions": [
 				{
 					"id": 0,
@@ -30,7 +32,9 @@ def test_from_2wikimultihop_records_builds_semantic_links():
 	assert graph.neighbors("mission") == ["cape"]
 	link = graph.links_between("mission", "cape")[0]
 	assert link.anchor_text == "Cape Canaveral"
-	assert link.sentence == "Moon Launch Program uses Cape Canaveral as its launch site."
+	assert (
+		link.sentence == "Moon Launch Program uses Cape Canaveral as its launch site."
+	)
 	assert graph.get_document("cape").title == "Cape Canaveral"
 
 

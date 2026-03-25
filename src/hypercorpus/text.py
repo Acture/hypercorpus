@@ -99,7 +99,9 @@ def answer_f1(answer: str, expected_answer: str | None) -> float | None:
 		return 0.0
 	answer_counts = Counter(answer_tokens)
 	expected_counts = Counter(expected_tokens)
-	shared = sum(min(answer_counts[token], expected_counts[token]) for token in answer_counts)
+	shared = sum(
+		min(answer_counts[token], expected_counts[token]) for token in answer_counts
+	)
 	if shared == 0:
 		return 0.0
 	precision = shared / len(answer_tokens)

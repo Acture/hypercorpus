@@ -17,5 +17,8 @@ def test_select_by_cos_topk_returns_node_ids(sample_graph):
 
 def test_select_starting_helpers_use_stable_contract(sample_graph):
 	policy = MaxPhiOverAnchors(k=2)
-	assert select_starting_candidates(sample_graph, "launch site", policy) == ["cape", "mission"]
+	assert select_starting_candidates(sample_graph, "launch site", policy) == [
+		"cape",
+		"mission",
+	]
 	assert select_starting_candidate(sample_graph, "launch site", policy) == "cape"

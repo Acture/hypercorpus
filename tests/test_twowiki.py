@@ -7,7 +7,10 @@ def test_load_2wiki_graph_uses_titles_as_node_ids(two_wiki_files):
 
 	assert "Moon Launch Program" in graph.nodes
 	assert graph.neighbors("Moon Launch Program") == ["Cape Canaveral", "Alice Johnson"]
-	assert graph.links_between("Moon Launch Program", "Cape Canaveral")[0].anchor_text == "Cape Canaveral"
+	assert (
+		graph.links_between("Moon Launch Program", "Cape Canaveral")[0].anchor_text
+		== "Cape Canaveral"
+	)
 
 
 def test_load_2wiki_questions_maps_supporting_facts(two_wiki_files):

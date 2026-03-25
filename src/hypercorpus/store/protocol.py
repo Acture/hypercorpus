@@ -8,5 +8,4 @@ from hypercorpus.type import AnyObj as V
 
 @runtime_checkable
 class KVStore(Protocol[K, V]):
-	def get(self, key: K) -> Optional[V]:
-		...
+	def get(self, key: K) -> Optional[V]: ...

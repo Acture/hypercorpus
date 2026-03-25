@@ -137,7 +137,9 @@ def cyclic_graph() -> LinkContextGraph:
 def tiny_tar_bz2(tmp_path: Path) -> Path:
 	inner_jsonl = "\n".join(
 		[
-			json.dumps({"title": "Moon Launch Program", "text": "Uses Cape Canaveral."}),
+			json.dumps(
+				{"title": "Moon Launch Program", "text": "Uses Cape Canaveral."}
+			),
 			json.dumps({"title": "Cape Canaveral", "text": "A city in Florida."}),
 		]
 	).encode("utf-8")
@@ -244,12 +246,17 @@ def two_wiki_questions() -> list[dict]:
 
 
 @fixture
-def two_wiki_files(tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_questions: list[dict]) -> tuple[Path, Path]:
+def two_wiki_files(
+	tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_questions: list[dict]
+) -> tuple[Path, Path]:
 	graph_path = tmp_path / "para_with_hyperlink.jsonl"
 	questions_path = tmp_path / "dev.json"
 
 	graph_path.write_text(
-		"\n".join(json.dumps(record, ensure_ascii=False) for record in two_wiki_graph_records) + "\n",
+		"\n".join(
+			json.dumps(record, ensure_ascii=False) for record in two_wiki_graph_records
+		)
+		+ "\n",
 		encoding="utf-8",
 	)
 	questions_path.write_text(
@@ -261,19 +268,34 @@ def two_wiki_files(tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_
 
 
 @fixture
-def two_wiki_archives(tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_questions: list[dict]) -> tuple[Path, Path]:
+def two_wiki_archives(
+	tmp_path: Path, two_wiki_graph_records: list[dict], two_wiki_questions: list[dict]
+) -> tuple[Path, Path]:
 	questions_zip = tmp_path / "data_ids_april7.zip"
 	graph_zip = tmp_path / "para_with_hyperlink.zip"
 
 	with zipfile.ZipFile(questions_zip, "w") as archive:
-		archive.writestr("data_ids_april7/dev.json", json.dumps(two_wiki_questions, ensure_ascii=False))
-		archive.writestr("data_ids_april7/train.json", json.dumps(two_wiki_questions, ensure_ascii=False))
-		archive.writestr("data_ids_april7/test.json", json.dumps(two_wiki_questions, ensure_ascii=False))
+		archive.writestr(
+			"data_ids_april7/dev.json",
+			json.dumps(two_wiki_questions, ensure_ascii=False),
+		)
+		archive.writestr(
+			"data_ids_april7/train.json",
+			json.dumps(two_wiki_questions, ensure_ascii=False),
+		)
+		archive.writestr(
+			"data_ids_april7/test.json",
+			json.dumps(two_wiki_questions, ensure_ascii=False),
+		)
 
 	with zipfile.ZipFile(graph_zip, "w") as archive:
 		archive.writestr(
 			"para_with_hyperlink.jsonl",
-			"\n".join(json.dumps(record, ensure_ascii=False) for record in two_wiki_graph_records) + "\n",
+			"\n".join(
+				json.dumps(record, ensure_ascii=False)
+				for record in two_wiki_graph_records
+			)
+			+ "\n",
 		)
 
 	return questions_zip, graph_zip
@@ -356,11 +378,17 @@ def iirc_questions() -> list[dict]:
 
 
 @fixture
-def iirc_files(tmp_path: Path, iirc_graph_records: list[dict], iirc_questions: list[dict]) -> tuple[Path, Path]:
+def iirc_files(
+	tmp_path: Path, iirc_graph_records: list[dict], iirc_questions: list[dict]
+) -> tuple[Path, Path]:
 	graph_path = tmp_path / "iirc-graph.json"
 	questions_path = tmp_path / "iirc-questions.json"
-	graph_path.write_text(json.dumps(iirc_graph_records, ensure_ascii=False), encoding="utf-8")
-	questions_path.write_text(json.dumps(iirc_questions, ensure_ascii=False), encoding="utf-8")
+	graph_path.write_text(
+		json.dumps(iirc_graph_records, ensure_ascii=False), encoding="utf-8"
+	)
+	questions_path.write_text(
+		json.dumps(iirc_questions, ensure_ascii=False), encoding="utf-8"
+	)
 	return questions_path, graph_path
 
 
@@ -429,11 +457,17 @@ def musique_questions() -> list[dict]:
 
 
 @fixture
-def musique_files(tmp_path: Path, musique_graph_records: list[dict], musique_questions: list[dict]) -> tuple[Path, Path]:
+def musique_files(
+	tmp_path: Path, musique_graph_records: list[dict], musique_questions: list[dict]
+) -> tuple[Path, Path]:
 	graph_path = tmp_path / "musique-graph.json"
 	questions_path = tmp_path / "musique-questions.json"
-	graph_path.write_text(json.dumps(musique_graph_records, ensure_ascii=False), encoding="utf-8")
-	questions_path.write_text(json.dumps(musique_questions, ensure_ascii=False), encoding="utf-8")
+	graph_path.write_text(
+		json.dumps(musique_graph_records, ensure_ascii=False), encoding="utf-8"
+	)
+	questions_path.write_text(
+		json.dumps(musique_questions, ensure_ascii=False), encoding="utf-8"
+	)
 	return questions_path, graph_path
 
 
@@ -458,7 +492,10 @@ def hotpotqa_distractor_questions() -> list[dict]:
 			"answer": "Florida",
 			"supporting_facts": [["Apollo Program", 0], ["Kennedy Space Center", 0]],
 			"context": [
-				["Apollo Program", ["Apollo Program launched from Kennedy Space Center."]],
+				[
+					"Apollo Program",
+					["Apollo Program launched from Kennedy Space Center."],
+				],
 				["Kennedy Space Center", ["Kennedy Space Center is in Florida."]],
 				["Florida", ["Florida is a state in the United States."]],
 			],
@@ -467,9 +504,13 @@ def hotpotqa_distractor_questions() -> list[dict]:
 
 
 @fixture
-def hotpotqa_distractor_file(tmp_path: Path, hotpotqa_distractor_questions: list[dict]) -> Path:
+def hotpotqa_distractor_file(
+	tmp_path: Path, hotpotqa_distractor_questions: list[dict]
+) -> Path:
 	questions_path = tmp_path / "hotpotqa-distractor.json"
-	questions_path.write_text(json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8")
+	questions_path.write_text(
+		json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8"
+	)
 	return questions_path
 
 
@@ -518,7 +559,11 @@ def hotpotqa_fullwiki_questions() -> list[dict]:
 			"_id": "hf1",
 			"question": "Which state contains Kennedy Space Center?",
 			"answer": "Florida",
-			"supporting_facts": [["Apollo Program", 0], ["Kennedy Space Center", 0], ["Florida", 0]],
+			"supporting_facts": [
+				["Apollo Program", 0],
+				["Kennedy Space Center", 0],
+				["Florida", 0],
+			],
 		}
 	]
 
@@ -531,8 +576,13 @@ def hotpotqa_fullwiki_files(
 ) -> tuple[Path, Path]:
 	graph_path = tmp_path / "hotpotqa-fullwiki-graph.json"
 	questions_path = tmp_path / "hotpotqa-fullwiki-questions.json"
-	graph_path.write_text(json.dumps(hotpotqa_fullwiki_graph_records, ensure_ascii=False), encoding="utf-8")
-	questions_path.write_text(json.dumps(hotpotqa_fullwiki_questions, ensure_ascii=False), encoding="utf-8")
+	graph_path.write_text(
+		json.dumps(hotpotqa_fullwiki_graph_records, ensure_ascii=False),
+		encoding="utf-8",
+	)
+	questions_path.write_text(
+		json.dumps(hotpotqa_fullwiki_questions, ensure_ascii=False), encoding="utf-8"
+	)
 	return questions_path, graph_path
 
 
@@ -559,7 +609,10 @@ def iirc_raw_archive(tmp_path: Path) -> Path:
 				{
 					"qid": "iirc-raw-1",
 					"question": "Which state contains the launch city?",
-					"answer": {"type": "span", "answer_spans": [{"text": "Florida", "passage": "Florida"}]},
+					"answer": {
+						"type": "span",
+						"answer_spans": [{"text": "Florida", "passage": "Florida"}],
+					},
 					"question_links": ["Cape Canaveral"],
 					"context": [{"passage": "Florida"}],
 				}
@@ -597,12 +650,25 @@ def musique_raw_split_files(tmp_path: Path) -> dict[str, Path]:
 		"question": "Which state contains Kennedy Space Center?",
 		"answer": "Florida",
 		"paragraphs": [
-			{"title": "Apollo Program", "paragraph_text": "Apollo Program launched from Kennedy Space Center."},
-			{"title": "Kennedy Space Center", "paragraph_text": "Kennedy Space Center is in Florida."},
-			{"title": "Florida", "paragraph_text": "Florida is a state in the United States."},
+			{
+				"title": "Apollo Program",
+				"paragraph_text": "Apollo Program launched from Kennedy Space Center.",
+			},
+			{
+				"title": "Kennedy Space Center",
+				"paragraph_text": "Kennedy Space Center is in Florida.",
+			},
+			{
+				"title": "Florida",
+				"paragraph_text": "Florida is a state in the United States.",
+			},
 		],
 		"paragraph_support_idx": [0, 1, 2],
-		"question_decomposition": [{"paragraph_idx": 0}, {"paragraph_idx": 1}, {"paragraph_idx": 2}],
+		"question_decomposition": [
+			{"paragraph_idx": 0},
+			{"paragraph_idx": 1},
+			{"paragraph_idx": 2},
+		],
 	}
 	paths: dict[str, Path] = {}
 	for split in ("train", "dev", "test"):
@@ -621,9 +687,15 @@ def hotpotqa_raw_split_files(
 	distractor_dev = tmp_path / "hotpot_dev_distractor_v1.json"
 	distractor_train = tmp_path / "hotpot_train_v1.1.json"
 	fullwiki_dev = tmp_path / "hotpot_dev_fullwiki_v1.json"
-	distractor_dev.write_text(json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8")
-	distractor_train.write_text(json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8")
-	fullwiki_dev.write_text(json.dumps(hotpotqa_fullwiki_questions, ensure_ascii=False), encoding="utf-8")
+	distractor_dev.write_text(
+		json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8"
+	)
+	distractor_train.write_text(
+		json.dumps(hotpotqa_distractor_questions, ensure_ascii=False), encoding="utf-8"
+	)
+	fullwiki_dev.write_text(
+		json.dumps(hotpotqa_fullwiki_questions, ensure_ascii=False), encoding="utf-8"
+	)
 	return {
 		"distractor": {"dev": distractor_dev, "train": distractor_train},
 		"fullwiki": {"dev": fullwiki_dev, "train": distractor_train},

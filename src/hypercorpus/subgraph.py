@@ -77,11 +77,16 @@ class SubgraphExtractor:
 				)
 
 			for link in graph.links_from(node_id):
-				target_title = graph.node_attr.get(link.target, {}).get("title", link.target)
+				target_title = graph.node_attr.get(link.target, {}).get(
+					"title", link.target
+				)
 				anchor_score = normalized_token_overlap(query, link.anchor_text)
 				sentence_score = normalized_token_overlap(query, link.sentence)
 				target_score = normalized_token_overlap(query, str(target_title))
-				if link.target not in visited_set and max(anchor_score, target_score) <= 0:
+				if (
+					link.target not in visited_set
+					and max(anchor_score, target_score) <= 0
+				):
 					continue
 				score = max(anchor_score, sentence_score, target_score)
 				relations.append(
@@ -97,8 +102,12 @@ class SubgraphExtractor:
 
 		relations.sort(key=lambda item: item.score, reverse=True)
 		relations = relations[: self.max_relations]
-		token_cost_estimate = sum(approx_token_count(snippet.text) for snippet in snippets)
-		token_cost_estimate += sum(approx_token_count(relation.sentence) for relation in relations)
+		token_cost_estimate = sum(
+			approx_token_count(snippet.text) for snippet in snippets
+		)
+		token_cost_estimate += sum(
+			approx_token_count(relation.sentence) for relation in relations
+		)
 
 		return QuerySubgraph(
 			query=query,

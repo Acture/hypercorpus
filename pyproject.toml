@@ -33,5 +33,12 @@ dev = [
 ]
 
 
+[tool.ruff.format]
+indent-style = "tab"
+
+[tool.ruff.lint]
+# W191 (indentation contains tabs) and E101 (mixed spaces/tabs) are incompatible with tab indentation
+ignore = ["W191", "E101"]
+
 [tool.uv.build-backend]
 module-name = ["hypercorpus", "hypercorpus_cli"]

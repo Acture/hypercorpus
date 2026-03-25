@@ -9,9 +9,8 @@ from hypercorpus.type import AnyHashable as T
 
 class StartPolicy(Protocol[T]):
 	name: str
-	
-	def select_start(self, g: GraphLike[T], q: str) -> list[T]:
-		...
+
+	def select_start(self, g: GraphLike[T], q: str) -> list[T]: ...
 
 
 class MaxPhiOverAnchors(Generic[T]):
@@ -19,23 +18,23 @@ class MaxPhiOverAnchors(Generic[T]):
 
 	def __init__(self, k: int = 1):
 		self.k = k
-	
+
 	def select_start(self, g: GraphLike[T], q: str) -> list[T]:
 		if not g.nodes:
 			raise ValueError("No anchors available to choose a start node.")
-		
+
 		def phi(v: T) -> float:
 			return float(g.node_attr.get(v, {}).get("phi", float("-inf")))
-		
+
 		return sorted(g.nodes, key=phi, reverse=True)[: self.k]
 
 
 class SelectByCosTopK(Generic[T]):
 	name = "select_by_cos_topk"
-	
+
 	def __init__(self, k: int = 1):
 		self.k = k
-	
+
 	def select_start(self, g: EmbeddedGraphLike[T], q: str) -> list[T]:
 		if not g.nodes:
 			raise ValueError("No anchors available.")
