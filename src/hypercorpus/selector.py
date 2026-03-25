@@ -10,9 +10,6 @@ import os
 from pathlib import Path
 import re
 import time
-
-logger = logging.getLogger(__name__)
-
 from typing import Any, Callable, Literal, Protocol, Sequence
 
 from hypercorpus.embeddings import (
@@ -51,6 +48,8 @@ from hypercorpus.walker import (
 	walk_step_log_to_dict,
 	walk_step_to_dict,
 )
+
+logger = logging.getLogger(__name__)
 
 SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
 BudgetFillMode = Literal["score_floor", "always", "relative_drop"]

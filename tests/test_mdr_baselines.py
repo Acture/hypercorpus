@@ -148,7 +148,7 @@ def test_export_iirc_store_to_mdr_writes_expected_schema_and_is_stable(tmp_path)
 	export_dir_b = tmp_path / "export-b"
 
 	manifest_a = export_iirc_store_to_mdr(store_uri=store_root, output_dir=export_dir_a)
-	manifest_b = export_iirc_store_to_mdr(store_uri=store_root, output_dir=export_dir_b)
+	export_iirc_store_to_mdr(store_uri=store_root, output_dir=export_dir_b)
 
 	assert manifest_a.corpus_documents == 5
 	assert manifest_a.total_train_cases == 4
