@@ -337,9 +337,10 @@ def subset_comparison_rows(
 			grouped.setdefault(
 				(str(record["selector"]), str(record["budget_label"])), []
 			).append(record)
+		_ctrl = control_selector_name or ""
 		control_by_budget = {
 			budget_label: _aggregate_subset_rows(
-				grouped.get((control_selector_name, budget_label), [])
+				grouped.get((_ctrl, budget_label)) or []
 			)
 			for _selector_name, budget_label in selector_budget_keys
 		}

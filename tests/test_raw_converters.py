@@ -75,6 +75,7 @@ def test_convert_hotpotqa_raw_distractor_builds_case_local_graph(
 	)
 
 	cases = load_hotpotqa_questions(layout.question_paths["dev"], variant="distractor")
+	assert layout.graph_path is not None
 	graph = load_hotpotqa_graph(layout.graph_path, variant="fullwiki")
 
 	assert cases[0].gold_support_nodes == [
@@ -101,6 +102,7 @@ def test_convert_hotpotqa_raw_fullwiki_uses_supplied_graph(
 	)
 
 	cases = load_hotpotqa_questions(layout.question_paths["dev"], variant="fullwiki")
+	assert layout.graph_path is not None
 	graph = load_hotpotqa_graph(layout.graph_path, variant="fullwiki")
 
 	assert cases[0].gold_support_nodes == [
@@ -118,6 +120,7 @@ def test_convert_musique_raw_preserves_support_start_and_path(
 	layout = convert_musique_raw_dataset(raw_dir, tmp_path / "normalized-musique")
 
 	cases = load_musique_questions(layout.question_paths["dev"])
+	assert layout.graph_path is not None
 	graph = load_musique_graph(layout.graph_path)
 
 	assert cases[0].gold_start_nodes == ["m-raw-1::p0::Apollo Program"]
@@ -140,6 +143,7 @@ def test_convert_iirc_raw_flattens_nested_questions_and_context(
 	)
 
 	cases = load_iirc_questions(layout.question_paths["dev"])
+	assert layout.graph_path is not None
 	graph = load_iirc_graph(layout.graph_path)
 
 	assert cases[0].gold_start_nodes == ["Moon Launch Program"]
@@ -161,6 +165,7 @@ def test_convert_iirc_raw_supports_html_context_articles_and_title_aliases(tmp_p
 	layout = convert_iirc_raw_dataset(raw_dir, tmp_path / "normalized-iirc-html")
 
 	cases = load_iirc_questions(layout.question_paths["dev"])
+	assert layout.graph_path is not None
 	graph = load_iirc_graph(layout.graph_path)
 
 	assert cases[0].gold_start_nodes == ["Moon Launch Program"]

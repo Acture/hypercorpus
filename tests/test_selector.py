@@ -224,10 +224,10 @@ def test_iterative_dense_resumes_from_checkpointed_hop(sample_graph):
 	full = selector.select(
 		sample_graph,
 		case,
-		budget,
-		checkpoint_callback=lambda payload: checkpoints.append(payload),
+		budget,  # ty: ignore[invalid-argument-type] # Protocol vs concrete
+		checkpoint_callback=lambda payload: checkpoints.append(payload),  # ty: ignore[unknown-argument] # concrete impl kwargs
 	)
-	resumed = selector.select(sample_graph, case, budget, resume_state=checkpoints[0])
+	resumed = selector.select(sample_graph, case, budget, resume_state=checkpoints[0])  # ty: ignore[invalid-argument-type,unknown-argument] # concrete impl kwargs
 
 	assert checkpoints
 	assert resumed.selected_node_ids == full.selected_node_ids
@@ -250,10 +250,10 @@ def test_budget_fill_resumes_from_checkpointed_fill_state(sample_graph):
 	full = selector.select(
 		sample_graph,
 		case,
-		budget,
-		checkpoint_callback=lambda payload: checkpoints.append(payload),
+		budget,  # ty: ignore[invalid-argument-type] # Protocol vs concrete
+		checkpoint_callback=lambda payload: checkpoints.append(payload),  # ty: ignore[unknown-argument] # concrete impl kwargs
 	)
-	resumed = selector.select(sample_graph, case, budget, resume_state=checkpoints[0])
+	resumed = selector.select(sample_graph, case, budget, resume_state=checkpoints[0])  # ty: ignore[invalid-argument-type,unknown-argument] # concrete impl kwargs
 
 	assert checkpoints
 	assert resumed.selected_node_ids == full.selected_node_ids
@@ -434,7 +434,7 @@ def test_canonical_dense_selector_uses_seed_top_k(sample_graph):
 	result = selector.select(
 		sample_graph,
 		EvaluationCase(case_id="q1", query="Which city hosts the launch site?"),
-		EvaluationBudget(token_budget_tokens=256),
+		EvaluationBudget(token_budget_tokens=256),  # ty: ignore[invalid-argument-type] # Protocol vs concrete
 	)
 
 	assert result.selected_node_ids == ["mission"]
@@ -464,7 +464,7 @@ def test_sentence_transformer_seed_strategy_uses_embedder_ranking():
 	result = selector.select(
 		graph,
 		EvaluationCase(case_id="q-st-seed", query=query),
-		EvaluationBudget(token_budget_tokens=128),
+		EvaluationBudget(token_budget_tokens=128),  # ty: ignore[invalid-argument-type] # Protocol vs concrete
 	)
 
 	assert result.selected_node_ids == ["alpha"]
@@ -513,7 +513,7 @@ def test_iterative_dense_selector_retrieves_with_expansion_context():
 	result = selector.select(
 		graph,
 		EvaluationCase(case_id="q-iterative", query=query),
-		EvaluationBudget(token_budget_tokens=256),
+		EvaluationBudget(token_budget_tokens=256),  # ty: ignore[invalid-argument-type] # Protocol vs concrete
 	)
 
 	assert result.selected_node_ids == ["start", "bridge", "goal"]
@@ -595,7 +595,7 @@ def test_sentence_transformer_edge_scorer_records_future_edge_ids():
 	result = selector.select(
 		graph,
 		EvaluationCase(case_id="q-st-scorer", query=query),
-		EvaluationBudget(token_budget_tokens=128),
+		EvaluationBudget(token_budget_tokens=128),  # ty: ignore[invalid-argument-type] # Protocol vs concrete
 	)
 
 	assert "bridge" in result.selected_node_ids
@@ -645,8 +645,8 @@ def test_overlap_profiles_change_selection_and_metadata():
 		"top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_title_aware"
 	)
 
-	balanced_result = balanced.select(graph, case, budget)
-	title_aware_result = title_aware.select(graph, case, budget)
+	balanced_result = balanced.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
+	title_aware_result = title_aware.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
 
 	assert balanced_result.selected_node_ids[:2] == ["zz_root", "anchor"]
 	assert title_aware_result.selected_node_ids[:2] == ["zz_root", "title"]
@@ -753,8 +753,8 @@ def test_mdr_light_differs_from_iterative_dense_for_multi_frontier_dense_hops():
 		sentence_transformer_embedder_factory=embedder,
 	)
 
-	iterative_result = iterative.select(graph, case, budget)
-	mdr_light_result = mdr_light.select(graph, case, budget)
+	iterative_result = iterative.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
+	mdr_light_result = mdr_light.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
 
 	assert "noise" in iterative_result.selected_node_ids
 	assert "goal_a" not in iterative_result.selected_node_ids
@@ -806,10 +806,10 @@ def test_budget_fill_variants_recover_small_nodes_and_stop_differently():
 		"top_1_seed__lexical_overlap__hop_0__dense__budget_fill_relative_drop"
 	)
 
-	canonical_result = canonical.select(graph, case, budget)
-	always_result = always.select(graph, case, budget)
-	score_floor_result = score_floor.select(graph, case, budget)
-	relative_drop_result = relative_drop.select(graph, case, budget)
+	canonical_result = canonical.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
+	always_result = always.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
+	score_floor_result = score_floor.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
+	relative_drop_result = relative_drop.select(graph, case, budget)  # ty: ignore[invalid-argument-type] # Protocol vs concrete
 
 	assert canonical_result.selected_node_ids == []
 	assert always_result.selected_node_ids == ["compact", "weak", "tiny"]

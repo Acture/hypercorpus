@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Literal, Sequence
+from typing import Literal, Sequence, cast
 
 from hypercorpus.answering import Answerer, SupportsAnswer
 from hypercorpus.graph import LinkContextGraph
 from hypercorpus.selector import (
 	CorpusSelectionResult,
 	CorpusSelector,
+	RuntimeBudget,
 	ScoredLink,
 	SelectionTraceStep,
 	SelectorMetadata,
@@ -436,7 +437,7 @@ class Evaluator:
 	) -> CaseEvaluation:
 		selections: list[SelectionResult] = []
 		for selector in self.selectors:
-			raw_selection = selector.select(graph, case, self.budget)
+			raw_selection = selector.select(graph, case, cast(RuntimeBudget, self.budget))
 			result = _selection_result_from_raw(
 				graph=graph, case=case, budget=self.budget, raw=raw_selection
 			)
@@ -583,8 +584,9 @@ def _minimum_document_tokens(graph: LinkContextGraph) -> int:
 
 
 def _graph_token_estimate(graph: LinkContextGraph) -> int:
-	if hasattr(graph, "total_token_estimate"):
-		return graph.total_token_estimate()
+	total_token_estimate = getattr(graph, "total_token_estimate", None)
+	if callable(total_token_estimate):
+		return total_token_estimate()
 	return sum(_node_token_cost(graph, node_id) for node_id in graph.nodes)
 
 

@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import logging
 import os
-from typing import BinaryIO, Iterable, Iterator, Optional, Union
+from typing import IO, BinaryIO, Iterable, Iterator, Optional, Union
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -217,7 +217,7 @@ class _DashboardProgressAdapter:
 		self.state.advance(task_id, advance=advance)
 
 	def update(self, task_id: int, **fields: object) -> None:
-		self.state.update(task_id, **fields)
+		self.state.update(task_id, **fields)  # ty: ignore[invalid-argument-type] # pass-through kwargs
 
 
 def setup_rich_logging(
@@ -315,8 +315,8 @@ def create_transfer_progress(
 
 
 def copy_stream_with_progress(
-	source: BinaryIO,
-	destination: BinaryIO,
+	source: BinaryIO | IO[bytes],
+	destination: BinaryIO | IO[bytes],
 	*,
 	description: str,
 	total: int | None = None,
@@ -359,5 +359,5 @@ def copy_stream_with_progress(
 				break
 			destination.write(chunk)
 			total_written += len(chunk)
-			progress.advance(task_id, len(chunk))
+			progress.advance(task_id, len(chunk))  # ty: ignore[invalid-argument-type] # rich TaskID typing
 	return total_written

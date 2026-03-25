@@ -52,4 +52,8 @@ def fetch_wiki(output_file: Path, target_count: int, min_char_length=None):
 
 
 if __name__ == "__main__":
-	fetch_wiki()
+	import sys
+	if len(sys.argv) < 3:
+		print(f"Usage: {sys.argv[0]} <output_file> <target_count>")
+		sys.exit(1)
+	fetch_wiki(Path(sys.argv[1]), int(sys.argv[2]))

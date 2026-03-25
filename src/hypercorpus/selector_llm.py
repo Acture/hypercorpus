@@ -1337,7 +1337,7 @@ def _candidate_bundle(
 	future_scorer = LinkContextOverlapStepScorer()
 	for index in prefiltered_indices:
 		link = candidate_links[index]
-		entry = {
+		entry: dict[str, Any] = {
 			"edge_id": str(index),
 			"source_title": _node_title(graph, link.source),
 			"target_title": _node_title(graph, link.target),

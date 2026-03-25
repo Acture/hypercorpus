@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Sequence, Tuple, Union, cast
 import logging
 
 logger = logging.getLogger(__name__)
@@ -113,18 +113,19 @@ def jsonl_to_csv(
 				row: Dict[str, Any] = {}
 
 				for out_col, getter in columns.items():
-					if callable(getter):
-						v = getter(obj)
+					if callable(getter) and not isinstance(getter, (str, tuple)):
+						v = cast(Callable[[JsonObj], Any], getter)(obj)
 					elif (
 						isinstance(getter, tuple)
 						and len(getter) == 2
 						and callable(getter[1])
 					):
-						path, tf = getter
+						path = cast(Union[str, Sequence[Union[str, int]]], getter[0])
+						tf = cast(Callable[[Any, JsonObj], Any], getter[1])
 						v0 = _get_in(obj, path, None)
 						v = tf(v0, obj)
 					else:
-						v = _get_in(obj, getter, None)
+						v = _get_in(obj, cast(Union[str, Sequence[Union[str, int]]], getter), None)
 
 					if auto_join_str_lists:
 						v = _join_list_str(v, sep=join_sep)

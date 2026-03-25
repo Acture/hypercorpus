@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
-from hypercorpus.eval import EvaluationCase
+from hypercorpus.eval import EvaluationCase, QuestionType
 from hypercorpus.graph import LinkContextGraph
 
 
@@ -50,6 +50,17 @@ class DatasetAdapter(Protocol):
 
 class BaseDatasetAdapter:
 	dataset_name = "dataset"
+
+	def load_graph(self, graph_source: str | Path) -> LinkContextGraph:
+		raise NotImplementedError
+
+	def load_cases(
+		self,
+		questions_source: str | Path,
+		*,
+		limit: int | None = None,
+	) -> list[EvaluationCase]:
+		raise NotImplementedError
 
 	def load_dataset(
 		self,
@@ -100,12 +111,16 @@ def pick_first(record: Mapping[str, Any], *keys: str) -> Any:
 	return None
 
 
-def coerce_question_type(value: Any) -> str | None:
+def coerce_question_type(value: Any) -> QuestionType | None:
 	if value is None:
 		return None
 	normalized = str(value).strip().lower()
-	if normalized in {"bridge", "comparison", "unknown"}:
-		return normalized
+	if normalized == "bridge":
+		return "bridge"
+	if normalized == "comparison":
+		return "comparison"
+	if normalized == "unknown":
+		return "unknown"
 	return None
 
 

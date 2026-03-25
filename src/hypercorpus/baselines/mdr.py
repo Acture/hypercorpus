@@ -783,8 +783,8 @@ class _OfficialMDRBackend:
 			import torch
 			from transformers import AutoConfig, AutoTokenizer
 
-			from mdr.retrieval.models.mhop_retriever import RobertaRetriever
-			from mdr.retrieval.utils.utils import load_saved
+			from mdr.retrieval.models.mhop_retriever import RobertaRetriever  # ty: ignore[unresolved-import]
+			from mdr.retrieval.utils.utils import load_saved  # ty: ignore[unresolved-import]
 
 			config = AutoConfig.from_pretrained(self.manifest.model_name)
 			tokenizer = AutoTokenizer.from_pretrained(self.manifest.model_name)

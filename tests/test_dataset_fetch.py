@@ -2,6 +2,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
+from typing import Any
 import urllib.error
 
 import pytest
@@ -52,7 +53,7 @@ def _write_iirc_archive(
 	archive_path = tmp_path / (
 		"iirc-with-context.tgz" if include_context else "iirc-questions-only.tgz"
 	)
-	payloads = {
+	payloads: dict[str, Any] = {
 		"dev.json": dev_payload,
 		"train.json": dev_payload,
 	}
@@ -117,6 +118,7 @@ def test_fetch_2wiki_dataset_extracts_selected_split_and_graph(
 	assert layout.question_paths["dev"] == output_dir / "questions" / "dev.json"
 	assert layout.question_paths["dev"].exists()
 	assert layout.graph_path == output_dir / "graph" / "para_with_hyperlink.jsonl"
+	assert layout.graph_path is not None
 	assert layout.graph_path.exists()
 	assert not (output_dir / "archives").exists()
 
@@ -214,6 +216,7 @@ def test_fetch_iirc_dataset_can_materialize_context_from_local_path(tmp_path):
 		layout.raw_dir / "iirc" / "extracted" / "context_articles.json"
 	)
 	assert context_destination.exists()
+	assert layout.source_manifest_path is not None
 	manifest = json.loads(layout.source_manifest_path.read_text(encoding="utf-8"))
 	names = {artifact["name"] for artifact in manifest["artifacts"]}
 	assert "context_articles.json" in names
@@ -236,6 +239,7 @@ def test_fetch_iirc_dataset_uses_built_in_context_source_by_default(
 	archived_context = layout.raw_dir / "iirc" / "archives" / "context_articles.tar.gz"
 	assert extracted_context.exists()
 	assert archived_context.exists()
+	assert layout.source_manifest_path is not None
 	manifest = json.loads(layout.source_manifest_path.read_text(encoding="utf-8"))
 	by_name = {artifact["name"]: artifact for artifact in manifest["artifacts"]}
 	assert by_name["context_archive"]["source_url"] == context_archive.as_uri()
@@ -253,6 +257,7 @@ def test_fetch_iirc_dataset_can_materialize_context_from_local_archive(tmp_path)
 
 	assert (layout.raw_dir / "iirc" / "extracted" / "context_articles.json").exists()
 	assert (layout.raw_dir / "iirc" / "archives" / "context_articles.tar.gz").exists()
+	assert layout.source_manifest_path is not None
 	manifest = json.loads(layout.source_manifest_path.read_text(encoding="utf-8"))
 	by_name = {artifact["name"]: artifact for artifact in manifest["artifacts"]}
 	assert (
@@ -271,6 +276,7 @@ def test_fetch_iirc_dataset_can_materialize_context_from_url_archive(tmp_path):
 	)
 
 	assert (layout.raw_dir / "iirc" / "extracted" / "context_articles.json").exists()
+	assert layout.source_manifest_path is not None
 	manifest = json.loads(layout.source_manifest_path.read_text(encoding="utf-8"))
 	by_name = {artifact["name"]: artifact for artifact in manifest["artifacts"]}
 	assert by_name["context_archive"]["source_url"] == context_archive.as_uri()
@@ -347,6 +353,7 @@ def test_fetch_iirc_dataset_ignores_appledouble_json_members(tmp_path):
 
 	assert (layout.raw_dir / "iirc" / "extracted" / "dev.json").exists()
 	assert not (layout.raw_dir / "iirc" / "extracted" / "._dev.json").exists()
+	assert layout.source_manifest_path is not None
 	manifest = json.loads(layout.source_manifest_path.read_text(encoding="utf-8"))
 	assert "._dev.json" not in {artifact["name"] for artifact in manifest["artifacts"]}
 
@@ -385,6 +392,7 @@ def test_fetch_hotpotqa_dataset_downloads_variant_questions(
 
 	assert set(layout.artifact_paths) == {"dev"}
 	assert layout.artifact_paths["dev"].name == "dev.json"
+	assert layout.source_manifest_path is not None
 	manifest = json.loads(layout.source_manifest_path.read_text(encoding="utf-8"))
 	assert manifest["dataset_name"] == "hotpotqa"
 	assert manifest["variant"] == "distractor"

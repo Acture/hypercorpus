@@ -158,7 +158,9 @@ def test_export_iirc_store_to_mdr_writes_expected_schema_and_is_stable(tmp_path)
 	assert manifest_a.distinct_support_ge_2_cases == 3
 	assert manifest_a.dropped_no_bridge == 1
 	assert manifest_a.dropped_no_bridge_with_distinct_support_ge_2 == 0
+	assert manifest_a.export_manifest_path is not None
 	assert Path(manifest_a.export_manifest_path).exists()
+	assert manifest_a.dropped_cases_path is not None
 	assert Path(manifest_a.dropped_cases_path).exists()
 	assert (
 		sum(manifest_a.train_type_counts.values())

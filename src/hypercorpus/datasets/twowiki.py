@@ -219,15 +219,15 @@ def _iter_records_with_optional_progress(
 			_iter_records_with_progress_bytes(path), start=1
 		):
 			if count == 1 or count % update_every == 0:
-				kwargs = {"description": f"{description} [{count:,} records]"}
+				kwargs: dict[str, str | int] = {"description": f"{description} [{count:,} records]"}
 				if total_bytes is not None:
 					kwargs["completed"] = progress_value
-				progress.update(task_id, **kwargs)
+				progress.update(task_id, **kwargs)  # ty: ignore[invalid-argument-type] # rich TaskID typing
 			yield record
-		kwargs = {"description": f"{description} [{count:,} records]"}
+		kwargs_final: dict[str, str | int] = {"description": f"{description} [{count:,} records]"}
 		if total_bytes is not None:
-			kwargs["completed"] = total_bytes
-		progress.update(task_id, **kwargs)
+			kwargs_final["completed"] = total_bytes
+		progress.update(task_id, **kwargs_final)  # ty: ignore[invalid-argument-type] # rich TaskID typing
 	logger.info("%s complete (%s records)", description.capitalize(), count)
 
 

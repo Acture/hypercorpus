@@ -443,7 +443,7 @@ def _convert_iirc_questions_payload(
 					expected_answer=_extract_iirc_answer_text(question.get("answer")),
 					dataset_name="iirc",
 					gold_support_nodes=support_nodes,
-					gold_start_nodes=[source_title] if source_title else None,
+					gold_start_nodes=[source_title] if source_title else [],
 					gold_path_nodes=path_nodes or None,
 					question_type=coerce_question_type(
 						pick_first(question, "question_type", "type")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, cast
 import time
 
 import typer
@@ -145,7 +146,8 @@ class _ExperimentDashboardRenderable:
 		self.log_buffer = log_buffer
 
 	def __rich_console__(self, console, options):
-		renderables: list[object] = [
+		from rich.console import RenderableType
+		renderables: list[RenderableType] = [
 			_build_dashboard_status_panel(self.state, self.progress_state),
 			_build_summary_renderable(
 				self.state.summary, title=f"{self.state.dataset_name} summary"
@@ -905,7 +907,7 @@ def run_hotpotqa(
 		runner=lambda progress_observer: run_hotpotqa_experiment(
 			questions_path=questions,
 			output_dir=output,
-			variant=variant,
+			variant=cast("Literal['distractor', 'fullwiki']", variant),
 			graph_records_path=graph_records,
 			limit=limit,
 			case_ids_file=case_ids_file,

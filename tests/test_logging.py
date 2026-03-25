@@ -1,6 +1,8 @@
 import logging
+from typing import cast
 
 from rich.console import Console
+from rich.progress import TaskID
 
 from hypercorpus.logging import (
 	DashboardLogBuffer,
@@ -35,7 +37,7 @@ def test_dashboard_progress_adapter_tracks_tasks():
 
 	with dashboard_session(progress_state=progress_state):
 		with create_progress(transient=True) as progress:
-			task_id = progress.add_task("evaluate", total=10, detail="q1")
+			task_id = cast(TaskID, progress.add_task("evaluate", total=10, detail="q1"))
 			progress.advance(task_id, 3)
 			progress.update(
 				task_id, description="evaluate cases", detail="q2", advance=2

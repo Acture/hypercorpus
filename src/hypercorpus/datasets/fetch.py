@@ -80,7 +80,7 @@ def fetch_2wiki_dataset(
 	overwrite: bool = False,
 	questions_url: str | None = None,
 	graph_url: str | None = None,
-	downloader: DownloadFn = None,
+	downloader: DownloadFn | None = None,
 ) -> TwoWikiDatasetLayout:
 	if not include_questions and not include_graph:
 		raise ValueError(
@@ -174,7 +174,7 @@ def fetch_iirc_dataset(
 	context_source: str | Path | None = None,
 	require_context: bool = True,
 	overwrite: bool = False,
-	downloader: DownloadFn = None,
+	downloader: DownloadFn | None = None,
 ) -> RawDatasetLayout:
 	resolved_output = Path(output_dir)
 	raw_dir = resolved_output / "raw"
@@ -272,7 +272,7 @@ def fetch_musique_dataset(
 	subset: str = "full",
 	split_urls: dict[str, str] | None = None,
 	overwrite: bool = False,
-	downloader: DownloadFn = None,
+	downloader: DownloadFn | None = None,
 ) -> RawDatasetLayout:
 	resolved_output = Path(output_dir)
 	raw_dir = resolved_output / "raw"
@@ -325,7 +325,7 @@ def fetch_hotpotqa_dataset(
 	split: str = "dev",
 	split_urls: dict[str, str] | None = None,
 	overwrite: bool = False,
-	downloader: DownloadFn = None,
+	downloader: DownloadFn | None = None,
 ) -> RawDatasetLayout:
 	resolved_output = Path(output_dir)
 	raw_dir = resolved_output / "raw"

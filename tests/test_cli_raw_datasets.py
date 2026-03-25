@@ -2,6 +2,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
+from typing import Any
 
 from typer.testing import CliRunner
 
@@ -41,7 +42,7 @@ def _write_iirc_archive(tmp_path: Path, *, include_context: bool) -> Path:
 	archive_path = tmp_path / (
 		"iirc-with-context.tgz" if include_context else "iirc-questions-only.tgz"
 	)
-	payloads = {
+	payloads: dict[str, Any] = {
 		"dev.json": dev_payload,
 		"train.json": dev_payload,
 	}

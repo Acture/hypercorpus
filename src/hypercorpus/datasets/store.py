@@ -13,7 +13,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Protocol, Sequence
+from typing import IO, Any, Iterable, Iterator, Protocol, Sequence
 
 from hypercorpus.graph import DocumentNode, LinkContext
 from hypercorpus.logging import copy_stream_with_progress
@@ -88,7 +88,7 @@ class S3CompatibleObjectStore:
 
 	def _client(self) -> Any:
 		try:
-			import boto3
+			import boto3  # ty: ignore[unresolved-import]
 		except ModuleNotFoundError as exc:
 			raise RuntimeError(
 				"boto3 is required to use s3:// dataset stores. Install boto3 or use a local path."
@@ -1082,7 +1082,7 @@ class _ShardWriter:
 		self.target_shard_size_bytes = target_shard_size_bytes
 		self.shard_dir.mkdir(parents=True, exist_ok=True)
 		self.index = 0
-		self._current_handle: gzip.GzipFile | None = None
+		self._current_handle: gzip.GzipFile | IO[str] | None = None
 		self._current_text_handle: Any = None
 		self._current_uncompressed_bytes = 0
 		self._current_record_count = 0

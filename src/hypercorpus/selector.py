@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable, Literal, Protocol, Sequence
+from typing import Any, Callable, Literal, Protocol, Sequence, cast
 
 from hypercorpus.embeddings import (
 	DEFAULT_SENTENCE_TRANSFORMER_MODEL,
@@ -24,6 +24,7 @@ from hypercorpus.selector_llm import (
 	LLMControllerStepScorer,
 	LLMStepLinkScorer,
 	SelectorLLMConfig,
+	SelectorProvider,
 )
 from hypercorpus.text import (
 	approx_token_count,
@@ -2509,6 +2510,8 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 				),
 				None,
 			)
+			assert primary_card is not None  # guaranteed: score_cards is non-empty
+			assert primary_link is not None
 			selector_logs.append(
 				WalkStepLog(
 					step_index=len(steps) - 1,
@@ -2977,6 +2980,7 @@ class CanonicalSearchSelector(_SentenceTransformerSupport):
 			embedder=_scorer_embedder(self.spec, self._get_embedder),
 		)
 		heuristic = CoverageSemanticHeuristic()
+		assert self.spec.search_structure is not None  # set by SelectorSpec validation
 		selector = _build_algorithm(self.spec.search_structure)
 		result = selector.select(
 			graph,
@@ -3509,7 +3513,7 @@ def selector_names_for_preset(
 def build_selector(
 	name: str,
 	*,
-	selector_provider: Literal["openai", "anthropic", "gemini"] = "openai",
+	selector_provider: Literal["openai", "anthropic", "gemini"] | str = "openai",
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
@@ -3542,7 +3546,7 @@ def build_selector(
 		)
 	spec = parse_selector_spec(name)
 	llm_config = SelectorLLMConfig(
-		provider=selector_provider,
+		provider=cast(SelectorProvider, selector_provider),
 		model=selector_model,
 		api_key_env=selector_api_key_env,
 		base_url=selector_base_url,
@@ -3644,7 +3648,7 @@ def select_selectors(
 	*,
 	preset: SelectorPresetName | str = "full",
 	include_diagnostics: bool = True,
-	selector_provider: Literal["openai", "anthropic", "gemini"] = "openai",
+	selector_provider: Literal["openai", "anthropic", "gemini"] | str = "openai",
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
@@ -4515,7 +4519,7 @@ def _corpus_selection_from_walk(
 
 def _graph_token_estimate(graph: LinkContextGraph) -> int:
 	if hasattr(graph, "total_token_estimate"):
-		return graph.total_token_estimate()
+		return graph.total_token_estimate()  # ty: ignore[call-non-callable] # dynamic method check
 	return sum(_node_token_cost(graph, node_id) for node_id in graph.nodes)
 
 
@@ -4530,7 +4534,7 @@ def _node_score(graph: LinkContextGraph, query: str, node_id: str) -> float:
 
 
 def _selector_metadata_from_step_scorer(
-	scorer: StepLinkScorer,
+	scorer: StepLinkScorer | _WalkScorerMetadataAdapter,
 	*,
 	seed_top_k: int | None,
 	hop_budget: int | None,

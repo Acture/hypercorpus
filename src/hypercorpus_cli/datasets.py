@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal, cast
 import urllib.parse
 
 import typer
@@ -384,7 +385,7 @@ def convert_hotpotqa_raw(
 	layout = convert_hotpotqa_raw_dataset(
 		raw_dir,
 		output_dir,
-		variant=variant,
+		variant=cast("Literal['distractor', 'fullwiki']", variant),
 		graph_source=graph_source,
 		overwrite=overwrite,
 		source_manifest_path=_source_manifest_for(raw_dir),
@@ -589,7 +590,7 @@ def prepare_hotpotqa_store_from_raw(
 	normalized = convert_hotpotqa_raw_dataset(
 		layout.raw_dir / "hotpotqa" / variant,
 		normalized_root,
-		variant=variant,
+		variant=cast("Literal['distractor', 'fullwiki']", variant),
 		graph_source=graph_source,
 		overwrite=overwrite,
 		source_manifest_path=layout.source_manifest_path,

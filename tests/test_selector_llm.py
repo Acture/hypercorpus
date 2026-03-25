@@ -1,9 +1,10 @@
 import json
+from typing import cast
 
 import pytest
 
 from hypercorpus.eval import EvaluationBudget, EvaluationCase
-from hypercorpus.selector import build_selector, select_selectors
+from hypercorpus.selector import RuntimeBudget, build_selector, select_selectors
 from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
 from hypercorpus.selector_llm import AnthropicBackendAdapter, BackendCompletion
 
@@ -222,6 +223,7 @@ def test_anthropic_backend_adapter_uses_tool_output_schema():
 	}
 	assert completion.text == "unused prose"
 	assert completion.total_tokens == 34
+	assert client.messages.last_kwargs is not None
 	assert client.messages.last_kwargs["tool_choice"] == {
 		"type": "tool",
 		"name": "score_candidates",
@@ -261,7 +263,7 @@ def test_single_hop_selector_records_usage_and_logs(
 		selector_backend_factory=lambda _config: backend,
 	)
 	case = EvaluationCase(case_id="q1", query="Which city hosts the launch site?")
-	budget = EvaluationBudget(token_budget_tokens=128)
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
 	first = selector.select(sample_graph, case, budget)
 	second = selector.select(sample_graph, case, budget)
@@ -317,7 +319,7 @@ def test_two_hop_selector_records_best_next_edge_id(monkeypatch):
 		selector_backend_factory=lambda _config: backend,
 	)
 	case = EvaluationCase(case_id="bridge", query="launch navigation root")
-	budget = EvaluationBudget(token_budget_tokens=128)
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
 	result = selector.select(_build_bridge_graph(), case, budget)
 
@@ -392,7 +394,7 @@ def test_single_hop_selector_parses_text_json_variants(
 		selector_backend_factory=lambda _config: backend,
 	)
 	case = EvaluationCase(case_id="q-json", query="Which city hosts the launch site?")
-	budget = EvaluationBudget(token_budget_tokens=128)
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
 	result = selector.select(sample_graph, case, budget)
 
@@ -427,7 +429,7 @@ def test_single_hop_selector_preserves_usage_on_response_failures(
 	case = EvaluationCase(
 		case_id="q-failure", query="Which city hosts the launch site?"
 	)
-	budget = EvaluationBudget(token_budget_tokens=128)
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
 	result = selector.select(sample_graph, case, budget)
 
@@ -502,7 +504,7 @@ def test_controller_single_path_records_decision_and_backtrack(monkeypatch):
 		selector_backend_factory=lambda _config: backend,
 	)
 	case = EvaluationCase(case_id="q-controller", query="harbor root evidence")
-	budget = EvaluationBudget(token_budget_tokens=128)
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
 	result = selector.select(_build_backtrack_graph(), case, budget)
 
@@ -580,7 +582,7 @@ def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatc
 		selector_backend_factory=lambda _config: backend,
 	)
 	case = EvaluationCase(case_id="q-multipath", query="launch navigation root")
-	budget = EvaluationBudget(token_budget_tokens=128)
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
 	result = selector.select(_build_bridge_graph(), case, budget)
 

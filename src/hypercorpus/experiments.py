@@ -7,7 +7,7 @@ import os
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Callable, Literal, Sequence, cast
 
 from hypercorpus.answering import (
 	Answerer,
@@ -15,7 +15,7 @@ from hypercorpus.answering import (
 	LLMAnswererConfig,
 	SupportsAnswer,
 )
-from hypercorpus.datasets.common import DatasetAdapter, load_json_records
+from hypercorpus.datasets.common import DatasetAdapter, coerce_question_type, load_json_records
 from hypercorpus.datasets.docs import DocumentationAdapter
 from hypercorpus.datasets.hotpotqa import (
 	HotpotQAAdapter,
@@ -1568,9 +1568,7 @@ def _case_from_selection_record(record: dict[str, Any]) -> EvaluationCase:
 			if record.get("gold_path_nodes") is None
 			else [str(node_id) for node_id in record.get("gold_path_nodes", [])]
 		),
-		question_type=None
-		if record.get("question_type") is None
-		else str(record["question_type"]),
+		question_type=coerce_question_type(record.get("question_type")),
 	)
 
 
@@ -1611,7 +1609,7 @@ def _selection_result_from_record(
 			],
 		),
 		metrics=SelectionMetrics(
-			budget_mode=str(metrics_payload["budget_mode"]),
+			budget_mode=cast(Literal["tokens", "ratio"], str(metrics_payload["budget_mode"])),
 			budget_value=metrics_payload["budget_value"],
 			budget_label=str(metrics_payload["budget_label"]),
 			token_budget_ratio=(
@@ -3061,7 +3059,7 @@ def _iterate_with_optional_progress(
 		task_id = progress.add_task(description, total=total)
 		for item in items:
 			yield item
-			progress.advance(task_id, 1)
+			progress.advance(task_id, 1)  # ty: ignore[invalid-argument-type]  # TaskID is NewType(int)
 
 
 def _write_graphrag_input(

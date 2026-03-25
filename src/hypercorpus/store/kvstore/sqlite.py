@@ -71,7 +71,7 @@ class SQLiteKVStore(KVStore[K, V]):
 		db_path: str,
 		tar_bz2_path: str,
 		key_fn: Callable[[dict], str],
-		val_fn: Callable[[dict], dict] = lambda obj: obj,  # type: ignore
+		val_fn: Callable[[dict], dict] = lambda obj: obj,
 		table: str = "kv",
 		encoding: str = "utf-8",
 		commit_every: int = 5000,

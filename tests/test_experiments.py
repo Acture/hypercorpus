@@ -858,7 +858,7 @@ def test_run_2wiki_experiment_resume_only_runs_remaining_selection(
 	def _fake_select_selectors(*args, **kwargs):
 		return [counting_selector]
 
-	checkpoint_limit = {"value": 2}
+	checkpoint_limit: dict[str, int | None] = {"value": 2}
 
 	class ControlledInterruptController:
 		def __init__(self):

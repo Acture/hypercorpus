@@ -35,7 +35,9 @@ def test_from_2wikimultihop_records_builds_semantic_links():
 	assert (
 		link.sentence == "Moon Launch Program uses Cape Canaveral as its launch site."
 	)
-	assert graph.get_document("cape").title == "Cape Canaveral"
+	doc = graph.get_document("cape")
+	assert doc is not None
+	assert doc.title == "Cape Canaveral"
 
 
 def test_induced_subgraph_keeps_only_selected_nodes(sample_graph):
