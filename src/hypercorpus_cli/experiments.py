@@ -105,8 +105,11 @@ class _LiveDashboardState:
 
     @property
     def throughput(self) -> float:
+        """Return throughput in selections/s (falls back to cases/s)."""
         if self.elapsed_s <= 0:
             return 0.0
+        if self.completed_selections is not None and self.completed_selections > 0:
+            return self.completed_selections / self.elapsed_s
         return self.completed_cases / self.elapsed_s
 
 
@@ -1289,12 +1292,14 @@ def _build_dashboard_status_panel(
         grid.add_row("selections", _plain(f"{state.completed_selections}/{state.total_selections}"))
     grid.add_row("elapsed", _plain(f"{state.elapsed_s:.1f}s"))
     tp = state.throughput
+    unit = "sel/s" if state.completed_selections and state.completed_selections > 0 else "case/s"
     if tp >= 0.01:
-        tp_str = f"{tp:.2f} case/s"
+        tp_str = f"{tp:.2f} {unit}"
     elif tp > 0:
-        tp_str = f"{tp * 60:.1f} case/min"
+        min_unit = "sel/min" if unit == "sel/s" else "case/min"
+        tp_str = f"{tp * 60:.1f} {min_unit}"
     else:
-        tp_str = "-- case/s"
+        tp_str = f"-- {unit}"
     grid.add_row("throughput", _plain(tp_str))
     if state.current_case_id is not None:
         grid.add_row("current_case", _plain(state.current_case_id))
