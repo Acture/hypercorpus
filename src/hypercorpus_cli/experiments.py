@@ -1288,7 +1288,14 @@ def _build_dashboard_status_panel(
     if state.total_selections is not None and state.completed_selections is not None:
         grid.add_row("selections", _plain(f"{state.completed_selections}/{state.total_selections}"))
     grid.add_row("elapsed", _plain(f"{state.elapsed_s:.1f}s"))
-    grid.add_row("throughput", _plain(f"{state.throughput:.2f} case/s"))
+    tp = state.throughput
+    if tp >= 0.01:
+        tp_str = f"{tp:.2f} case/s"
+    elif tp > 0:
+        tp_str = f"{tp * 60:.1f} case/min"
+    else:
+        tp_str = "-- case/s"
+    grid.add_row("throughput", _plain(tp_str))
     if state.current_case_id is not None:
         grid.add_row("current_case", _plain(state.current_case_id))
     if state.current_query:

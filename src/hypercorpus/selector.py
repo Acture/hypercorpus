@@ -2582,6 +2582,7 @@ class BudgetFillSelector(_SentenceTransformerSupport):
         self.base_selector = base_selector
         self.spec = spec
         self.name = spec.canonical_name
+        self._seed_candidates_cache: dict[tuple[str, str], list[tuple[str, float]]] = {}
 
     def select(
         self,
@@ -2616,13 +2617,18 @@ class BudgetFillSelector(_SentenceTransformerSupport):
                 None if resume_state.get("first_backfill_score") is None else float(resume_state["first_backfill_score"])
             )
         else:
-            seed_candidates = _select_seed_candidates(
-                graph,
-                case.query,
-                self.spec.budget_fill_pool_k or 64,
-                seed_strategy=self.spec.seed_strategy or "lexical_overlap",
-                embedder=_seed_embedder(self.spec, self._get_embedder),
-            )
+            cache_key = (case.case_id, case.query)
+            if cache_key in self._seed_candidates_cache:
+                seed_candidates = self._seed_candidates_cache[cache_key]
+            else:
+                seed_candidates = _select_seed_candidates(
+                    graph,
+                    case.query,
+                    self.spec.budget_fill_pool_k or 64,
+                    seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+                    embedder=_seed_embedder(self.spec, self._get_embedder),
+                )
+                self._seed_candidates_cache[cache_key] = seed_candidates
             candidate_index = 0
             selected_node_ids = list(result.selected_node_ids)
             selected_node_set = set(selected_node_ids)

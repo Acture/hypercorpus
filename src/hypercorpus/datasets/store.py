@@ -275,6 +275,7 @@ class ShardedDocumentStore:
         self._question_loader = _question_loader_for_dataset(self.manifest.dataset_name)
         self.cache_root = self._resolve_cache_root(cache_dir)
         self.catalog_path = self._ensure_metadata_file("index/catalog.sqlite", cache_dir=cache_dir)
+        self._conn: sqlite3.Connection | None = None
         self._nodes = self._load_nodes()
         self.node_attr = CatalogNodeAttrView(self)
         self._document_cache: dict[str, DocumentNode] = {}
@@ -290,6 +291,18 @@ class ShardedDocumentStore:
             self.manifest.shard_count,
             self.cache_root,
         )
+
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.catalog_path)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     @property
     def nodes(self) -> list[str]:
@@ -327,11 +340,10 @@ class ShardedDocumentStore:
     def neighbors(self, node_id: str) -> list[str]:
         if node_id in self._neighbors_cache:
             return list(self._neighbors_cache[node_id])
-        with sqlite3.connect(self.catalog_path) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT target FROM links WHERE source = ? ORDER BY target",
-                (node_id,),
-            ).fetchall()
+        rows = self._connection.execute(
+            "SELECT DISTINCT target FROM links WHERE source = ? ORDER BY target",
+            (node_id,),
+        ).fetchall()
         neighbors = [str(row[0]) for row in rows]
         self._neighbors_cache[node_id] = neighbors
         return list(neighbors)
@@ -339,16 +351,15 @@ class ShardedDocumentStore:
     def links_from(self, source: str) -> list[LinkContext]:
         if source in self._links_from_cache:
             return list(self._links_from_cache[source])
-        with sqlite3.connect(self.catalog_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT source, target, anchor_text, sentence, sent_idx, ref_id, ref_url
-                FROM links
-                WHERE source = ?
-                ORDER BY rowid
-                """,
-                (source,),
-            ).fetchall()
+        rows = self._connection.execute(
+            """
+            SELECT source, target, anchor_text, sentence, sent_idx, ref_id, ref_url
+            FROM links
+            WHERE source = ?
+            ORDER BY rowid
+            """,
+            (source,),
+        ).fetchall()
         links = [
             LinkContext(
                 source=str(row[0]),
@@ -433,22 +444,20 @@ class ShardedDocumentStore:
         return self.store.ensure_local(shard_path, local_path)
 
     def _load_nodes(self) -> list[str]:
-        with sqlite3.connect(self.catalog_path) as conn:
-            rows = conn.execute("SELECT node_id FROM documents ORDER BY node_id").fetchall()
+        rows = self._connection.execute("SELECT node_id FROM documents ORDER BY node_id").fetchall()
         return [str(row[0]) for row in rows]
 
     def _document_row(self, node_id: str) -> dict[str, Any] | None:
         if node_id in self._document_row_cache:
             return self._document_row_cache[node_id]
-        with sqlite3.connect(self.catalog_path) as conn:
-            row = conn.execute(
-                """
-                SELECT node_id, title, text, url, shard_path, token_estimate
-                FROM documents
-                WHERE node_id = ?
-                """,
-                (node_id,),
-            ).fetchone()
+        row = self._connection.execute(
+            """
+            SELECT node_id, title, text, url, shard_path, token_estimate
+            FROM documents
+            WHERE node_id = ?
+            """,
+            (node_id,),
+        ).fetchone()
         if row is None:
             return None
         payload = {
@@ -488,17 +497,16 @@ class ShardedDocumentStore:
         if not tokens:
             return []
         fts_query = " OR ".join(f'"{token}"' for token in tokens)
-        with sqlite3.connect(self.catalog_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT node_id, title, text
-                FROM documents_fts
-                WHERE documents_fts MATCH ?
-                ORDER BY bm25(documents_fts)
-                LIMIT ?
-                """,
-                (fts_query, limit),
-            ).fetchall()
+        rows = self._connection.execute(
+            """
+            SELECT node_id, title, text
+            FROM documents_fts
+            WHERE documents_fts MATCH ?
+            ORDER BY bm25(documents_fts)
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        ).fetchall()
         return [
             {
                 "node_id": str(row[0]),

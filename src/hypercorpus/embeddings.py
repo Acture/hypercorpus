@@ -48,15 +48,26 @@ class SQLiteEmbeddingCache:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn: sqlite3.Connection | None = None
         self._initialize()
+
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.path)
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def get(self, *, model_name: str, text: str) -> list[float] | None:
         key = _cache_key(model_name=model_name, text=text)
-        with sqlite3.connect(self.path) as connection:
-            row = connection.execute(
-                "SELECT embedding_json FROM embeddings WHERE cache_key = ?",
-                (key,),
-            ).fetchone()
+        row = self._connection.execute(
+            "SELECT embedding_json FROM embeddings WHERE cache_key = ?",
+            (key,),
+        ).fetchone()
         if row is None:
             return None
         payload = json.loads(str(row[0]))
@@ -65,30 +76,28 @@ class SQLiteEmbeddingCache:
     def put(self, *, model_name: str, text: str, embedding: Sequence[float]) -> None:
         key = _cache_key(model_name=model_name, text=text)
         payload = json.dumps([float(value) for value in embedding], ensure_ascii=False)
-        with sqlite3.connect(self.path) as connection:
-            connection.execute(
-                """
-                INSERT INTO embeddings(cache_key, model_name, text_hash, embedding_json)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(cache_key) DO UPDATE SET embedding_json = excluded.embedding_json
-                """,
-                (key, model_name, _text_hash(text), payload),
-            )
-            connection.commit()
+        self._connection.execute(
+            """
+            INSERT INTO embeddings(cache_key, model_name, text_hash, embedding_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET embedding_json = excluded.embedding_json
+            """,
+            (key, model_name, _text_hash(text), payload),
+        )
+        self._connection.commit()
 
     def _initialize(self) -> None:
-        with sqlite3.connect(self.path) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    cache_key TEXT PRIMARY KEY,
-                    model_name TEXT NOT NULL,
-                    text_hash TEXT NOT NULL,
-                    embedding_json TEXT NOT NULL
-                )
-                """
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS embeddings (
+                cache_key TEXT PRIMARY KEY,
+                model_name TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                embedding_json TEXT NOT NULL
             )
-            connection.commit()
+            """
+        )
+        self._connection.commit()
 
 
 class SentenceTransformerEmbedder:
