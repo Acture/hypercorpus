@@ -8,9 +8,9 @@ Not for / See also: paper-facing claims live in `phase-decisions.md`; active exp
 
 `hypercorpus` currently implements a selector-first experimentation pipeline:
 
-`query -> start retrieval -> budgeted subgraph/corpus discovery over natural hyperlinks -> lazy extraction -> optional answer synthesis -> evaluation`
+`query -> start retrieval -> budgeted subgraph/corpus discovery over natural hyperlinks -> optional lazy extraction -> optional answer synthesis -> evaluation`
 
-The current repo is an offline research sandbox for pre-RAG subgraph/corpus discovery. It is local-first where possible, LLM-assisted only when explicitly configured, and organized around selecting a smaller evidence set before downstream RAG or GraphRAG.
+The current repo is an offline research sandbox for selector-first subgraph/corpus discovery. It is local-first where possible, LLM-assisted only when explicitly configured, and organized around selecting a smaller support-bearing subgraph from a naturally linked corpus.
 
 ## Current Claim Boundary
 
@@ -21,6 +21,7 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 - The current method story is `dense-started constrained subgraph selection`, not "walk instead of dense".
 - The current version is intentionally lightweight, zero-shot where possible, and budget-aware.
 - The current implementation supports an algorithmic discovery paper more directly than an answerer-first NLP paper.
+- Downstream local-context packaging is not the core problem definition for the current paper.
 
 ## What Is Implemented
 
@@ -46,7 +47,9 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 ### Budgeted Evaluation
 
 - The experiment layer uses an explicit budget object with `max_steps`, `top_k`, `token_budget_tokens`, and `token_budget_ratio`.
-- Absolute token budgets are the primary controllability axis for current studies.
+- Both absolute token budgets and corpus-ratio budgets are implemented.
+- Fixed token budgets remain useful on fragment-level calibration surfaces such as reduced `2Wiki`.
+- Ratio budgets are the cleaner control surface for coarse full-node selector studies such as canonical `IIRC`, where full-document node size makes tiny fixed token caps misleading.
 - The evaluator treats subgraph/corpus discovery as the primary output.
 - Primary metrics include:
   - `support_recall`
@@ -109,10 +112,10 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 
 ### Dense-Seed Baselines
 
-- `hop_0__dense` variants answer the question: how far can plain lexical or dense seed retrieval go under the same token budget.
+- `hop_0__dense` variants answer the question: how far can plain lexical or dense seed retrieval go under the same selector budget.
 - In the current story, `hop_0__dense` is both a stage-1 seed prior and the main flat control.
-- `hop_2__iterative_dense` variants provide an `MDR-style` iterative dense baseline using repeated dense retrieval over accumulated query-plus-context text under the same budget accounting.
-- `hop_2__mdr_light` variants provide a repo-native comparison point that expands each frontier node with its own dense query and then merges the hop candidates under the same token budget accounting. This is not a trained MDR reproduction.
+- `hop_2__iterative_dense` variants provide an `MDR-style` iterative dense baseline using repeated dense retrieval over accumulated query-plus-context text under the same selector-budget accounting.
+- `hop_2__mdr_light` variants provide a repo-native comparison point that expands each frontier node with its own dense query and then merges the hop candidates under the same selector-budget accounting. This is not a trained MDR reproduction.
 - `__budget_fill_relative_drop` variants test whether filling the remaining budget improves all-case evidence recovery.
 
 ### Hyperlink-Local Walk
@@ -137,7 +140,7 @@ The current repo is an offline research sandbox for pre-RAG subgraph/corpus disc
 
 ### Diagnostic Upper Bounds
 
-- `gold_support_context` is an oracle-style upper bound for evidence coverage under the same token budget accounting.
+- `gold_support_context` is an oracle-style upper bound for evidence coverage under the same selector-budget accounting.
 - `full_corpus_upper_bound` is a full-corpus proxy for GraphRAG-style eager inclusion.
 
 ## Evidence And Planning Pointers
@@ -186,5 +189,5 @@ The repo uses fast synthetic tests instead of requiring the real corpora for bas
 ## Default Assumptions In Code
 
 - Natural hyperlinks are the primary graph structure.
-- The primary output is selected evidence under an explicit token budget.
+- The primary output is selected evidence under an explicit selector budget.
 - End-to-end answering remains secondary to selector evaluation in the current repo.

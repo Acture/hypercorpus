@@ -2,11 +2,11 @@
 
 ## Critical Path Risks
 
-### 1. Full-IIRC canonical store not yet landed (WS1/ACT-5)
-- Risk: the paper has no main result table until the full-IIRC store (61,304 articles) is operational and all shortlist selectors have been rerun on it.
+### 1. Canonical full-IIRC selector table not yet landed (WS1/ACT-5)
+- Risk: the store is now landed under `dataset/iirc/store`, but the paper still has no canonical full-IIRC selector table until all shortlist selectors are rerun on that store under one ratio-controlled budget surface.
 - Impact: **blocks** Table 1 (main comparison), Table 2 (hard-subset), all IIRC analysis figures, and the main claim boundary decision.
-- Current state: partial store (5,184 articles) exists but is deprecated. Full-context fetch and conversion code is in place. Canonical store not yet landed under `dataset/iirc_full/`.
-- Mitigation: WS1/ACT-5 is actively working on this. CTRL gate 1 tracks completion.
+- Current state: partial store (5,184 articles) exists but is deprecated. The canonical full store is now `dataset/iirc/store` with 61,304 articles. Historical full-store fixed-token runs exist, but they are coarse-node diagnostics rather than the selector-budget main table.
+- Mitigation: WS1/ACT-5 should lock one ratio-controlled full-IIRC rerun surface and stop citing legacy `dataset/iirc_full/*` paths.
 
 ### 2. Real MDR not yet runnable (WS1/ACT-5)
 - Risk: without a trained iterative retrieval baseline, the paper lacks a reviewer-acceptable external comparator. Claims C10 and C11 remain open.
@@ -28,8 +28,8 @@
 - Mitigation:
   - Full-IIRC becomes the main harder-dataset surface.
   - `2Wiki` is reduced to calibration.
-  - Preliminary partial-IIRC signal (deprecated) showed `constrained_multipath` at F1 = 0.2850 at budget 384/512, but this needs reconfirmation on the full store.
-- Current full-IIRC local ablations now give a complete 100-case non-controller surface: `dense` remains first at every budget, `mdr_light` is second, and the best `single_path_walk` row is a clear third (`256`: `0.3187 > 0.3103 > 0.2730`, `384`: `0.3140 > 0.3097 > 0.2709`, `512`: `0.3370 > 0.3242 > 0.2866` on `support_f1_zero_on_empty`). Those rows should stay in the paper as internal baselines / ablations rather than as the method headline.
+  - Preliminary partial-IIRC signal (deprecated) showed `constrained_multipath` at F1 = 0.2850 at budget 384/512, but this needs reconfirmation on the canonical full store.
+- Current full-IIRC local ablations now give a complete 100-case non-controller surface: `dense` remains first at every fixed-node-text budget, `mdr_light` is second, and the best `single_path_walk` row is a clear third (`256`: `0.3187 > 0.3103 > 0.2730`, `384`: `0.3140 > 0.3097 > 0.2709`, `512`: `0.3370 > 0.3242 > 0.2866` on `support_f1_zero_on_empty`). Those rows should stay in the paper only as historical coarse-node diagnostics and internal ablations, not as the canonical selector-budget headline.
 - Remaining need: lock the full-IIRC paper-facing table.
 
 ### 5. Real MDR may weaken the current story
@@ -58,13 +58,13 @@
 
 ### 8. Claim strength depends on full-IIRC numbers
 - Risk: if gains on full-IIRC are smaller than on 2Wiki (or negative), the core claims weaken substantially.
-- Current signal: partial-IIRC chunk-00001 showed `constrained_multipath` beating dense at budgets 384/512. But partial store is deprecated and the sample is small (20 cases). On the canonical 100-case non-controller full-IIRC surface, `dense` still leads `mdr_light` and every `single_path_walk` variant at all budgets.
+- Current signal: partial-IIRC chunk-00001 showed `constrained_multipath` beating dense at budgets 384/512. But partial store is deprecated and the sample is small (20 cases). On the historical 100-case non-controller full-IIRC coarse-node surface, `dense` still leads `mdr_light` and every `single_path_walk` variant at all fixed budgets.
 - Mitigation:
   - The 2Wiki calibration data shows the method is at least coherent.
   - The latest full-IIRC local runs do not yet invalidate the controller hypothesis; they only show that the current non-controller local/path variants are not enough on their own.
   - The dense control is now operationally stable across the two full-IIRC run directories: `runs/iirc-local-full-v1` and `runs/iirc-dense-full-v1` agree exactly on the dense row for chunks `00000` through `00004` at budgets `256/384/512`.
-  - The full-IIRC store (61,304 articles) makes the retrieval problem harder, which may actually help differentiate the walk-based selector from flat dense.
-  - If gains are marginal, pivot to a "comparable under budget" narrative rather than "superior".
+  - The full-IIRC store (61,304 articles) makes the retrieval problem harder, which may actually help differentiate the walk-based selector from flat dense once the canonical ratio-controlled selector table exists.
+  - If gains are marginal, pivot to a "comparable selector quality at much smaller retained corpus mass" narrative rather than "superior".
 
 ### 9. Historical IIRC run surfaces are not mutually comparable
 - Risk: the repo contains multiple `runs/iirc-*` summaries that look paper-facing but disagree even when they point to the same store, the same 100-case source list (`runs/iirc-sample-s100-dense-v1/chunks/chunk-00000/evaluated_case_ids.txt`), and the same `chunk-00000` slice definition (`case_start: 0`, `case_limit: 20`). The mismatch is visible in `runs/iirc-controller-shortlist-v1/chunks/chunk-00000/summary.json` versus `runs/iirc-local-full-v1/chunks/chunk-00000/summary.json`, which report dense-256 `support_f1_zero_on_empty` values of `0.2200` and `0.3867`.
@@ -91,7 +91,7 @@
 - Do not begin prose writing before CTRL gate 4 (main claim boundary locked).
 
 ## Risk Priority Order
-1. **Full-IIRC store landing** (blocks everything downstream) -- WS1/ACT-5
+1. **Canonical full-IIRC selector table** (blocks everything else) -- WS1/ACT-5
 2. **Real MDR pipeline closure** (blocks claim boundary) -- WS1/ACT-5
 3. **Timing for CIKM 2026** (hard deadline 2026-05-25) -- project-wide
 4. **Historical IIRC run-surface drift** (blocks a defensible main table) -- CTRL/ACT-9 + WS1/ACT-5

@@ -8,9 +8,9 @@ Not for / See also: completed empirical support lives in `phase-decisions.md`; a
 
 `hypercorpus` targets a narrow problem:
 
-`query-time budgeted subgraph/corpus discovery for naturally linked corpora before downstream RAG or GraphRAG`
+`query-time budgeted subgraph/corpus discovery for naturally linked corpora`
 
-The paper should not be framed as a new full-stack RAG system or primarily as a QA model. The core question is whether a lightweight selector can discover a compact evidence set or induced subgraph under a fixed token budget by exploiting natural hyperlink structure and local link semantics.
+The paper should not be framed as a new full-stack RAG system, a context-packaging system, or primarily as a QA model. The core question is whether a lightweight selector can discover a compact evidence set or induced subgraph by exploiting natural hyperlink structure and local link semantics while using only a small fraction of the full corpus cost.
 
 ## Why This Problem Exists
 
@@ -22,33 +22,34 @@ Three stable pressures motivate the project:
 
 ## One-Sentence Thesis
 
-For naturally linked corpora, the paper studies whether a dense-started semantic controller can assemble better compact evidence sets than flat dense evidence assembly under the same token budget, without requiring eager graph construction or per-dataset fine-tuning.
+For naturally linked corpora, the paper studies whether a dense-started semantic controller can recover better support-bearing subgraphs than flat dense selection under the same selector budget, without requiring eager graph construction or per-dataset fine-tuning.
 
 ## Paper Form
 
 Write the project as an algorithmic discovery paper.
 
-- Primary output: a selected corpus or induced subgraph under an explicit token budget.
-- Primary objective: evidence discovery quality before downstream reasoning.
+- Primary output: a selected corpus or induced subgraph under an explicit selector budget.
+- Primary objective: selector quality and selector-side efficiency before any downstream packaging or answering.
 - Primary comparison class: dense control plus internal ablation baselines, with real `MDR` as the main external comparator, not full answer-generation systems.
 - QA remains an evaluation context, not the core identity of the method.
+- Downstream local-context packaging is a separate problem and should not define this paper's method claim.
 
 ## Stable Research Questions
 
 These are the durable questions that should survive changes in the current operating point:
 
 1. Can link-semantic corpus selection avoid eager whole-corpus graph construction while staying competitive on evidence recovery?
-2. Can a query-time selector recover more support and bridge evidence than flat dense top-k under the same token budget?
-3. Does explicit budget control over hops, nodes, and tokens produce a better recall-cost tradeoff than purely dense or iterative retrieval?
+2. Can a query-time selector recover more support and bridge evidence than flat dense top-k under the same selector budget?
+3. Does explicit selector budget control over hops, nodes, and corpus-retention ratios produce a better recall-cost tradeoff than purely dense or iterative retrieval?
 4. Which selector policy family best uses natural hyperlink structure: local walk, branchy search, or controlled local propagation?
 
 ## Main Claims We Can Defend Now
 
 These claims are currently `supported on phase-decision-30`, a completed `2Wiki dev / 30 cases / token budget 256 / no-e2e` phase-decision run.
 
-- Budgeted subgraph/corpus discovery over natural hyperlinks is a coherent problem formulation for pre-RAG retrieval.
-- In the current phase sample, dense-seeded hyperlink-local selection is a coherent operating point and the right level of comparison against flat dense evidence assembly.
-- Under a fixed `256`-token budget, wider and deeper graph search can hurt the operating point by collapsing precision.
+- Budgeted subgraph/corpus discovery over natural hyperlinks is a coherent selector-first problem formulation.
+- In the current phase sample, dense-seeded hyperlink-local selection is a coherent operating point and the right level of comparison against flat dense selection.
+- On fragment-level calibration surfaces, tighter fixed budgets can expose precision collapse in wider and deeper graph search.
 - Budget-aware fill is an effective component in the current system and should be treated as a real part of the paper contribution.
 
 ## Claims We Should Not Make Yet
@@ -91,7 +92,7 @@ These should be written as established ingredients, not as paper novelty.
 ### Current Effective Core Combination
 
 - dense-started natural hyperlink link-context selection
-- fixed-budget corpus assembly
+- explicit selector-budget control
 - selector-first evaluation with all-case and subset-aware evidence metrics
 
 This combination should now be read more narrowly: `dense` is the control, the best non-LLM `single_path_walk` row is an ablation, and the actual main-method candidate is the controller-guided multi-path family.

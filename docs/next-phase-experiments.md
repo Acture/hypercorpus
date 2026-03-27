@@ -25,7 +25,7 @@ The main experiment story now shifts from "walk versus dense" to `dense-started 
 Interpretation rule:
 
 - `dense` remains mandatory because it is both the seed prior and the simplest strong control
-- the current method claim is not "replace dense", but "improve dense-seeded evidence assembly under the same token budget"
+- the current method claim is not "replace dense", but "improve dense-seeded subgraph selection under the same selector budget"
 - until a direct external baseline is wired in, all headline decisions stay on repo-native baselines plus harder-dataset transfer
 
 The fixed judgment rule for the current phase is:
@@ -158,7 +158,7 @@ Immediate next actions:
 
 ## IIRC As The Main Next Phase
 
-> **Deprecation notice (2026-03-23):** All runs in this section that reference `--store dataset/iirc/store` used the partial store (5,184 articles). The full-context store (61,304 articles) is now canonical. These results are retained for historical reference only and must not be cited as evidence in the paper.
+> **Historical note (2026-03-23):** Earlier runs using `--store dataset/iirc/store` referred to the old partial store (5,184 articles). The current path `dataset/iirc/store` now points to the canonical full-context store (61,304 articles). Historical partial-store runs are retained only for reference and must not be cited as paper evidence.
 
 `IIRC` is the only required harder-dataset mainline for the next phase.
 
@@ -182,28 +182,37 @@ Do not run the full study preset first. Run only this shortlist:
 - `gold_support_context`
 - `full_corpus_upper_bound`
 
-Budgets are fixed to:
+Selector budgets for the current paper are ratio-controlled on the selected subgraph, not downstream reader-context budgets:
 
-- `256`
-- `384`
-- `512`
+- `0.01`
+- `0.02`
+- `0.05`
+- `0.10`
+- `1.0` as the full-corpus reference
+
+Do not treat `256/384/512` fixed token budgets as the main IIRC selector problem definition here. They remain useful for fragment-level calibration, but the current paper's IIRC main table should stay on selector-budget ratios.
 
 ### 3. IIRC Judgment Rule
 
 The shortlist must use the exact same `case_ids_file` across all selectors.
 
-The comparison must land on the same evidence-budget frame, using:
+The comparison must land on the same selector-budget frame, using:
 
 - `support_f1_zero_on_empty`
 - `support_precision`
 - `support_recall`
 - `avg_path_hit`
+- `selected_nodes_count`
+- `selected_token_estimate`
+- `selection_runtime_s`
+- `selector_total_tokens`
 
 The first required questions on `IIRC` are:
 
 - does the semantic-controller selector beat the dense control
 - does it also beat `mdr_light`
 - are gains concentrated on harder subsets rather than only easy all-case averages
+- does it save substantial selector-side time and selected-corpus mass relative to the `1.0` full-corpus reference
 - does precision collapse while recall rises
 
 ## Conditional Branchy Lane On IIRC

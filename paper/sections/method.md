@@ -1,6 +1,6 @@
 ## 3. Method
 
-We present a budgeted corpus selector that assembles compact evidence sets from naturally linked document collections. The method operates in three stages: dense seed retrieval, link-context graph walking, and budget-aware post-fill. All stages are governed by an explicit token budget $B$ that bounds the total text volume delivered to a downstream consumer. Figure~\ref{fig:architecture} illustrates the overall pipeline.
+We present a budgeted corpus selector that assembles compact evidence-bearing subgraphs from naturally linked document collections. The method operates in three stages: dense seed retrieval, link-context graph walking, and budget-aware post-fill. All stages are governed by an explicit selector budget that bounds the retained corpus mass of the selected subgraph. Figure~\ref{fig:architecture} illustrates the overall pipeline.
 
 ### 3.1 Overview
 
@@ -10,9 +10,9 @@ Given a query $q$ and a link-context graph $\mathcal{G} = (\mathcal{V}, \mathcal
 
 2. **Link-context walk.** Starting from $S_0$, the selector traverses edges in $\mathcal{G}$ for up to $H$ expansion steps. At each step, outgoing hyperlinks from the current document are scored using their link context $\ell_e = (a_e, c_e, i_e)$, and the highest-scoring neighbor is added to the selected set. The walk terminates when the step budget $H$ is exhausted, no unvisited neighbors remain, or (in the controller variant) the scorer signals a stop.
 
-3. **Budget fill.** After the walk terminates, any remaining token headroom $B - \sum_{v \in S} \tau(v)$ is filled by adding the highest-ranked unselected documents from a dense retrieval pool, subject to a quality gate. This ensures high budget utilization without inflating the walk itself.
+3. **Budget fill.** After the walk terminates, any remaining selector headroom is filled by adding the highest-ranked unselected documents from a dense retrieval pool, subject to a quality gate. This ensures high budget utilization without inflating the walk itself.
 
-The complete selector budget is the triple $(B, H, k)$. The method is zero-shot: no component requires task-specific training or fine-tuning.
+The complete selector budget is the triple $(\rho, H, k)$ in the canonical ratio-controlled setting. The method is zero-shot: no component requires task-specific training or fine-tuning.
 
 
 ### 3.2 Graph Representation
@@ -28,7 +28,7 @@ Multiple edges may exist between the same document pair (corresponding to distin
 
 The walk requires one or more starting documents. We obtain these through dense retrieval using a sentence-transformer model \cite{reimers2019sentencebert}. Specifically, we encode the query $q$ and each document $v \in \mathcal{V}$ (using the concatenation of title and text) with \texttt{multi-qa-MiniLM-L6-cos-v1}, then rank documents by cosine similarity to $q$ and select the top-$k$ as the seed set $S_0$.
 
-Dense seeding serves two roles. As a standalone baseline (\texttt{dense}), top-$k$ retrieval under the token budget provides the flat dense control. As the first stage of any walk selector, it anchors the walk in the most query-relevant region of the graph.
+Dense seeding serves two roles. As a standalone baseline (\texttt{dense}), top-$k$ retrieval under the same selector budget provides the flat dense control. As the first stage of any walk selector, it anchors the walk in the most query-relevant region of the graph.
 
 
 ### 3.4 Walk Strategies
@@ -72,7 +72,7 @@ For comparison, we implement two dense-only iterative baselines that do not use 
 \item \texttt{mdr\_light}: each frontier document independently issues its own dense retrieval query, and the per-frontier results are merged by taking the highest score per candidate. This is a repo-native approximation of per-hop MDR without trained query encoders.
 \end{itemize}
 
-Both baselines operate under the same token budget and seed retrieval as the walk selectors, providing a controlled comparison surface.
+Both baselines operate under the same selector budget and seed retrieval as the walk selectors, providing a controlled comparison surface.
 
 
 ### 3.5 Edge Scoring
@@ -103,15 +103,15 @@ The LLM scorer presents the query, the current path context, and a pre-filtered 
 
 ### 3.6 Budget Enforcement
 
-Token budget enforcement operates at two levels.
+Selector-budget enforcement operates at two levels.
 
 \paragraph{Walk-level budget.}
 The \texttt{WalkBudget} constrains the walk by a maximum number of expansion steps $H$, a minimum score threshold $\theta$, and a revisit policy. Each step adds exactly one document to the selected set, so the walk produces at most $H + |S_0|$ documents. The walk does not directly track token counts; instead, token-level enforcement is deferred to the selection-level budget.
 
 \paragraph{Selection-level budget.}
-The \texttt{SelectorBudget} enforces the hard token constraint $\sum_{v \in S} \tau(v) \leq B$. After the walk terminates with a candidate set $S_{\text{walk}}$, the selector trims documents in reverse selection order until the token budget is satisfied. For iterative-dense baselines, documents are added greedily in selection order until the budget is exhausted.
+The \texttt{SelectorBudget} enforces the hard selector-side cost constraint $\sum_{v \in S} \tau(v) \leq \rho T$. After the walk terminates with a candidate set $S_{\text{walk}}$, the selector trims documents in reverse selection order until the selector budget is satisfied. For iterative-dense baselines, documents are added greedily in selection order until the budget is exhausted. This accounting is used to compare selected subgraphs against the full corpus and to measure selector-side compression.
 
 \paragraph{Budget fill.}
-When the walk terminates with remaining headroom $B - \sum_{v \in S_{\text{walk}}} \tau(v) > 0$, a post-walk fill stage retrieves the top-$K$ unselected documents by dense similarity from a backfill pool and adds them greedily until the budget is saturated. To prevent adding low-quality filler, we apply a quality gate: the \texttt{relative\_drop} mode stops adding documents once their similarity score drops below a fraction $\rho$ (default 0.5) of the first backfill candidate's score. This mechanism eliminates empty selections entirely and raises budget utilization without diluting precision, since only documents sufficiently similar to the query are admitted.
+When the walk terminates with remaining headroom, a post-walk fill stage retrieves the top-$K$ unselected documents by dense similarity from a backfill pool and adds them greedily until the selector budget is saturated. To prevent adding low-quality filler, we apply a quality gate: the \texttt{relative\_drop} mode stops adding documents once their similarity score drops below a fraction $\rho_{\text{fill}}$ (default 0.5) of the first backfill candidate's score. This mechanism eliminates empty selections entirely and raises budget utilization without diluting precision, since only documents sufficiently similar to the query are admitted.
 
-Budget utilization, defined as $\sum_{v \in S} \tau(v) / B$, is reported alongside selection quality. High utilization under high support F1 indicates efficient use of the token allocation; low utilization suggests premature termination. Budget adherence $\mathbb{1}[\sum_{v \in S} \tau(v) \leq B]$ is verified as a hard constraint for every selector configuration.
+Budget utilization, defined as $\sum_{v \in S} \tau(v) / (\rho T)$, is reported alongside selection quality. High utilization under high support F1 indicates efficient use of the selector budget; low utilization suggests premature termination. Budget adherence $\mathbb{1}[\sum_{v \in S} \tau(v) \leq \rho T]$ is verified as a hard constraint for every selector configuration.
