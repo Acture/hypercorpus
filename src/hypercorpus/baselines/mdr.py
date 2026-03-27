@@ -17,7 +17,7 @@ import numpy as np
 
 from hypercorpus.datasets.store import ShardedDocumentStore
 
-MDR_PINNED_COMMIT = "62eb2427e36a648a927c6e39bb4c748796f7b366"
+MDR_PINNED_COMMIT = "4872b392203d5731254e0e3be774d8837bb40caf"
 EXTERNAL_MDR_SELECTOR_NAME = "external__mdr__iirc_finetuned"
 
 _MDR_HOME_ENV = "WEBWALKER_MDR_HOME"
