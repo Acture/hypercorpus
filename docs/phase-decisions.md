@@ -38,6 +38,8 @@ Each new entry should include:
 - `reader`: `no-e2e`
 - `summary source`: `runs/phase-decision-30/chunks/range-00000-00029/summary.json`
 
+This phase is a `2Wiki` calibration slice. Its winner should be read as a phase-local operating point, not as the currently frozen paper method.
+
 ### Tested Selector Family
 
 - dense seed baselines with and without `budget_fill_relative_drop`
@@ -83,6 +85,7 @@ Each new entry should include:
 These findings are `supported on phase-decision-30`.
 
 - The best tested operating point in this phase is `top_1 + sentence_transformer seed + hop_2 + single_path_walk + link_context_llm + budget_fill_relative_drop`.
+- This result is enough to justify a strong non-LLM ablation row, but not enough to declare `single_path_walk` the paper center on harder datasets such as full-IIRC.
 - Sentence-transformer seeds are consistently stronger than lexical seeds in the tested families.
 - `top_1` is a better operating point than `top_3` under the current `256`-token budget.
 - Broad `hop_3` search with `beam` or `astar` is not a good direction in this specific phase setting because precision collapses while utilization is already high.
@@ -115,5 +118,5 @@ These are follow-ups justified by the evidence above. They do not define executi
 
 - Use `single_path_edge_ablation_local` as the clean edge-scorer ablation for the `top_1 + sentence_transformer + hop_2 + single_path` family.
 - Re-test `dense top-k`, `iterative_dense`, and repo-native `mdr_light` on broader replayable samples before elevating the current operating-point story.
-- Validate the current single-path winner on harder datasets that already exist in this repo, starting with `IIRC`.
+- Carry the current single-path winner forward as the best non-LLM ablation row on harder datasets such as `IIRC`, while separately testing controller-guided multi-path selectors as the actual main-method candidate.
 - Treat branchy follow-up as conditional and diagnostic until either harder datasets or scorer-profile tuning recover precision without reopening the full search frontier by default.

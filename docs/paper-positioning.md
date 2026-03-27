@@ -22,7 +22,7 @@ Three stable pressures motivate the project:
 
 ## One-Sentence Thesis
 
-For naturally linked corpora, a lightweight dense-started semantic controller can recover better compact evidence sets than flat dense evidence assembly and repo-native iterative dense baselines, without requiring eager graph construction or per-dataset fine-tuning.
+For naturally linked corpora, the paper studies whether a dense-started semantic controller can assemble better compact evidence sets than flat dense evidence assembly under the same token budget, without requiring eager graph construction or per-dataset fine-tuning.
 
 ## Paper Form
 
@@ -30,7 +30,7 @@ Write the project as an algorithmic discovery paper.
 
 - Primary output: a selected corpus or induced subgraph under an explicit token budget.
 - Primary objective: evidence discovery quality before downstream reasoning.
-- Primary comparison class: dense control plus repo-native iterative dense baselines, not full answer-generation systems.
+- Primary comparison class: dense control plus internal ablation baselines, with real `MDR` as the main external comparator, not full answer-generation systems.
 - QA remains an evaluation context, not the core identity of the method.
 
 ## Stable Research Questions
@@ -66,7 +66,7 @@ These claims are not supported by current evidence and should stay out of the ma
 
 ### MDR
 
-`MDR` remains an important future external comparator because it represents iterative dense retrieval without relying on natural hyperlink structure. It is not yet wired into the current repo, so the near-term internal judgment surface is `dense` plus repo-native `mdr_light`.
+`MDR` remains the main external comparator because it represents trained iterative dense retrieval without relying on natural hyperlink structure. The repo-native `mdr_light` row is only an internal baseline; it is not the paper's method and should not be presented as such.
 
 ### GraphRetriever
 
@@ -94,7 +94,7 @@ These should be written as established ingredients, not as paper novelty.
 - fixed-budget corpus assembly
 - selector-first evaluation with all-case and subset-aware evidence metrics
 
-This combination is the current strongest candidate for the paper's main algorithmic systems contribution.
+This combination should now be read more narrowly: `dense` is the control, the best non-LLM `single_path_walk` row is an ablation, and the actual main-method candidate is the controller-guided multi-path family.
 
 ### Candidate New Components
 

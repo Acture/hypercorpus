@@ -9,11 +9,11 @@
 - Dataset: full-IIRC canonical store (61,304 articles)
 - Budgets: `384`, `512`
 - Rows:
-  - `dense` (top-1, sentence-transformer, budget_fill_relative_drop)
-  - `mdr_light` (top-1, sentence-transformer, budget_fill_relative_drop)
-  - best non-LLM `single_path_walk` (ST, lookahead_2, st_future_heavy, budget_fill_relative_drop)
-  - current controller winner (constrained_multipath + llm_controller)
-  - real `MDR`
+  - `dense` control (top-1, sentence-transformer, budget_fill_relative_drop)
+  - `mdr_light` internal baseline (repo-native iterative comparator, not the main method)
+  - best non-LLM `single_path_walk` ablation (currently ST, lookahead_2, st_future_heavy, budget_fill_relative_drop)
+  - main method candidate: `constrained_multipath + llm_controller`
+  - real `MDR` external baseline
   - `gold_support_context` (oracle)
 - Columns:
   - `support_f1_zero_on_empty`
@@ -24,7 +24,7 @@
   - `budget_utilization`
   - `selection_runtime_s`
   - `selector_total_tokens` (LLM cost)
-- Data source: will come from rerun of `runs/iirc-controller-shortlist-v1` on full store.
+- Data source: will come from a fresh full-IIRC rerun of the shortlist rows above. Current `iirc-local-full-v1` only narrows the non-controller ablation set; it does not yet test the controller row on the canonical surface.
 - Dependencies: full-IIRC canonical store landed, real MDR pipeline closed.
 
 ### Table 2. Full-IIRC Hard-Subset Comparison
@@ -119,8 +119,8 @@
 
 - Only build if the controller remains the paper center after real `MDR`.
 - Candidate rows:
-  - best non-LLM `single_path_walk`
-  - current controller winner
+  - best non-LLM `single_path_walk` ablation
+  - current controller winner / main method candidate
   - one tightly scoped component ablation if needed (e.g., with vs without budget_fill).
 - Data source: full-IIRC runs.
 

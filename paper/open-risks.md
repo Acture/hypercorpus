@@ -29,6 +29,7 @@
   - Full-IIRC becomes the main harder-dataset surface.
   - `2Wiki` is reduced to calibration.
   - Preliminary partial-IIRC signal (deprecated) showed `constrained_multipath` at F1 = 0.2850 at budget 384/512, but this needs reconfirmation on the full store.
+- Current full-IIRC local ablations narrow the safe interpretation: they show `dense` still beating the current non-controller path heuristics, so those rows should stay in the paper as internal baselines / ablations rather than as the method headline.
 - Remaining need: lock the full-IIRC paper-facing table.
 
 ### 5. Real MDR may weaken the current story
@@ -60,6 +61,7 @@
 - Current signal: partial-IIRC chunk-00001 showed `constrained_multipath` beating dense at budgets 384/512. But partial store is deprecated and the sample is small (20 cases).
 - Mitigation:
   - The 2Wiki calibration data shows the method is at least coherent.
+  - The latest full-IIRC local runs do not yet invalidate the controller hypothesis; they only show that the current non-controller local/path variants are not enough on their own.
   - The full-IIRC store (61,304 articles) makes the retrieval problem harder, which may actually help differentiate the walk-based selector from flat dense.
   - If gains are marginal, pivot to a "comparable under budget" narrative rather than "superior".
 
