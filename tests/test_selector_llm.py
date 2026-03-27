@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -6,7 +7,17 @@ import pytest
 from hypercorpus.eval import EvaluationBudget, EvaluationCase
 from hypercorpus.selector import RuntimeBudget, build_selector, select_selectors
 from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
-from hypercorpus.selector_llm import AnthropicBackendAdapter, BackendCompletion
+from hypercorpus.selector_llm import (
+	AnthropicBackendAdapter,
+	BackendCompletion,
+	LLMController,
+	OpenAIBackendAdapter,
+	SelectorLLMConfig,
+	_controller_user_prompt,
+	_prefilter_indices,
+	_support_coverage_hint,
+)
+from hypercorpus.walker import StepScoreCard
 
 SINGLE_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_1"
 TWO_HOP = "top_1_seed__lexical_overlap__hop_2__single_path_walk__link_context_llm__lookahead_2"
@@ -79,6 +90,45 @@ class FakeTextBackend:
 			completion_tokens=self.completion_tokens,
 			total_tokens=self.prompt_tokens + self.completion_tokens,
 			raw_response=self.raw_response,
+		)
+
+
+class FakeTextSequenceBackend:
+	def __init__(
+		self,
+		texts: list[str],
+		*,
+		prompt_tokens: int = 17,
+		completion_tokens: int = 9,
+	):
+		self.texts = texts
+		self.prompt_tokens = prompt_tokens
+		self.completion_tokens = completion_tokens
+		self.call_count = 0
+		self.user_prompts: list[str] = []
+		self.system_prompts: list[str] = []
+
+	def complete_json(
+		self,
+		*,
+		model: str,
+		system_prompt: str,
+		user_prompt: str,
+		temperature: float,
+		response_schema=None,
+	) -> BackendCompletion:
+		del model, temperature, response_schema
+		text = self.texts[min(self.call_count, len(self.texts) - 1)]
+		self.call_count += 1
+		self.user_prompts.append(user_prompt)
+		self.system_prompts.append(system_prompt)
+		return BackendCompletion(
+			text=text,
+			payload=None,
+			prompt_tokens=self.prompt_tokens,
+			completion_tokens=self.completion_tokens,
+			total_tokens=self.prompt_tokens + self.completion_tokens,
+			raw_response=json.dumps({"text": text}, ensure_ascii=False),
 		)
 
 
@@ -159,6 +209,21 @@ class FakeAnthropicClient:
 		self.messages = FakeAnthropicMessages(response)
 
 
+class FakeOpenAIResponsesAPI:
+	def __init__(self, response: object):
+		self.response = response
+		self.last_kwargs: dict[str, object] | None = None
+
+	def create(self, **kwargs):
+		self.last_kwargs = kwargs
+		return self.response
+
+
+class FakeOpenAIResponsesClient:
+	def __init__(self, response: object):
+		self.responses = FakeOpenAIResponsesAPI(response)
+
+
 def test_select_selectors_requires_selector_llm_key(monkeypatch):
 	monkeypatch.delenv("MISSING_SELECTOR_KEY", raising=False)
 
@@ -228,6 +293,167 @@ def test_anthropic_backend_adapter_uses_tool_output_schema():
 		"type": "tool",
 		"name": "score_candidates",
 	}
+
+
+def test_openai_backend_adapter_responses_mode_parses_output_text():
+	response = SimpleNamespace(
+		output_text='{"scores": [{"edge_id": "0"}]}',
+		usage=SimpleNamespace(input_tokens=11, output_tokens=7, total_tokens=18),
+		output=[],
+	)
+	client = FakeOpenAIResponsesClient(response)
+	adapter = OpenAIBackendAdapter(
+		api_key="test-key",
+		api_mode="responses",
+		client_factory=lambda **_kwargs: client,
+	)
+
+	completion = adapter.complete_json(
+		model="gpt-5.3-codex",
+		system_prompt="score candidates",
+		user_prompt="bundle",
+		temperature=0.0,
+	)
+
+	assert completion.text == '{"scores": [{"edge_id": "0"}]}'
+	assert completion.prompt_tokens == 11
+	assert completion.completion_tokens == 7
+	assert completion.total_tokens == 18
+	assert client.responses.last_kwargs is not None
+	assert client.responses.last_kwargs["model"] == "gpt-5.3-codex"
+	assert client.responses.last_kwargs["text"] == {"format": {"type": "json_object"}}
+
+
+def test_openai_backend_adapter_azure_foundry_chat_mode_posts_json():
+	captured: dict[str, object] = {}
+
+	def _fake_post(
+		url: str,
+		payload: dict[str, object],
+		api_key: str,
+		headers: dict[str, str] | None = None,
+	) -> dict[str, object]:
+		captured["url"] = url
+		captured["payload"] = payload
+		captured["api_key"] = api_key
+		captured["headers"] = headers
+		return {
+			"choices": [{"message": {"content": '{"scores": [{"edge_id": "0"}]}'}}],
+			"usage": {
+				"prompt_tokens": 13,
+				"completion_tokens": 5,
+				"total_tokens": 18,
+			},
+		}
+
+	adapter = OpenAIBackendAdapter(
+		api_key="azure-test-key",
+		base_url="https://example.cognitiveservices.azure.com/models/chat/completions?api-version=2024-05-01-preview",
+		api_mode="azure_foundry_chat_completions",
+		http_post=_fake_post,
+	)
+
+	completion = adapter.complete_json(
+		model="DeepSeek-V3.2-Speciale",
+		system_prompt="score candidates",
+		user_prompt="bundle",
+		temperature=0.0,
+	)
+
+	assert completion.text == '{"scores": [{"edge_id": "0"}]}'
+	assert completion.prompt_tokens == 13
+	assert completion.completion_tokens == 5
+	assert completion.total_tokens == 18
+	assert captured["url"] == "https://example.cognitiveservices.azure.com/models/chat/completions?api-version=2024-05-01-preview"
+	assert captured["api_key"] == "azure-test-key"
+	payload = cast(dict[str, object], captured["payload"])
+	assert payload["model"] == "DeepSeek-V3.2-Speciale"
+	assert payload["response_format"] == {"type": "json_object"}
+	assert payload["messages"] == [
+		{"role": "system", "content": "score candidates"},
+		{"role": "user", "content": "bundle"},
+	]
+	assert captured["headers"] is None
+
+
+def test_openai_backend_adapter_github_models_chat_mode_posts_json():
+	captured: dict[str, object] = {}
+
+	def _fake_post(
+		url: str,
+		payload: dict[str, object],
+		api_key: str,
+		headers: dict[str, str] | None = None,
+	) -> dict[str, object]:
+		captured["url"] = url
+		captured["payload"] = payload
+		captured["api_key"] = api_key
+		captured["headers"] = headers
+		return {
+			"choices": [{"message": {"content": '{"scores": [{"edge_id": "0"}]}'}}],
+			"usage": {
+				"prompt_tokens": 19,
+				"completion_tokens": 6,
+				"total_tokens": 25,
+			},
+		}
+
+	adapter = OpenAIBackendAdapter(
+		api_key="gh-models-key",
+		base_url="https://models.github.ai/inference/chat/completions",
+		api_mode="github_models_chat_completions",
+		http_post=_fake_post,
+	)
+
+	completion = adapter.complete_json(
+		model="gpt-4.1-mini",
+		system_prompt="score candidates",
+		user_prompt="bundle",
+		temperature=0.0,
+	)
+
+	assert completion.text == '{"scores": [{"edge_id": "0"}]}'
+	assert completion.prompt_tokens == 19
+	assert completion.completion_tokens == 6
+	assert completion.total_tokens == 25
+	assert captured["url"] == "https://models.github.ai/inference/chat/completions"
+	assert captured["api_key"] == "gh-models-key"
+	assert captured["headers"] == {
+		"Accept": "application/vnd.github+json",
+		"X-GitHub-Api-Version": "2026-03-10",
+	}
+
+
+def test_selector_llm_config_rejects_raw_endpoint_for_sdk_modes():
+	with pytest.raises(ValueError, match="must be a base URL"):
+		SelectorLLMConfig(
+			provider="openai",
+			base_url="https://example.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview",
+			openai_api_mode="responses",
+		)
+
+
+def test_selector_llm_config_accepts_azure_foundry_chat_endpoint():
+	config = SelectorLLMConfig(
+		provider="openai",
+		base_url="https://example.cognitiveservices.azure.com/models/chat/completions?api-version=2024-05-01-preview",
+		openai_api_mode="azure_foundry_chat_completions",
+	)
+
+	assert (
+		config.base_url
+		== "https://example.cognitiveservices.azure.com/models/chat/completions?api-version=2024-05-01-preview"
+	)
+
+
+def test_selector_llm_config_accepts_github_models_chat_endpoint():
+	config = SelectorLLMConfig(
+		provider="openai",
+		base_url="https://models.github.ai/inference/chat/completions",
+		openai_api_mode="github_models_chat_completions",
+	)
+
+	assert config.base_url == "https://models.github.ai/inference/chat/completions"
 
 
 def test_single_hop_selector_records_usage_and_logs(
@@ -592,6 +818,327 @@ def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatc
 	assert result.selector_usage.controller_fork_actions == 1
 	assert result.selector_usage.controller_backtrack_actions == 0
 	assert any(log.decision_action == "choose_two" for log in result.selector_logs)
+
+
+def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	graph = _build_bridge_graph()
+	backend = FakeTextSequenceBackend(
+		[
+			'{"action":": "}',
+			json.dumps(
+				{
+					"action": "choose_one",
+					"primary_edge_id": "0",
+					"secondary_edge_id": "",
+					"backup_edge_id": "",
+					"stop_score": 0.10,
+					"evidence_cluster_confidence": 0.86,
+					"candidates": [
+						{
+							"edge_id": "0",
+							"utility": 0.86,
+							"direct_support": 0.72,
+							"bridge_potential": 0.98,
+							"future_potential": 0.94,
+							"redundancy_risk": 0.08,
+							"rationale": "This finishes the bridge path.",
+						}
+					],
+				},
+				ensure_ascii=False,
+			),
+		],
+	)
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: backend,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=graph.links_from("root"),
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+		current_depth=1,
+	)
+
+	assert backend.call_count == 2
+	assert len(backend.user_prompts) == 2
+	assert "Required JSON schema:" in backend.user_prompts[0]
+	assert "Your previous response failed validation." in backend.user_prompts[1]
+	assert "schema_error:missing_candidates_list" in backend.user_prompts[1]
+	assert '{"action":": "}' in backend.user_prompts[1]
+	assert decision.fallback_reason is None
+	assert decision.llm_attempts == 2
+	assert decision.total_tokens == 52
+	assert decision.prompt_tokens == 34
+	assert decision.completion_tokens == 18
+	assert decision.primary_edge_id == "0"
+	assert len(decision.candidates) == 1
+
+
+def test_controller_retries_three_times_then_falls_back(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	graph = _build_bridge_graph()
+	backend = FakeTextSequenceBackend(
+		[
+			'{"action":": "}',
+			'{"action":"choose_one"}',
+			'{"wrong":[]}',
+		]
+	)
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: backend,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=graph.links_from("root"),
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+		current_depth=1,
+	)
+
+	assert backend.call_count == 3
+	assert decision.llm_attempts == 3
+	assert decision.total_tokens == 78
+	assert decision.prompt_tokens == 51
+	assert decision.completion_tokens == 27
+	assert decision.fallback_reason is not None
+	assert decision.fallback_reason.startswith("schema_error:")
+
+
+def test_controller_preserves_raw_stop_action_while_downgrading_effective_action(
+	monkeypatch,
+):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	backend = FakeSequenceBackend(
+		[
+			{
+				"action": "stop",
+				"primary_edge_id": "0",
+				"secondary_edge_id": "",
+				"backup_edge_id": "1",
+				"stop_score": 0.95,
+				"evidence_cluster_confidence": 0.95,
+				"candidates": [
+					{
+						"edge_id": "0",
+						"utility": 0.84,
+						"direct_support": 0.60,
+						"bridge_potential": 0.96,
+						"future_potential": 1.00,
+						"redundancy_risk": 0.10,
+						"rationale": "Continue through the bridge.",
+					},
+					{
+						"edge_id": "1",
+						"utility": 0.40,
+						"direct_support": 0.20,
+						"bridge_potential": 0.20,
+						"future_potential": 0.10,
+						"redundancy_risk": 0.90,
+						"rationale": "Weak alternative.",
+					},
+				],
+			},
+			{
+				"action": "choose_one",
+				"primary_edge_id": "0",
+				"secondary_edge_id": "",
+				"backup_edge_id": "",
+				"stop_score": 0.10,
+				"evidence_cluster_confidence": 0.90,
+				"candidates": [
+					{
+						"edge_id": "0",
+						"utility": 0.92,
+						"direct_support": 0.80,
+						"bridge_potential": 0.98,
+						"future_potential": 0.95,
+						"redundancy_risk": 0.05,
+						"rationale": "Take the answer edge.",
+					}
+				],
+			},
+		]
+	)
+	selector = build_selector(
+		CONTROLLER_MULTIPATH,
+		selector_provider="openai",
+		selector_model="gpt-test-mini",
+		selector_api_key_env="OPENAI_API_KEY",
+		selector_backend_factory=lambda _config: backend,
+	)
+	case = EvaluationCase(case_id="q-raw-stop", query="launch navigation root")
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
+
+	result = selector.select(_build_bridge_graph(), case, budget)
+
+	assert backend.call_count == 1
+	assert result.selected_node_ids == ["root"]
+	assert result.selector_logs[0].raw_decision_action == "stop"
+	assert result.selector_logs[0].decision_action == "stop"
+	assert result.selector_logs[0].stop_reason == "controller_stop"
+
+
+def test_controller_prefilter_keeps_explicit_support_edge():
+	query = "In what country did Bain attend doctoral seminars of Wlad Godzich?"
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode(
+				"root",
+				"Thomas Bain (Orange)",
+				(
+					"Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
+				),
+			),
+			DocumentNode("wlad", "Wlad Godzich", ("Wlad Godzich is a literary theorist.",)),
+			DocumentNode("geneva", "University of Geneva", ("The University of Geneva is in Switzerland.",)),
+			DocumentNode("bait", "Orange Order", ("Orange Order is unrelated here.",)),
+		]
+	)
+	candidate_links = [
+		LinkContext(
+			source="root",
+			target="wlad",
+			anchor_text="doctoral seminars of Wlad Godzich",
+			sentence="Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
+			sent_idx=0,
+		),
+		LinkContext(
+			source="root",
+			target="geneva",
+			anchor_text="University of Geneva",
+			sentence="Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
+			sent_idx=0,
+		),
+		LinkContext(
+			source="root",
+			target="bait",
+			anchor_text="Orange Order",
+			sentence="Orange Order is unrelated here.",
+			sent_idx=0,
+		),
+	]
+	cards = [
+		StepScoreCard(
+			edge_id="0",
+			total_score=0.95,
+			subscores={
+				"anchor_overlap": 0.86,
+				"sentence_overlap": 0.72,
+				"target_overlap": 0.28,
+				"novelty": 1.0,
+			},
+			rationale=None,
+			text=None,
+			backend="overlap",
+			provider=None,
+			model=None,
+			latency_s=0.0,
+			prompt_tokens=None,
+			completion_tokens=None,
+			total_tokens=None,
+			cache_hit=None,
+			fallback_reason=None,
+		),
+		StepScoreCard(
+			edge_id="1",
+			total_score=0.54,
+			subscores={
+				"anchor_overlap": 0.14,
+				"sentence_overlap": 0.72,
+				"target_overlap": 0.0,
+				"novelty": 1.0,
+			},
+			rationale=None,
+			text=None,
+			backend="overlap",
+			provider=None,
+			model=None,
+			latency_s=0.0,
+			prompt_tokens=None,
+			completion_tokens=None,
+			total_tokens=None,
+			cache_hit=None,
+			fallback_reason=None,
+		),
+		StepScoreCard(
+			edge_id="2",
+			total_score=0.53,
+			subscores={
+				"anchor_overlap": 0.22,
+				"sentence_overlap": 0.18,
+				"target_overlap": 0.0,
+				"novelty": 1.0,
+			},
+			rationale=None,
+			text=None,
+			backend="overlap",
+			provider=None,
+			model=None,
+			latency_s=0.0,
+			prompt_tokens=None,
+			completion_tokens=None,
+			total_tokens=None,
+			cache_hit=None,
+			fallback_reason=None,
+		),
+	]
+
+	assert _support_coverage_hint(
+		query=query,
+		graph=graph,
+		link=candidate_links[1],
+		card=cards[1],
+	) >= 0.55
+	assert _prefilter_indices(
+		cards,
+		top_n=1,
+		query=query,
+		graph=graph,
+		candidate_links=candidate_links,
+	) == [0, 1]
+
+
+def test_controller_prompt_mentions_explicit_support_coverage():
+	prompt = _controller_user_prompt(
+		query="In what country did Bain attend doctoral seminars of Wlad Godzich?",
+		bundle={
+			"query": "In what country did Bain attend doctoral seminars of Wlad Godzich?",
+			"current_node_id": "root",
+			"path_titles": ["Thomas Bain (Orange)"],
+			"candidates": [
+				{
+					"edge_id": "1",
+					"target_title": "University of Geneva",
+					"support_coverage_hint": 0.82,
+				}
+			],
+		},
+		mode="two_hop",
+	)
+
+	assert "support_coverage" in prompt
+	assert "prefer that candidate over stop" in prompt
+	assert "explicit support-bearing node" in prompt
 
 
 def _build_bridge_graph() -> LinkContextGraph:

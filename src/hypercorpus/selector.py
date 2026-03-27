@@ -23,6 +23,7 @@ from hypercorpus.selector_llm import (
 	LLMController,
 	LLMControllerStepScorer,
 	LLMStepLinkScorer,
+	OpenAIApiMode,
 	SelectorLLMConfig,
 	SelectorProvider,
 )
@@ -265,6 +266,8 @@ class SelectorUsage:
 	parse_failure_steps: int = 0
 	controller_calls: int = 0
 	controller_stop_actions: int = 0
+	controller_explicit_stop_actions: int = 0
+	controller_budget_pacing_stop_actions: int = 0
 	controller_fork_actions: int = 0
 	controller_backtrack_actions: int = 0
 	controller_prefiltered_candidates: int = 0
@@ -501,6 +504,8 @@ def selector_usage_to_dict(usage: SelectorUsage | None) -> dict[str, Any] | None
 		"parse_failure_steps": usage.parse_failure_steps,
 		"controller_calls": usage.controller_calls,
 		"controller_stop_actions": usage.controller_stop_actions,
+		"controller_explicit_stop_actions": usage.controller_explicit_stop_actions,
+		"controller_budget_pacing_stop_actions": usage.controller_budget_pacing_stop_actions,
 		"controller_fork_actions": usage.controller_fork_actions,
 		"controller_backtrack_actions": usage.controller_backtrack_actions,
 		"controller_prefiltered_candidates": usage.controller_prefiltered_candidates,
@@ -522,6 +527,12 @@ def selector_usage_from_dict(payload: dict[str, Any] | None) -> SelectorUsage | 
 		parse_failure_steps=int(payload.get("parse_failure_steps", 0)),
 		controller_calls=int(payload.get("controller_calls", 0)),
 		controller_stop_actions=int(payload.get("controller_stop_actions", 0)),
+		controller_explicit_stop_actions=int(
+			payload.get("controller_explicit_stop_actions", 0)
+		),
+		controller_budget_pacing_stop_actions=int(
+			payload.get("controller_budget_pacing_stop_actions", 0)
+		),
 		controller_fork_actions=int(payload.get("controller_fork_actions", 0)),
 		controller_backtrack_actions=int(
 			payload.get("controller_backtrack_actions", 0)
@@ -1338,6 +1349,7 @@ class _PathfindingSelector:
 			total_tokens=best_card.total_tokens,
 			cache_hit=best_card.cache_hit,
 			fallback_reason=best_card.fallback_reason,
+			llm_calls=best_card.llm_calls,
 			text=best_card.text,
 			raw_response=best_card.raw_response,
 			candidates=[
@@ -2525,20 +2537,23 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 					latency_s=primary_card.latency_s,
 					prompt_tokens=primary_card.prompt_tokens,
 					completion_tokens=primary_card.completion_tokens,
-					total_tokens=primary_card.total_tokens,
-					cache_hit=primary_card.cache_hit,
-					fallback_reason=primary_card.fallback_reason,
-					text=primary_card.text,
-					raw_response=primary_card.raw_response,
-					decision_action=decision_action,
-					secondary_edge_id=secondary_card.edge_id
-					if secondary_card is not None
-					else None,
-					backup_edge_id=primary_card.backup_edge_id,
-					stop_score=stop_score,
-					evidence_cluster_confidence=evidence_cluster_confidence,
-					prefiltered_candidate_count=primary_card.prefiltered_candidate_count,
-					candidates=[
+						total_tokens=primary_card.total_tokens,
+						cache_hit=primary_card.cache_hit,
+						fallback_reason=primary_card.fallback_reason,
+						llm_calls=primary_card.llm_calls,
+						text=primary_card.text,
+						raw_response=primary_card.raw_response,
+						decision_action=decision_action,
+						raw_decision_action=primary_card.raw_decision_action,
+						secondary_edge_id=secondary_card.edge_id
+						if secondary_card is not None
+						else None,
+						backup_edge_id=primary_card.backup_edge_id,
+						stop_score=stop_score,
+						evidence_cluster_confidence=evidence_cluster_confidence,
+						prefiltered_candidate_count=primary_card.prefiltered_candidate_count,
+						stop_reason=None,
+						candidates=[
 						StepCandidateTrace(
 							edge_id=card.edge_id,
 							source_node_id=link.source,
@@ -2557,13 +2572,12 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 					],
 				)
 			)
-			if (
-				decision_action == "stop"
-				and len(steps) >= 3
-				and (stop_score or 0.0) >= 0.65
-			):
-				debug_trace.append(f"controller_stop:{current}:{stop_score:.4f}")
+			if decision_action == "stop":
+				debug_trace.append(
+					f"controller_stop:{current}:{(stop_score or 0.0):.4f}"
+				)
 				stop_reason = "controller_stop"
+				selector_logs[-1].stop_reason = stop_reason
 				break
 			if primary_card.total_score < 0.05:
 				if self._apply_backup(
@@ -2663,7 +2677,8 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 				and (evidence_cluster_confidence or 0.0) < 0.70
 				and len(steps) > 1
 			):
-				stop_reason = "controller_stop"
+				stop_reason = "budget_pacing_stop"
+				selector_logs[-1].stop_reason = stop_reason
 				debug_trace.append(f"budget_pacing_stop:{current}:{current_token_cost}")
 				break
 			if checkpoint_callback is not None:
@@ -2901,19 +2916,22 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 				latency_s=0.0,
 				prompt_tokens=None,
 				completion_tokens=None,
-				total_tokens=None,
-				cache_hit=None,
-				fallback_reason="controller_backtrack",
-				text=previous_log.text,
-				raw_response=previous_log.raw_response,
-				decision_action="backtrack",
-				secondary_edge_id=previous_log.secondary_edge_id,
-				backup_edge_id=None,
-				stop_score=previous_log.stop_score,
-				evidence_cluster_confidence=previous_log.evidence_cluster_confidence,
-				prefiltered_candidate_count=previous_log.prefiltered_candidate_count,
-				candidates=list(previous_log.candidates),
-			)
+					total_tokens=None,
+					cache_hit=None,
+					fallback_reason="controller_backtrack",
+					llm_calls=0,
+						text=previous_log.text,
+						raw_response=previous_log.raw_response,
+						decision_action="backtrack",
+						raw_decision_action="backtrack",
+						secondary_edge_id=previous_log.secondary_edge_id,
+					backup_edge_id=None,
+					stop_score=previous_log.stop_score,
+					evidence_cluster_confidence=previous_log.evidence_cluster_confidence,
+					prefiltered_candidate_count=previous_log.prefiltered_candidate_count,
+					stop_reason="controller_backtrack",
+					candidates=list(previous_log.candidates),
+				)
 		)
 		visited_nodes.append(backup_candidate.target_node_id)
 		visited_set.add(backup_candidate.target_node_id)
@@ -3517,6 +3535,7 @@ def build_selector(
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: OpenAIApiMode | str = "chat_completions",
 	selector_cache_path: str | None = None,
 	selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
 	sentence_transformer_model: str | None = None,
@@ -3550,6 +3569,7 @@ def build_selector(
 		model=selector_model,
 		api_key_env=selector_api_key_env,
 		base_url=selector_base_url,
+		openai_api_mode=cast(OpenAIApiMode, selector_openai_api_mode),
 		cache_path=None if selector_cache_path is None else Path(selector_cache_path),
 	)
 	sentence_transformer_config = SentenceTransformerSelectorConfig(
@@ -3652,6 +3672,7 @@ def select_selectors(
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: OpenAIApiMode | str = "chat_completions",
 	selector_cache_path: str | None = None,
 	selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
 	sentence_transformer_model: str | None = None,
@@ -3679,6 +3700,7 @@ def select_selectors(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			selector_backend_factory=selector_backend_factory,
 			sentence_transformer_model=sentence_transformer_model,
@@ -4603,12 +4625,20 @@ def _selector_usage_from_logs(
 		if log.decision_action is not None and log.decision_action != "backtrack"
 	]
 	backtrack_logs = [log for log in logs if log.decision_action == "backtrack"]
+	explicit_stop_logs = [
+		log for log in controller_logs if log.stop_reason == "controller_stop"
+	]
+	budget_pacing_logs = [
+		log for log in controller_logs if log.stop_reason == "budget_pacing_stop"
+	]
 	return SelectorUsage(
 		runtime_s=runtime_override
 		if runtime_override is not None
 		else sum(log.latency_s for log in logs),
 		llm_calls=sum(
-			1
+			log.llm_calls
+			if log.llm_calls is not None
+			else 1
 			for log in logs
 			if log.provider is not None and log.decision_action != "backtrack"
 		),
@@ -4624,9 +4654,9 @@ def _selector_usage_from_logs(
 			1 for log in logs if _is_selector_parse_failure(log.fallback_reason)
 		),
 		controller_calls=len(controller_logs),
-		controller_stop_actions=sum(
-			1 for log in controller_logs if log.decision_action == "stop"
-		),
+		controller_stop_actions=len(explicit_stop_logs) + len(budget_pacing_logs),
+		controller_explicit_stop_actions=len(explicit_stop_logs),
+		controller_budget_pacing_stop_actions=len(budget_pacing_logs),
 		controller_fork_actions=sum(
 			1 for log in controller_logs if log.decision_action == "choose_two"
 		),

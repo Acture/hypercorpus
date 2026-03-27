@@ -287,8 +287,8 @@ def run_2wiki(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -305,6 +305,11 @@ def run_2wiki(
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
 	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
 		"--selector-cache-path",
@@ -312,8 +317,8 @@ def run_2wiki(
 		dir_okay=False,
 		help="Optional JSONL cache path for selector LLM outputs",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -389,6 +394,7 @@ def run_2wiki(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -461,8 +467,8 @@ def run_iirc(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -479,6 +485,11 @@ def run_iirc(
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
 	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
 		"--selector-cache-path",
@@ -486,8 +497,8 @@ def run_iirc(
 		dir_okay=False,
 		help="Optional JSONL cache path for selector LLM outputs",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -563,6 +574,7 @@ def run_iirc(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -635,8 +647,8 @@ def run_musique(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -653,6 +665,11 @@ def run_musique(
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
 	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
 		"--selector-cache-path",
@@ -660,8 +677,8 @@ def run_musique(
 		dir_okay=False,
 		help="Optional JSONL cache path for selector LLM outputs",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -737,6 +754,7 @@ def run_musique(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -812,8 +830,8 @@ def run_hotpotqa(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -830,6 +848,11 @@ def run_hotpotqa(
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
 	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
 		"--selector-cache-path",
@@ -837,8 +860,8 @@ def run_hotpotqa(
 		dir_okay=False,
 		help="Optional JSONL cache path for selector LLM outputs",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -920,6 +943,7 @@ def run_hotpotqa(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -994,8 +1018,8 @@ def run_docs(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -1012,6 +1036,11 @@ def run_docs(
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
 	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
 		"--selector-cache-path",
@@ -1019,8 +1048,8 @@ def run_docs(
 		dir_okay=False,
 		help="Optional JSONL cache path for selector LLM outputs",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -1097,6 +1126,7 @@ def run_docs(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -1188,8 +1218,8 @@ def run_2wiki_store(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -1206,6 +1236,11 @@ def run_2wiki_store(
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
 	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
 		"--selector-cache-path",
@@ -1213,8 +1248,8 @@ def run_2wiki_store(
 		dir_okay=False,
 		help="Optional JSONL cache path for selector LLM outputs",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -1296,6 +1331,7 @@ def run_2wiki_store(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -1425,8 +1461,8 @@ def run_iirc_store(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -1442,6 +1478,11 @@ def run_iirc_store(
 		None,
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
+	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1463,8 +1504,8 @@ def run_iirc_store(
 		dir_okay=False,
 		help="Artifact manifest produced by `hypercorpus-cli baselines build-mdr-index`",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -1551,6 +1592,7 @@ def run_iirc_store(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			mdr_home=mdr_home,
 			mdr_artifact_manifest=mdr_artifact_manifest,
@@ -1640,8 +1682,8 @@ def run_musique_store(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -1657,6 +1699,11 @@ def run_musique_store(
 		None,
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
+	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1678,8 +1725,8 @@ def run_musique_store(
 		dir_okay=False,
 		help="Artifact manifest produced by `hypercorpus-cli baselines build-mdr-index`",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -1766,6 +1813,7 @@ def run_musique_store(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			mdr_home=mdr_home,
 			mdr_artifact_manifest=mdr_artifact_manifest,
@@ -1855,8 +1903,8 @@ def run_hotpotqa_store(
 		"--budget-ratios",
 		help=f"Comma-separated token budget ratios. Default: {budget_ratio_choices_help()}",
 	),
-	selector_provider: str = typer.Option(
-		"openai",
+	selector_provider: str | None = typer.Option(
+		None,
 		"--selector-provider",
 		help="Selector LLM provider: openai, anthropic, or gemini",
 	),
@@ -1872,6 +1920,11 @@ def run_hotpotqa_store(
 		None,
 		"--selector-base-url",
 		help="Optional selector base URL override for OpenAI-compatible providers",
+	),
+	selector_openai_api_mode: str | None = typer.Option(
+		None,
+		"--selector-openai-api-mode",
+		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1893,8 +1946,8 @@ def run_hotpotqa_store(
 		dir_okay=False,
 		help="Artifact manifest produced by `hypercorpus-cli baselines build-mdr-index`",
 	),
-	sentence_transformer_model: str = typer.Option(
-		"multi-qa-MiniLM-L6-cos-v1",
+	sentence_transformer_model: str | None = typer.Option(
+		None,
 		"--sentence-transformer-model",
 		help="Local sentence-transformer model name for seed/scorer retrieval",
 	),
@@ -1981,6 +2034,7 @@ def run_hotpotqa_store(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			mdr_home=mdr_home,
 			mdr_artifact_manifest=mdr_artifact_manifest,

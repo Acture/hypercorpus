@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from hypercorpus.experiments import (
+	_EXPERIMENT_DEFAULTS_FILE_ENV,
+	_resolve_runtime_defaults,
 	_build_selection_plan,
 	_selection_keys_by_case,
 	_selection_keys_by_case_selector,
@@ -60,6 +62,67 @@ def test_parse_token_budgets_handles_empty_values():
 	assert parse_token_budgets(None) is None
 	assert parse_token_budgets("") is None
 	assert parse_token_budgets("128,256") == [128, 256]
+
+
+def test_resolve_runtime_defaults_prefers_cli_over_env_over_file(
+	tmp_path, monkeypatch
+):
+	defaults_path = tmp_path / ".hypercorpus-experiments.toml"
+	defaults_path.write_text(
+		"""
+[selector]
+provider = "openai"
+model = "file-model"
+api_key_env = "FILE_KEY"
+base_url = "https://file.example/openai/v1/"
+openai_api_mode = "responses"
+
+[sentence_transformer]
+model = "file-st"
+device = "cpu"
+""".strip(),
+		encoding="utf-8",
+	)
+	monkeypatch.chdir(tmp_path)
+	monkeypatch.setenv("HYPERCORPUS_SELECTOR_MODEL", "env-model")
+	monkeypatch.setenv("HYPERCORPUS_SELECTOR_BASE_URL", "https://env.example/openai/v1/")
+	monkeypatch.setenv("HYPERCORPUS_SENTENCE_TRANSFORMER_DEVICE", "mps")
+
+	resolved = _resolve_runtime_defaults(
+		selector_provider=None,
+		selector_model="cli-model",
+		selector_api_key_env=None,
+		selector_base_url=None,
+		selector_openai_api_mode=None,
+		sentence_transformer_model=None,
+		sentence_transformer_device=None,
+	)
+
+	assert resolved.selector_provider == "openai"
+	assert resolved.selector_model == "cli-model"
+	assert resolved.selector_api_key_env == "FILE_KEY"
+	assert resolved.selector_base_url == "https://env.example/openai/v1/"
+	assert resolved.selector_openai_api_mode == "responses"
+	assert resolved.sentence_transformer_model == "file-st"
+	assert resolved.sentence_transformer_device == "mps"
+
+
+def test_resolve_runtime_defaults_rejects_missing_explicit_defaults_file(
+	tmp_path, monkeypatch
+):
+	missing_path = tmp_path / "missing.toml"
+	monkeypatch.setenv(_EXPERIMENT_DEFAULTS_FILE_ENV, str(missing_path))
+
+	with pytest.raises(ValueError, match="points at missing file"):
+		_resolve_runtime_defaults(
+			selector_provider=None,
+			selector_model=None,
+			selector_api_key_env=None,
+			selector_base_url=None,
+			selector_openai_api_mode=None,
+			sentence_transformer_model=None,
+			sentence_transformer_device=None,
+		)
 
 
 def test_available_study_presets_are_fixed():
@@ -226,6 +289,48 @@ def test_run_2wiki_experiment_writes_selector_budget_outputs(two_wiki_files, tmp
 		"full_corpus_upper_bound",
 	]
 	assert evaluated_ids_path.read_text(encoding="utf-8") == "q1\n"
+
+
+def test_run_2wiki_experiment_records_defaults_file_runtime_config(
+	two_wiki_files, tmp_path, monkeypatch
+):
+	questions_path, graph_path = two_wiki_files
+	defaults_path = tmp_path / ".hypercorpus-experiments.toml"
+	defaults_path.write_text(
+		"""
+[selector]
+api_key_env = "AZURE_API_KEY"
+base_url = "https://example.test/openai/v1/"
+openai_api_mode = "responses"
+
+[sentence_transformer]
+model = "multi-qa-MiniLM-L6-cos-v1"
+device = "mps"
+""".strip(),
+		encoding="utf-8",
+	)
+	monkeypatch.chdir(tmp_path)
+	output_dir = tmp_path / "defaults-out"
+
+	run_2wiki_experiment(
+		questions_path=questions_path,
+		graph_records_path=graph_path,
+		output_dir=output_dir,
+		limit=1,
+		selector_names=[CANONICAL_DENSE],
+		token_budgets=[128],
+		with_e2e=False,
+		export_graphrag_inputs=False,
+	)
+
+	manifest = json.loads(
+		(output_dir / "run_manifest.json").read_text(encoding="utf-8")
+	)
+	assert manifest["selector_api_key_env"] == "AZURE_API_KEY"
+	assert manifest["selector_base_url"] == "https://example.test/openai/v1/"
+	assert manifest["selector_openai_api_mode"] == "responses"
+	assert manifest["sentence_transformer_model"] == "multi-qa-MiniLM-L6-cos-v1"
+	assert manifest["sentence_transformer_device"] == "mps"
 
 
 def test_run_2wiki_experiment_filters_cases_by_case_ids_file(two_wiki_files, tmp_path):
@@ -1246,6 +1351,8 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
 				"selector_usage": {
 					"controller_calls": 0,
 					"controller_stop_actions": 0,
+					"controller_explicit_stop_actions": 0,
+					"controller_budget_pacing_stop_actions": 0,
 					"controller_fork_actions": 0,
 					"controller_backtrack_actions": 0,
 					"controller_prefiltered_candidates": 0,
@@ -1272,6 +1379,8 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
 				"selector_usage": {
 					"controller_calls": 2,
 					"controller_stop_actions": 1,
+					"controller_explicit_stop_actions": 1,
+					"controller_budget_pacing_stop_actions": 0,
 					"controller_fork_actions": 0,
 					"controller_backtrack_actions": 0,
 					"controller_prefiltered_candidates": 12,
@@ -1298,6 +1407,8 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
 				"selector_usage": {
 					"controller_calls": 0,
 					"controller_stop_actions": 0,
+					"controller_explicit_stop_actions": 0,
+					"controller_budget_pacing_stop_actions": 0,
 					"controller_fork_actions": 0,
 					"controller_backtrack_actions": 0,
 					"controller_prefiltered_candidates": 0,
@@ -1324,6 +1435,8 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
 				"selector_usage": {
 					"controller_calls": 2,
 					"controller_stop_actions": 1,
+					"controller_explicit_stop_actions": 0,
+					"controller_budget_pacing_stop_actions": 1,
 					"controller_fork_actions": 0,
 					"controller_backtrack_actions": 0,
 					"controller_prefiltered_candidates": 8,
@@ -1380,6 +1493,8 @@ def test_subset_comparison_rows_emit_hard_subsets_and_control_deltas():
 	assert control_all["delta_support_f1_vs_dense_control"] == 0.0
 	assert candidate_all["delta_support_f1_vs_dense_control"] == pytest.approx(0.20)
 	assert candidate_all["avg_stop_rate"] == pytest.approx(0.5)
+	assert candidate_all["avg_explicit_stop_rate"] == pytest.approx(0.25)
+	assert candidate_all["avg_budget_pacing_stop_rate"] == pytest.approx(0.25)
 	assert candidate_all["avg_controller_calls"] == pytest.approx(2.0)
 	assert candidate_all["avg_support_set_em"] == pytest.approx(0.5)
 	assert bridge_subset["avg_support_set_em"] == pytest.approx(1.0)

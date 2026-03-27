@@ -227,6 +227,52 @@ def test_run_2wiki_cli_forwards_study_preset_and_case_ids_file(
 	assert captured["case_ids_file"] == case_ids_path
 
 
+def test_run_2wiki_cli_forwards_selector_openai_api_mode(
+	two_wiki_files, tmp_path, monkeypatch
+):
+	questions_path, graph_path = two_wiki_files
+	output_dir = tmp_path / "cli-openai-api-mode"
+	runner = CliRunner()
+	captured: dict[str, object] = {}
+
+	def _fake_run_2wiki_experiment(**kwargs):
+		captured.update(kwargs)
+		return [], ExperimentSummary(
+			dataset_name="2wikimultihop", total_cases=0, selector_budgets=[]
+		)
+
+	monkeypatch.setattr(
+		"hypercorpus_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment
+	)
+
+	result = runner.invoke(
+		app,
+		[
+			"experiments",
+			"run-2wiki",
+			"--questions",
+			str(questions_path),
+			"--graph-records",
+			str(graph_path),
+			"--output",
+			str(output_dir),
+			"--selectors",
+			CANONICAL_DENSE,
+			"--selector-provider",
+			"openai",
+			"--selector-openai-api-mode",
+			"responses",
+			"--token-budgets",
+			"128",
+			"--no-e2e",
+			"--no-export-graphrag-inputs",
+		],
+	)
+
+	assert result.exit_code == 0, result.stdout
+	assert captured["selector_openai_api_mode"] == "responses"
+
+
 def test_run_2wiki_cli_help_mentions_new_presets():
 	runner = CliRunner()
 
@@ -252,6 +298,7 @@ def test_run_2wiki_cli_rejects_paper_recommended_without_llm_config(
 	output_dir = tmp_path / "cli-paper-recommended"
 	runner = CliRunner()
 	monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+	monkeypatch.chdir(tmp_path)
 
 	result = runner.invoke(
 		app,

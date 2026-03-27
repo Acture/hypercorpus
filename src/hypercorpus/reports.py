@@ -87,6 +87,8 @@ SUBSET_COMPARISON_FIELDNAMES = [
 	"delta_support_recall_vs_dense_control",
 	"delta_path_hit_vs_dense_control",
 	"avg_stop_rate",
+	"avg_explicit_stop_rate",
+	"avg_budget_pacing_stop_rate",
 	"avg_fork_rate",
 	"avg_backtrack_rate",
 	"avg_controller_calls",
@@ -396,6 +398,12 @@ def subset_comparison_rows(
 						None if control is None else control["avg_path_hit"],
 					),
 					"avg_stop_rate": aggregate["avg_stop_rate"],
+					"avg_explicit_stop_rate": aggregate[
+						"avg_explicit_stop_rate"
+					],
+					"avg_budget_pacing_stop_rate": aggregate[
+						"avg_budget_pacing_stop_rate"
+					],
 					"avg_fork_rate": aggregate["avg_fork_rate"],
 					"avg_backtrack_rate": aggregate["avg_backtrack_rate"],
 					"avg_controller_calls": aggregate["avg_controller_calls"],
@@ -530,6 +538,8 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 			"avg_support_recall": None,
 			"avg_path_hit": None,
 			"avg_stop_rate": 0.0,
+			"avg_explicit_stop_rate": 0.0,
+			"avg_budget_pacing_stop_rate": 0.0,
 			"avg_fork_rate": 0.0,
 			"avg_backtrack_rate": 0.0,
 			"avg_controller_calls": 0.0,
@@ -561,6 +571,8 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 		if record["selection"]["metrics"].get("path_hit") is not None
 	]
 	stop_rates: list[float] = []
+	explicit_stop_rates: list[float] = []
+	budget_pacing_stop_rates: list[float] = []
 	fork_rates: list[float] = []
 	backtrack_rates: list[float] = []
 	controller_calls: list[float] = []
@@ -571,6 +583,12 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 		controller_calls.append(calls)
 		if calls > 0:
 			stop_rates.append(float(usage.get("controller_stop_actions", 0)) / calls)
+			explicit_stop_rates.append(
+				float(usage.get("controller_explicit_stop_actions", 0)) / calls
+			)
+			budget_pacing_stop_rates.append(
+				float(usage.get("controller_budget_pacing_stop_actions", 0)) / calls
+			)
 			fork_rates.append(float(usage.get("controller_fork_actions", 0)) / calls)
 			backtrack_rates.append(
 				float(usage.get("controller_backtrack_actions", 0)) / calls
@@ -580,6 +598,8 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 			)
 		else:
 			stop_rates.append(0.0)
+			explicit_stop_rates.append(0.0)
+			budget_pacing_stop_rates.append(0.0)
 			fork_rates.append(0.0)
 			backtrack_rates.append(0.0)
 			prefiltered_candidates.append(0.0)
@@ -591,6 +611,8 @@ def _aggregate_subset_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 		"avg_support_recall": _mean_or_none(support_recall),
 		"avg_path_hit": _mean_or_none(path_hit),
 		"avg_stop_rate": _mean_or_zero(stop_rates),
+		"avg_explicit_stop_rate": _mean_or_zero(explicit_stop_rates),
+		"avg_budget_pacing_stop_rate": _mean_or_zero(budget_pacing_stop_rates),
 		"avg_fork_rate": _mean_or_zero(fork_rates),
 		"avg_backtrack_rate": _mean_or_zero(backtrack_rates),
 		"avg_controller_calls": _mean_or_zero(controller_calls),

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence, cast
@@ -161,6 +162,28 @@ class _ResolvedExperimentConfig:
 	control_selector_name: str | None
 
 
+_EXPERIMENT_DEFAULTS_FILENAME = ".hypercorpus-experiments.toml"
+_EXPERIMENT_DEFAULTS_FILE_ENV = "HYPERCORPUS_EXPERIMENT_DEFAULTS_FILE"
+_SELECTOR_PROVIDER_ENV = "HYPERCORPUS_SELECTOR_PROVIDER"
+_SELECTOR_MODEL_ENV = "HYPERCORPUS_SELECTOR_MODEL"
+_SELECTOR_API_KEY_ENV = "HYPERCORPUS_SELECTOR_API_KEY_ENV"
+_SELECTOR_BASE_URL_ENV = "HYPERCORPUS_SELECTOR_BASE_URL"
+_SELECTOR_OPENAI_API_MODE_ENV = "HYPERCORPUS_SELECTOR_OPENAI_API_MODE"
+_SENTENCE_TRANSFORMER_MODEL_ENV = "HYPERCORPUS_SENTENCE_TRANSFORMER_MODEL"
+_SENTENCE_TRANSFORMER_DEVICE_ENV = "HYPERCORPUS_SENTENCE_TRANSFORMER_DEVICE"
+
+
+@dataclass(frozen=True, slots=True)
+class _ExperimentRuntimeDefaults:
+	selector_provider: str | None = None
+	selector_model: str | None = None
+	selector_api_key_env: str | None = None
+	selector_base_url: str | None = None
+	selector_openai_api_mode: str | None = None
+	sentence_transformer_model: str | None = None
+	sentence_transformer_device: str | None = None
+
+
 _SINGLE_PATH_EDGE_ABLATION_SELECTORS: tuple[str, ...] = (
 	"top_1_seed__sentence_transformer__hop_2__single_path_walk__anchor_overlap__lookahead_1__budget_fill_relative_drop",
 	"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced__budget_fill_relative_drop",
@@ -213,6 +236,148 @@ _STUDY_PRESETS: tuple[StudyPresetSpec, ...] = (
 )
 
 
+def _discover_experiment_defaults_path() -> Path | None:
+	explicit = os.environ.get(_EXPERIMENT_DEFAULTS_FILE_ENV)
+	if explicit:
+		path = Path(explicit).expanduser()
+		if not path.exists():
+			raise ValueError(
+				f"{_EXPERIMENT_DEFAULTS_FILE_ENV} points at missing file: {path}"
+			)
+		return path
+	for root in (Path.cwd(), *Path.cwd().parents):
+		candidate = root / _EXPERIMENT_DEFAULTS_FILENAME
+		if candidate.exists():
+			return candidate
+	return None
+
+
+def _read_optional_string(
+	table: dict[str, Any], key: str, *, path: Path, section: str
+) -> str | None:
+	value = table.get(key)
+	if value is None:
+		return None
+	if not isinstance(value, str):
+		raise ValueError(
+			f"{path}: [{section}].{key} must be a string when provided."
+		)
+	text = value.strip()
+	return text or None
+
+
+def _load_experiment_defaults_file(path: Path) -> _ExperimentRuntimeDefaults:
+	with path.open("rb") as handle:
+		payload = tomllib.load(handle)
+	selector = payload.get("selector", {})
+	sentence_transformer = payload.get("sentence_transformer", {})
+	if not isinstance(selector, dict):
+		raise ValueError(f"{path}: [selector] must be a table.")
+	if not isinstance(sentence_transformer, dict):
+		raise ValueError(f"{path}: [sentence_transformer] must be a table.")
+	return _ExperimentRuntimeDefaults(
+		selector_provider=_read_optional_string(
+			selector, "provider", path=path, section="selector"
+		),
+		selector_model=_read_optional_string(
+			selector, "model", path=path, section="selector"
+		),
+		selector_api_key_env=_read_optional_string(
+			selector, "api_key_env", path=path, section="selector"
+		),
+		selector_base_url=_read_optional_string(
+			selector, "base_url", path=path, section="selector"
+		),
+		selector_openai_api_mode=_read_optional_string(
+			selector, "openai_api_mode", path=path, section="selector"
+		),
+		sentence_transformer_model=_read_optional_string(
+			sentence_transformer,
+			"model",
+			path=path,
+			section="sentence_transformer",
+		),
+		sentence_transformer_device=_read_optional_string(
+			sentence_transformer,
+			"device",
+			path=path,
+			section="sentence_transformer",
+		),
+	)
+
+
+def _load_environment_runtime_defaults() -> _ExperimentRuntimeDefaults:
+	return _ExperimentRuntimeDefaults(
+		selector_provider=os.environ.get(_SELECTOR_PROVIDER_ENV) or None,
+		selector_model=os.environ.get(_SELECTOR_MODEL_ENV) or None,
+		selector_api_key_env=os.environ.get(_SELECTOR_API_KEY_ENV) or None,
+		selector_base_url=os.environ.get(_SELECTOR_BASE_URL_ENV) or None,
+		selector_openai_api_mode=os.environ.get(_SELECTOR_OPENAI_API_MODE_ENV)
+		or None,
+		sentence_transformer_model=os.environ.get(_SENTENCE_TRANSFORMER_MODEL_ENV)
+		or None,
+		sentence_transformer_device=os.environ.get(_SENTENCE_TRANSFORMER_DEVICE_ENV)
+		or None,
+	)
+
+
+def _merge_runtime_defaults(
+	*defaults: _ExperimentRuntimeDefaults,
+) -> _ExperimentRuntimeDefaults:
+	merged = _ExperimentRuntimeDefaults()
+	for defaults_item in defaults:
+		merged = _ExperimentRuntimeDefaults(
+			selector_provider=defaults_item.selector_provider
+			or merged.selector_provider,
+			selector_model=defaults_item.selector_model or merged.selector_model,
+			selector_api_key_env=defaults_item.selector_api_key_env
+			or merged.selector_api_key_env,
+			selector_base_url=defaults_item.selector_base_url
+			or merged.selector_base_url,
+			selector_openai_api_mode=defaults_item.selector_openai_api_mode
+			or merged.selector_openai_api_mode,
+			sentence_transformer_model=defaults_item.sentence_transformer_model
+			or merged.sentence_transformer_model,
+			sentence_transformer_device=defaults_item.sentence_transformer_device
+			or merged.sentence_transformer_device,
+		)
+	return merged
+
+
+def _resolve_runtime_defaults(
+	*,
+	selector_provider: str | None,
+	selector_model: str | None,
+	selector_api_key_env: str | None,
+	selector_base_url: str | None,
+	selector_openai_api_mode: str | None,
+	sentence_transformer_model: str | None,
+	sentence_transformer_device: str | None,
+) -> _ExperimentRuntimeDefaults:
+	file_defaults = _ExperimentRuntimeDefaults()
+	defaults_path = _discover_experiment_defaults_path()
+	if defaults_path is not None:
+		file_defaults = _load_experiment_defaults_file(defaults_path)
+	env_defaults = _load_environment_runtime_defaults()
+	resolved_defaults = _merge_runtime_defaults(file_defaults, env_defaults)
+	return _ExperimentRuntimeDefaults(
+		selector_provider=selector_provider
+		or resolved_defaults.selector_provider
+		or "openai",
+		selector_model=selector_model or resolved_defaults.selector_model,
+		selector_api_key_env=selector_api_key_env
+		or resolved_defaults.selector_api_key_env,
+		selector_base_url=selector_base_url or resolved_defaults.selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode
+		or resolved_defaults.selector_openai_api_mode
+		or "chat_completions",
+		sentence_transformer_model=sentence_transformer_model
+		or resolved_defaults.sentence_transformer_model,
+		sentence_transformer_device=sentence_transformer_device
+		or resolved_defaults.sentence_transformer_device,
+	)
+
+
 def run_dataset_experiment(
 	*,
 	adapter: DatasetAdapter,
@@ -226,10 +391,11 @@ def run_dataset_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
@@ -262,6 +428,22 @@ def run_dataset_experiment(
 	selected_cases = _resolve_case_selection(
 		cases, limit=limit, case_ids_file=case_ids_file
 	)
+	runtime_defaults = _resolve_runtime_defaults(
+		selector_provider=selector_provider,
+		selector_model=selector_model,
+		selector_api_key_env=selector_api_key_env,
+		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
+		sentence_transformer_model=sentence_transformer_model,
+		sentence_transformer_device=sentence_transformer_device,
+	)
+	selector_provider = runtime_defaults.selector_provider
+	selector_model = runtime_defaults.selector_model
+	selector_api_key_env = runtime_defaults.selector_api_key_env
+	selector_base_url = runtime_defaults.selector_base_url
+	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
+	sentence_transformer_model = runtime_defaults.sentence_transformer_model
+	sentence_transformer_device = runtime_defaults.sentence_transformer_device
 	resolved = _resolve_experiment_config(
 		selector_names=selector_names,
 		selector_preset=selector_preset,
@@ -277,6 +459,7 @@ def run_dataset_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=str(selector_cache_path)
 		if selector_cache_path is not None
 		else None,
@@ -314,7 +497,9 @@ def run_dataset_experiment(
 		control_selector_name=resolved.control_selector_name,
 		selector_provider=selector_provider,
 		selector_model=selector_model,
+		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		mdr_home=None,
 		mdr_artifact_manifest=None,
 		sentence_transformer_model=sentence_transformer_model,
@@ -359,10 +544,11 @@ def run_2wiki_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
@@ -394,6 +580,7 @@ def run_2wiki_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=selector_cache_path,
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -423,10 +610,11 @@ def run_iirc_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
@@ -458,6 +646,7 @@ def run_iirc_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=selector_cache_path,
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -488,10 +677,11 @@ def run_hotpotqa_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
@@ -528,6 +718,7 @@ def run_hotpotqa_experiment(
 			selector_model=selector_model,
 			selector_api_key_env=selector_api_key_env,
 			selector_base_url=selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode,
 			selector_cache_path=selector_cache_path,
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -587,6 +778,7 @@ def run_hotpotqa_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=str(selector_cache_path)
 		if selector_cache_path is not None
 		else None,
@@ -627,7 +819,9 @@ def run_hotpotqa_experiment(
 		control_selector_name=resolved.control_selector_name,
 		selector_provider=selector_provider,
 		selector_model=selector_model,
+		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		mdr_home=None,
 		mdr_artifact_manifest=None,
 		sentence_transformer_model=sentence_transformer_model,
@@ -667,10 +861,11 @@ def run_musique_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
@@ -702,6 +897,7 @@ def run_musique_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=selector_cache_path,
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -732,10 +928,11 @@ def run_docs_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
@@ -767,6 +964,7 @@ def run_docs_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=selector_cache_path,
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_cache_path=sentence_transformer_cache_path,
@@ -803,10 +1001,11 @@ def run_store_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
@@ -850,6 +1049,22 @@ def run_store_experiment(
 		chunk_size=chunk_size,
 		chunk_index=chunk_index,
 	)
+	runtime_defaults = _resolve_runtime_defaults(
+		selector_provider=selector_provider,
+		selector_model=selector_model,
+		selector_api_key_env=selector_api_key_env,
+		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
+		sentence_transformer_model=sentence_transformer_model,
+		sentence_transformer_device=sentence_transformer_device,
+	)
+	selector_provider = runtime_defaults.selector_provider
+	selector_model = runtime_defaults.selector_model
+	selector_api_key_env = runtime_defaults.selector_api_key_env
+	selector_base_url = runtime_defaults.selector_base_url
+	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
+	sentence_transformer_model = runtime_defaults.sentence_transformer_model
+	sentence_transformer_device = runtime_defaults.sentence_transformer_device
 	resolved = _resolve_experiment_config(
 		selector_names=selector_names,
 		selector_preset=selector_preset,
@@ -865,6 +1080,7 @@ def run_store_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=str(selector_cache_path)
 		if selector_cache_path is not None
 		else None,
@@ -909,7 +1125,9 @@ def run_store_experiment(
 		control_selector_name=resolved.control_selector_name,
 		selector_provider=selector_provider,
 		selector_model=selector_model,
+		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		mdr_home=mdr_home,
 		mdr_artifact_manifest=mdr_artifact_manifest,
 		sentence_transformer_model=sentence_transformer_model,
@@ -964,10 +1182,11 @@ def run_2wiki_store_experiment(
 	study_preset: str | None = None,
 	token_budgets: Sequence[int] | None = None,
 	budget_ratios: Sequence[float] | None = None,
-	selector_provider: str = "openai",
+	selector_provider: str | None = None,
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
+	selector_openai_api_mode: str | None = None,
 	selector_cache_path: str | Path | None = None,
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
@@ -1007,6 +1226,7 @@ def run_2wiki_store_experiment(
 		selector_model=selector_model,
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		selector_cache_path=selector_cache_path,
 		mdr_home=mdr_home,
 		mdr_artifact_manifest=mdr_artifact_manifest,
@@ -1869,7 +2089,9 @@ def _build_runtime_config_payload(
 	budgets: Sequence[EvaluationBudget],
 	selector_provider: str,
 	selector_model: str | None,
+	selector_api_key_env: str | None,
 	selector_base_url: str | None,
+	selector_openai_api_mode: str,
 	mdr_home: str | Path | None,
 	mdr_artifact_manifest: str | Path | None,
 	sentence_transformer_model: str | None,
@@ -1893,7 +2115,9 @@ def _build_runtime_config_payload(
 		"budget_labels": [budget.budget_label for budget in budgets],
 		"selector_provider": selector_provider,
 		"selector_model": selector_model,
+		"selector_api_key_env": selector_api_key_env,
 		"selector_base_url": selector_base_url,
+		"selector_openai_api_mode": selector_openai_api_mode,
 		"mdr_home": str(mdr_home) if mdr_home is not None else None,
 		"mdr_artifact_manifest": str(mdr_artifact_manifest)
 		if mdr_artifact_manifest is not None
@@ -1934,7 +2158,9 @@ def _validate_resume_configuration(
 		"control_selector_name",
 		"selector_provider",
 		"selector_model",
+		"selector_api_key_env",
 		"selector_base_url",
+		"selector_openai_api_mode",
 		"mdr_home",
 		"mdr_artifact_manifest",
 		"sentence_transformer_model",
@@ -2267,7 +2493,9 @@ def _run_loaded_experiment(
 	control_selector_name: str | None,
 	selector_provider: str,
 	selector_model: str | None,
+	selector_api_key_env: str | None,
 	selector_base_url: str | None,
+	selector_openai_api_mode: str,
 	mdr_home: str | Path | None,
 	mdr_artifact_manifest: str | Path | None,
 	sentence_transformer_model: str | None,
@@ -2312,7 +2540,9 @@ def _run_loaded_experiment(
 		budgets=budgets,
 		selector_provider=selector_provider,
 		selector_model=selector_model,
+		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
 		mdr_home=mdr_home,
 		mdr_artifact_manifest=mdr_artifact_manifest,
 		sentence_transformer_model=sentence_transformer_model,
@@ -2342,7 +2572,9 @@ def _run_loaded_experiment(
 		"control_selector_name": control_selector_name,
 		"selector_provider": selector_provider,
 		"selector_model": selector_model,
+		"selector_api_key_env": selector_api_key_env,
 		"selector_base_url": selector_base_url,
+		"selector_openai_api_mode": selector_openai_api_mode,
 		"mdr_home": str(mdr_home) if mdr_home is not None else None,
 		"mdr_artifact_manifest": str(mdr_artifact_manifest)
 		if mdr_artifact_manifest is not None

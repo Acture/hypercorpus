@@ -11,6 +11,7 @@ from hypercorpus.text import normalized_token_overlap
 class StopReason(StrEnum):
 	DEAD_END = "dead_end"
 	BUDGET_EXHAUSTED = "budget_exhausted"
+	BUDGET_PACING_STOP = "budget_pacing_stop"
 	SCORE_BELOW_THRESHOLD = "score_below_threshold"
 	CONTROLLER_STOP = "controller_stop"
 
@@ -53,9 +54,11 @@ class StepScoreCard:
 	total_tokens: int | None = None
 	cache_hit: bool | None = None
 	fallback_reason: str | None = None
+	llm_calls: int | None = None
 	best_next_edge_id: str | None = None
 	raw_response: str | None = None
 	decision_action: str | None = None
+	raw_decision_action: str | None = None
 	primary_edge_id: str | None = None
 	secondary_edge_id: str | None = None
 	backup_edge_id: str | None = None
@@ -96,12 +99,15 @@ class WalkStepLog:
 	fallback_reason: str | None
 	text: str | None
 	raw_response: str | None
+	llm_calls: int | None = None
 	decision_action: str | None = None
+	raw_decision_action: str | None = None
 	secondary_edge_id: str | None = None
 	backup_edge_id: str | None = None
 	stop_score: float | None = None
 	evidence_cluster_confidence: float | None = None
 	prefiltered_candidate_count: int | None = None
+	stop_reason: str | None = None
 	candidates: list[StepCandidateTrace] = field(default_factory=list)
 
 
@@ -225,14 +231,17 @@ def walk_step_log_to_dict(log: WalkStepLog) -> dict[str, Any]:
 		"total_tokens": log.total_tokens,
 		"cache_hit": log.cache_hit,
 		"fallback_reason": log.fallback_reason,
+		"llm_calls": log.llm_calls,
 		"text": log.text,
 		"raw_response": log.raw_response,
 		"decision_action": log.decision_action,
+		"raw_decision_action": log.raw_decision_action,
 		"secondary_edge_id": log.secondary_edge_id,
 		"backup_edge_id": log.backup_edge_id,
 		"stop_score": log.stop_score,
 		"evidence_cluster_confidence": log.evidence_cluster_confidence,
 		"prefiltered_candidate_count": log.prefiltered_candidate_count,
+		"stop_reason": log.stop_reason,
 		"candidates": [
 			step_candidate_trace_to_dict(candidate) for candidate in log.candidates
 		],
@@ -269,6 +278,7 @@ def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
 		fallback_reason=None
 		if payload.get("fallback_reason") is None
 		else str(payload["fallback_reason"]),
+		llm_calls=None if payload.get("llm_calls") is None else int(payload["llm_calls"]),
 		text=None if payload.get("text") is None else str(payload["text"]),
 		raw_response=None
 		if payload.get("raw_response") is None
@@ -276,6 +286,9 @@ def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
 		decision_action=None
 		if payload.get("decision_action") is None
 		else str(payload["decision_action"]),
+		raw_decision_action=None
+		if payload.get("raw_decision_action") is None
+		else str(payload["raw_decision_action"]),
 		secondary_edge_id=None
 		if payload.get("secondary_edge_id") is None
 		else str(payload["secondary_edge_id"]),
@@ -295,6 +308,9 @@ def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
 			if payload.get("prefiltered_candidate_count") is None
 			else int(payload["prefiltered_candidate_count"])
 		),
+		stop_reason=None
+		if payload.get("stop_reason") is None
+		else str(payload["stop_reason"]),
 		candidates=[
 			step_candidate_trace_from_dict(candidate)
 			for candidate in payload.get("candidates", [])
@@ -672,9 +688,11 @@ class DynamicWalker:
 					total_tokens=best_card.total_tokens,
 					cache_hit=best_card.cache_hit,
 					fallback_reason=best_card.fallback_reason,
+					llm_calls=best_card.llm_calls,
 					text=best_card.text,
 					raw_response=best_card.raw_response,
 					decision_action=best_card.decision_action,
+					raw_decision_action=best_card.raw_decision_action,
 					secondary_edge_id=best_card.secondary_edge_id,
 					backup_edge_id=best_card.backup_edge_id,
 					stop_score=best_card.stop_score,
@@ -861,9 +879,11 @@ def _apply_single_backup(
 			total_tokens=None,
 			cache_hit=None,
 			fallback_reason="controller_backtrack",
+			llm_calls=0,
 			text=previous_log.text,
 			raw_response=previous_log.raw_response,
 			decision_action="backtrack",
+			raw_decision_action="backtrack",
 			secondary_edge_id=previous_log.secondary_edge_id,
 			backup_edge_id=None,
 			stop_score=previous_log.stop_score,
