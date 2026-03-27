@@ -63,9 +63,17 @@
   - The full-IIRC store (61,304 articles) makes the retrieval problem harder, which may actually help differentiate the walk-based selector from flat dense.
   - If gains are marginal, pivot to a "comparable under budget" narrative rather than "superior".
 
+### 9. Historical IIRC run surfaces are not mutually comparable
+- Risk: the repo contains multiple `runs/iirc-*` summaries that look paper-facing but disagree even when they point to the same store, the same 100-case source list (`runs/iirc-sample-s100-dense-v1/chunks/chunk-00000/evaluated_case_ids.txt`), and the same `chunk-00000` slice definition (`case_start: 0`, `case_limit: 20`). The mismatch is visible in `runs/iirc-controller-shortlist-v1/chunks/chunk-00000/summary.json` versus `runs/iirc-local-full-v1/chunks/chunk-00000/summary.json`, which report dense-256 `support_f1_zero_on_empty` values of `0.2200` and `0.3867`.
+- Impact: cherry-picking across historical run directories would make the main IIRC table indefensible.
+- Mitigation:
+  - Treat all historical `runs/iirc-*` directories as directional or debugging artifacts unless they are explicitly designated canonical.
+  - Build Table 1 only from one freshly rerun full-IIRC comparison surface.
+  - Record the exact run id, store path, case-id source, and metric contract when the canonical table is locked.
+
 ## Operational Risks
 
-### 9. Multi-agent work may scatter the project state
+### 10. Multi-agent work may scatter the project state
 - Risk: progress becomes invisible because it lives inside separate worktrees.
 - Mitigation:
   - Notion stores milestones and decisions.
@@ -83,5 +91,6 @@
 1. **Full-IIRC store landing** (blocks everything downstream) -- WS1/ACT-5
 2. **Real MDR pipeline closure** (blocks claim boundary) -- WS1/ACT-5
 3. **Timing for CIKM 2026** (hard deadline 2026-05-25) -- project-wide
-4. **Claim strength on full-IIRC** (determines paper narrative) -- depends on 1 + 2
-5. **External baseline coverage** (reviewer concern) -- future work if needed
+4. **Historical IIRC run-surface drift** (blocks a defensible main table) -- CTRL/ACT-9 + WS1/ACT-5
+5. **Claim strength on full-IIRC** (determines paper narrative) -- depends on 1 + 2
+6. **External baseline coverage** (reviewer concern) -- future work if needed
