@@ -29,7 +29,7 @@
   - Full-IIRC becomes the main harder-dataset surface.
   - `2Wiki` is reduced to calibration.
   - Preliminary partial-IIRC signal (deprecated) showed `constrained_multipath` at F1 = 0.2850 at budget 384/512, but this needs reconfirmation on the full store.
-- Current full-IIRC local ablations narrow the safe interpretation: they show `dense` still beating the current non-controller path heuristics, so those rows should stay in the paper as internal baselines / ablations rather than as the method headline.
+- Current full-IIRC local ablations now give a complete 100-case non-controller surface: `dense` remains first at every budget, `mdr_light` is second, and the best `single_path_walk` row is a clear third (`256`: `0.3187 > 0.3103 > 0.2730`, `384`: `0.3140 > 0.3097 > 0.2709`, `512`: `0.3370 > 0.3242 > 0.2866` on `support_f1_zero_on_empty`). Those rows should stay in the paper as internal baselines / ablations rather than as the method headline.
 - Remaining need: lock the full-IIRC paper-facing table.
 
 ### 5. Real MDR may weaken the current story
@@ -58,10 +58,11 @@
 
 ### 8. Claim strength depends on full-IIRC numbers
 - Risk: if gains on full-IIRC are smaller than on 2Wiki (or negative), the core claims weaken substantially.
-- Current signal: partial-IIRC chunk-00001 showed `constrained_multipath` beating dense at budgets 384/512. But partial store is deprecated and the sample is small (20 cases).
+- Current signal: partial-IIRC chunk-00001 showed `constrained_multipath` beating dense at budgets 384/512. But partial store is deprecated and the sample is small (20 cases). On the canonical 100-case non-controller full-IIRC surface, `dense` still leads `mdr_light` and every `single_path_walk` variant at all budgets.
 - Mitigation:
   - The 2Wiki calibration data shows the method is at least coherent.
   - The latest full-IIRC local runs do not yet invalidate the controller hypothesis; they only show that the current non-controller local/path variants are not enough on their own.
+  - The dense control is now operationally stable across the two full-IIRC run directories: `runs/iirc-local-full-v1` and `runs/iirc-dense-full-v1` agree exactly on the dense row for chunks `00000` through `00004` at budgets `256/384/512`.
   - The full-IIRC store (61,304 articles) makes the retrieval problem harder, which may actually help differentiate the walk-based selector from flat dense.
   - If gains are marginal, pivot to a "comparable under budget" narrative rather than "superior".
 
