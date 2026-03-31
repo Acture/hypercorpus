@@ -1,4 +1,5 @@
 import json
+import inspect
 from types import SimpleNamespace
 from typing import cast
 
@@ -6,16 +7,22 @@ import pytest
 
 from hypercorpus.eval import EvaluationBudget, EvaluationCase
 from hypercorpus.selector import RuntimeBudget, build_selector, select_selectors
+from hypercorpus.controller_exposure import (
+	ControllerCandidateBundle,
+	ControllerExposurePlan,
+	answer_bearing_link_bonus,
+	build_controller_candidate_bundle,
+	build_controller_exposure_plan,
+)
 from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
 from hypercorpus.selector_llm import (
 	AnthropicBackendAdapter,
 	BackendCompletion,
 	LLMController,
+	LLMControllerStepScorer,
 	OpenAIBackendAdapter,
 	SelectorLLMConfig,
 	_controller_user_prompt,
-	_prefilter_indices,
-	_support_coverage_hint,
 )
 from hypercorpus.walker import StepScoreCard
 
@@ -165,6 +172,130 @@ class FakeSequenceBackend:
 			total_tokens=self.prompt_tokens + self.completion_tokens,
 			raw_response=json.dumps({"payload": payload}, ensure_ascii=False),
 		)
+
+
+class CountingScorer:
+	def __init__(self, base_score: float):
+		self.base_score = base_score
+		self.calls = 0
+		self.metadata = SimpleNamespace(
+			scorer_kind="counting",
+			backend="counting",
+			provider=None,
+			model=None,
+			prompt_version=None,
+			candidate_prefilter_top_n=None,
+			two_hop_prefilter_top_n=None,
+			controller_prompt_version=None,
+			controller_prefilter_top_n=None,
+			controller_future_top_n=None,
+		)
+
+	def score_candidates(
+		self,
+		*,
+		query: str,
+		graph: LinkContextGraph,
+		current_node_id: str,
+		candidate_links: list[LinkContext],
+		visited_nodes: set[str],
+		path_node_ids: list[str],
+		remaining_steps: int,
+	) -> list[StepScoreCard]:
+		del query, graph, current_node_id, visited_nodes, path_node_ids, remaining_steps
+		self.calls += 1
+		return [
+			StepScoreCard(
+				edge_id=str(index),
+				total_score=max(self.base_score - index * 0.1, 0.0),
+				subscores={},
+				rationale=None,
+				backend="counting",
+				provider=None,
+				model=None,
+				latency_s=0.0,
+				prompt_tokens=None,
+				completion_tokens=None,
+				total_tokens=None,
+				cache_hit=None,
+				fallback_reason=None,
+				llm_calls=None,
+				best_next_edge_id=None,
+				text=None,
+				raw_response=None,
+			)
+			for index, _link in enumerate(candidate_links)
+		]
+
+
+def _prepare_controller_inputs(
+	controller: LLMController,
+	*,
+	query: str,
+	graph: LinkContextGraph,
+	current_node_id: str,
+	candidate_links: list[LinkContext],
+	visited_nodes: set[str],
+	path_node_ids: list[str],
+	remaining_steps: int,
+) -> tuple[list[StepScoreCard], ControllerExposurePlan, ControllerCandidateBundle]:
+	fallback_cards = controller.fallback_scorer.score_candidates(
+		query=query,
+		graph=graph,
+		current_node_id=current_node_id,
+		candidate_links=candidate_links,
+		visited_nodes=visited_nodes,
+		path_node_ids=path_node_ids,
+		remaining_steps=remaining_steps,
+	)
+	lexical_cards = controller.prefilter_scorer.score_candidates(
+		query=query,
+		graph=graph,
+		current_node_id=current_node_id,
+		candidate_links=candidate_links,
+		visited_nodes=visited_nodes,
+		path_node_ids=path_node_ids,
+		remaining_steps=remaining_steps,
+	)
+	semantic_cards = (
+		controller.semantic_prefilter_scorer.score_candidates(
+			query=query,
+			graph=graph,
+			current_node_id=current_node_id,
+			candidate_links=candidate_links,
+			visited_nodes=visited_nodes,
+			path_node_ids=path_node_ids,
+			remaining_steps=remaining_steps,
+		)
+		if controller.semantic_prefilter_scorer is not None
+		else None
+	)
+	exposure_plan = build_controller_exposure_plan(
+		query=query,
+		graph=graph,
+		candidate_links=candidate_links,
+		lexical_cards=lexical_cards,
+		semantic_cards=semantic_cards,
+		small_page_bypass_n=controller.config.controller_small_page_bypass_n,
+		lexical_top_n=controller.config.controller_lexical_top_n,
+		semantic_top_n=controller.config.controller_semantic_top_n,
+		bonus_keep_n=controller.config.controller_bonus_keep_n,
+		visible_cap=controller.config.controller_prefilter_top_n,
+	)
+	bundle = build_controller_candidate_bundle(
+		graph=graph,
+		candidate_links=candidate_links,
+		score_cards=lexical_cards,
+		semantic_score_cards=semantic_cards,
+		exposure_plan=exposure_plan,
+		query=query,
+		current_node_id=current_node_id,
+		path_node_ids=path_node_ids,
+		visited_nodes=visited_nodes,
+		mode=controller.mode,
+		future_top_n=controller.config.controller_future_top_n,
+	)
+	return fallback_cards, exposure_plan, bundle
 
 
 class FakeToolUseContent:
@@ -743,8 +874,12 @@ def test_controller_single_path_records_decision_and_backtrack(monkeypatch):
 	assert result.selector_usage.llm_calls == 2
 	assert result.selector_usage.controller_backtrack_actions == 1
 	assert result.selector_usage.controller_calls == 2
-	assert any(log.decision_action == "backtrack" for log in result.selector_logs)
-	assert result.selector_logs[0].backup_edge_id == "1"
+	assert any(
+		log.controller is not None and log.controller.kind == "backtrack"
+		for log in result.selector_logs
+	)
+	assert result.selector_logs[0].controller is not None
+	assert result.selector_logs[0].controller.backup_edge_id == "1"
 
 
 def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatch):
@@ -817,7 +952,10 @@ def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatc
 	assert result.selector_usage is not None
 	assert result.selector_usage.controller_fork_actions == 1
 	assert result.selector_usage.controller_backtrack_actions == 0
-	assert any(log.decision_action == "choose_two" for log in result.selector_logs)
+	assert any(
+		log.controller is not None and log.controller.effective_action == "choose_two"
+		for log in result.selector_logs
+	)
 
 
 def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
@@ -859,15 +997,24 @@ def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
 		mode="two_hop",
 		backend_factory=lambda _config: backend,
 	)
-	decision = controller.decide(
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
 		query="launch navigation root",
 		graph=graph,
 		current_node_id="root",
-		candidate_links=graph.links_from("root"),
+		candidate_links=candidate_links,
 		visited_nodes={"root"},
 		path_node_ids=["root"],
 		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
 		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
 	)
 
 	assert backend.call_count == 2
@@ -904,15 +1051,24 @@ def test_controller_retries_three_times_then_falls_back(monkeypatch):
 		mode="two_hop",
 		backend_factory=lambda _config: backend,
 	)
-	decision = controller.decide(
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
 		query="launch navigation root",
 		graph=graph,
 		current_node_id="root",
-		candidate_links=graph.links_from("root"),
+		candidate_links=candidate_links,
 		visited_nodes={"root"},
 		path_node_ids=["root"],
 		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
 		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
 	)
 
 	assert backend.call_count == 3
@@ -924,7 +1080,84 @@ def test_controller_retries_three_times_then_falls_back(monkeypatch):
 	assert decision.fallback_reason.startswith("schema_error:")
 
 
-def test_controller_preserves_raw_stop_action_while_downgrading_effective_action(
+def test_controller_step_scoring_happens_once_per_stage(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	graph = _build_bridge_graph()
+	backend = FakeBackend(
+		{
+			"action": "choose_one",
+			"primary_edge_id": "0",
+			"secondary_edge_id": "",
+			"backup_edge_id": "",
+			"stop_score": 0.05,
+			"evidence_cluster_confidence": 0.91,
+			"candidates": [
+				{
+					"edge_id": "0",
+					"utility": 0.91,
+					"direct_support": 0.70,
+					"bridge_potential": 0.96,
+					"future_potential": 0.90,
+					"redundancy_risk": 0.08,
+					"rationale": "Take the bridge edge.",
+				}
+			],
+		}
+	)
+	fallback_scorer = CountingScorer(0.9)
+	prefilter_scorer = CountingScorer(0.8)
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		prefilter_scorer=prefilter_scorer,
+		fallback_scorer=fallback_scorer,
+		backend_factory=lambda _config: backend,
+	)
+	scorer = LLMControllerStepScorer(
+		controller=controller,
+		config=controller.config,
+		mode="two_hop",
+		fallback_scorer=fallback_scorer,
+	)
+
+	result = scorer.evaluate_controller_step(
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=list(graph.links_from("root")),
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+		current_depth=1,
+	)
+
+	assert fallback_scorer.calls == 1
+	assert prefilter_scorer.calls == 1
+	assert result.primary is not None
+	assert result.primary.edge_id == "0"
+
+
+def test_controller_decide_requires_precomputed_exposure_inputs() -> None:
+	parameter_names = list(inspect.signature(LLMController.decide).parameters)
+
+	assert parameter_names == [
+		"self",
+		"query",
+		"path_node_ids",
+		"current_depth",
+		"fallback_cards",
+		"exposure_plan",
+		"bundle",
+		"forks_used",
+		"backtracks_used",
+	]
+
+
+def test_controller_preserves_raw_stop_action_in_nested_trace(
 	monkeypatch,
 ):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -993,12 +1226,168 @@ def test_controller_preserves_raw_stop_action_while_downgrading_effective_action
 
 	assert backend.call_count == 1
 	assert result.selected_node_ids == ["root"]
-	assert result.selector_logs[0].raw_decision_action == "stop"
-	assert result.selector_logs[0].decision_action == "stop"
+	assert result.selector_logs[0].controller is not None
+	assert result.selector_logs[0].controller.raw_action == "stop"
+	assert result.selector_logs[0].controller.effective_action == "stop"
 	assert result.selector_logs[0].stop_reason == "controller_stop"
 
 
-def test_controller_prefilter_keeps_explicit_support_edge():
+def test_controller_ratio_budget_does_not_trigger_budget_pacing_stop(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	backend = FakeSequenceBackend(
+		[
+			{
+				"action": "choose_one",
+				"primary_edge_id": "1",
+				"secondary_edge_id": "",
+				"backup_edge_id": "0",
+				"stop_score": 0.10,
+				"evidence_cluster_confidence": 0.20,
+				"candidates": [
+					{
+						"edge_id": "1",
+						"utility": 0.92,
+						"direct_support": 0.75,
+						"bridge_potential": 0.95,
+						"future_potential": 0.95,
+						"redundancy_risk": 0.05,
+						"rationale": "Take the bridge edge.",
+					},
+					{
+						"edge_id": "0",
+						"utility": 0.20,
+						"direct_support": 0.05,
+						"bridge_potential": 0.10,
+						"future_potential": 0.05,
+						"redundancy_risk": 0.95,
+						"rationale": "Weak bait edge.",
+					},
+				],
+			},
+			{
+				"action": "choose_one",
+				"primary_edge_id": "0",
+				"secondary_edge_id": "",
+				"backup_edge_id": "",
+				"stop_score": 0.10,
+				"evidence_cluster_confidence": 0.95,
+				"candidates": [
+					{
+						"edge_id": "0",
+						"utility": 0.98,
+						"direct_support": 0.90,
+						"bridge_potential": 0.98,
+						"future_potential": 0.98,
+						"redundancy_risk": 0.02,
+						"rationale": "Take the answer edge.",
+					}
+				],
+			},
+		]
+	)
+	selector = build_selector(
+		CONTROLLER_MULTIPATH,
+		selector_provider="openai",
+		selector_model="gpt-test-mini",
+		selector_api_key_env="OPENAI_API_KEY",
+		selector_backend_factory=lambda _config: backend,
+	)
+	case = EvaluationCase(case_id="q-ratio-budget", query="launch navigation root")
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_ratio=0.01))
+
+	result = selector.select(_build_bridge_graph(), case, budget)
+
+	assert backend.call_count == 2
+	assert result.stop_reason != "budget_pacing_stop"
+	assert all(log.stop_reason != "budget_pacing_stop" for log in result.selector_logs)
+
+
+def test_lexical_controller_selector_does_not_require_embedder(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	backend = FakeBackend(
+		{
+			"action": "choose_one",
+			"primary_edge_id": "1",
+			"secondary_edge_id": "",
+			"backup_edge_id": "0",
+			"stop_score": 0.05,
+			"evidence_cluster_confidence": 0.92,
+			"candidates": [
+				{
+					"edge_id": "1",
+					"utility": 0.92,
+					"answer_bearing_link_bonus": 0.70,
+					"direct_support": 0.70,
+					"bridge_potential": 0.95,
+					"future_potential": 0.98,
+					"redundancy_risk": 0.05,
+					"rationale": "Follow the bridge page.",
+				},
+				{
+					"edge_id": "0",
+					"utility": 0.20,
+					"answer_bearing_link_bonus": 0.05,
+					"direct_support": 0.10,
+					"bridge_potential": 0.10,
+					"future_potential": 0.05,
+					"redundancy_risk": 0.90,
+					"rationale": "Weak bait edge.",
+				},
+			],
+		}
+	)
+	selector = build_selector(
+		CONTROLLER_SINGLE_PATH,
+		selector_provider="openai",
+		selector_model="gpt-test-mini",
+		selector_api_key_env="OPENAI_API_KEY",
+		selector_backend_factory=lambda _config: backend,
+		sentence_transformer_embedder_factory=lambda _config: (_ for _ in ()).throw(
+			AssertionError("controller lexical path should not build an embedder")
+		),
+	)
+	case = EvaluationCase(case_id="q-no-embedder", query="launch navigation root")
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
+
+	result = selector.select(_build_bridge_graph(), case, budget)
+
+	assert backend.call_count >= 1
+	assert "bridge" in result.selected_node_ids
+
+
+def test_controller_all_dangling_page_stops_without_backend_call(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	factory_calls = 0
+
+	def _backend_factory(_config: SelectorLLMConfig) -> FakeBackend:
+		nonlocal factory_calls
+		factory_calls += 1
+		return FakeBackend({})
+
+	selector = build_selector(
+		CONTROLLER_SINGLE_PATH,
+		selector_provider="openai",
+		selector_model="gpt-test-mini",
+		selector_api_key_env="OPENAI_API_KEY",
+		selector_backend_factory=_backend_factory,
+	)
+	case = EvaluationCase(case_id="q-all-dangling", query="Which target should we inspect next?")
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
+
+	result = selector.select(_build_all_dangling_graph(), case, budget)
+
+	assert factory_calls == 0
+	assert result.selected_node_ids == ["root"]
+	assert result.stop_reason == "dead_end"
+	assert len(result.selector_logs) == 1
+	assert result.selector_logs[0].chosen_edge_id is None
+	assert all(
+		candidate.exposure_status == "filtered_dangling_target"
+		for candidate in result.selector_logs[0].candidates
+	)
+
+
+def test_controller_exposure_plan_keeps_answer_bearing_edge_and_filters_dangling_target():
 	query = "In what country did Bain attend doctoral seminars of Wlad Godzich?"
 	graph = LinkContextGraph(
 		documents=[
@@ -1027,6 +1416,13 @@ def test_controller_prefilter_keeps_explicit_support_edge():
 			target="geneva",
 			anchor_text="University of Geneva",
 			sentence="Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
+			sent_idx=0,
+		),
+		LinkContext(
+			source="root",
+			target="26833.Wlad Godzich",
+			anchor_text="26833.Wlad Godzich",
+			sentence="A malformed target should never be exposed to the controller.",
 			sent_idx=0,
 		),
 		LinkContext(
@@ -1082,6 +1478,27 @@ def test_controller_prefilter_keeps_explicit_support_edge():
 		),
 		StepScoreCard(
 			edge_id="2",
+			total_score=0.91,
+			subscores={
+				"anchor_overlap": 0.62,
+				"sentence_overlap": 0.18,
+				"target_overlap": 0.0,
+				"novelty": 1.0,
+			},
+			rationale=None,
+			text=None,
+			backend="overlap",
+			provider=None,
+			model=None,
+			latency_s=0.0,
+			prompt_tokens=None,
+			completion_tokens=None,
+			total_tokens=None,
+			cache_hit=None,
+			fallback_reason=None,
+		),
+		StepScoreCard(
+			edge_id="3",
 			total_score=0.53,
 			subscores={
 				"anchor_overlap": 0.22,
@@ -1103,22 +1520,164 @@ def test_controller_prefilter_keeps_explicit_support_edge():
 		),
 	]
 
-	assert _support_coverage_hint(
+	assert answer_bearing_link_bonus(
 		query=query,
 		graph=graph,
 		link=candidate_links[1],
 		card=cards[1],
-	) >= 0.55
-	assert _prefilter_indices(
-		cards,
-		top_n=1,
+	) > answer_bearing_link_bonus(
+		query=query,
+		graph=graph,
+		link=candidate_links[3],
+		card=cards[3],
+	)
+	plan = build_controller_exposure_plan(
 		query=query,
 		graph=graph,
 		candidate_links=candidate_links,
-	) == [0, 1]
+		lexical_cards=cards,
+		semantic_cards=None,
+		small_page_bypass_n=1,
+		lexical_top_n=1,
+		semantic_top_n=0,
+		bonus_keep_n=1,
+		visible_cap=16,
+	)
+
+	assert plan.small_page_bypass is False
+	assert plan.raw_candidate_count == 4
+	assert plan.valid_candidate_count == 3
+	assert plan.dangling_indices == [2]
+	assert 1 in plan.visible_indices
+	assert 2 not in plan.visible_indices
 
 
-def test_controller_prompt_mentions_explicit_support_coverage():
+def test_controller_exposure_plan_bonus_rescue_prefers_higher_semantic_score():
+	query = "Which port contains the answer?"
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode("root", "Root", ("Root mentions two candidate ports.",)),
+			DocumentNode("alpha", "Alpha Port", ("Alpha Port is a plausible answer.",)),
+			DocumentNode("beta", "Beta Port", ("Beta Port is another plausible answer.",)),
+		]
+	)
+	candidate_links = [
+		LinkContext(
+			source="root",
+			target="alpha",
+			anchor_text="Alpha Port",
+			sentence="Alpha Port may contain the answer.",
+			sent_idx=0,
+		),
+		LinkContext(
+			source="root",
+			target="beta",
+			anchor_text="Beta Port",
+			sentence="Beta Port may contain the answer.",
+			sent_idx=0,
+		),
+	]
+	lexical_cards = [
+		StepScoreCard(
+			edge_id="0",
+			total_score=0.50,
+			subscores={
+				"anchor_overlap": 0.40,
+				"sentence_overlap": 0.80,
+				"target_overlap": 0.50,
+			},
+		),
+		StepScoreCard(
+			edge_id="1",
+			total_score=0.50,
+			subscores={
+				"anchor_overlap": 0.40,
+				"sentence_overlap": 0.80,
+				"target_overlap": 0.50,
+			},
+		),
+	]
+	semantic_cards = [
+		StepScoreCard(edge_id="0", total_score=0.90),
+		StepScoreCard(edge_id="1", total_score=0.70),
+	]
+
+	plan = build_controller_exposure_plan(
+		query=query,
+		graph=graph,
+		candidate_links=candidate_links,
+		lexical_cards=lexical_cards,
+		semantic_cards=semantic_cards,
+		small_page_bypass_n=1,
+		lexical_top_n=0,
+		semantic_top_n=0,
+		bonus_keep_n=1,
+		visible_cap=16,
+	)
+
+	assert plan.bonus_rescued_edge_ids == ["0"]
+	assert plan.visible_indices == [0]
+
+
+def test_controller_exposure_plan_bypasses_small_pages():
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode("root", "Root", ("Root connects to a few valid pages.",)),
+			DocumentNode("alpha", "Alpha", ("Alpha document.",)),
+			DocumentNode("beta", "Beta", ("Beta document.",)),
+			DocumentNode("gamma", "Gamma", ("Gamma document.",)),
+		]
+	)
+	candidate_links = [
+		LinkContext(
+			source="root",
+			target="alpha",
+			anchor_text="Alpha",
+			sentence="Root links to Alpha.",
+			sent_idx=0,
+		),
+		LinkContext(
+			source="root",
+			target="beta",
+			anchor_text="Beta",
+			sentence="Root links to Beta.",
+			sent_idx=0,
+		),
+		LinkContext(
+			source="root",
+			target="gamma",
+			anchor_text="Gamma",
+			sentence="Root links to Gamma.",
+			sent_idx=0,
+		),
+	]
+	cards = [
+		StepScoreCard(edge_id=str(index), total_score=1.0 - index * 0.1)
+		for index in range(len(candidate_links))
+	]
+
+	plan = build_controller_exposure_plan(
+		query="Which page should we inspect next?",
+		graph=graph,
+		candidate_links=candidate_links,
+		lexical_cards=cards,
+		semantic_cards=None,
+		small_page_bypass_n=3,
+		lexical_top_n=1,
+		semantic_top_n=0,
+		bonus_keep_n=1,
+		visible_cap=16,
+	)
+
+	assert plan.small_page_bypass is True
+	assert plan.valid_indices == [0, 1, 2]
+	assert plan.visible_indices == [0, 1, 2]
+	assert plan.lexical_prefilter_edge_ids == []
+	assert plan.semantic_prefilter_edge_ids == []
+	assert plan.bonus_rescued_edge_ids == []
+
+
+def test_controller_prompt_mentions_answer_bearing_bonus():
 	prompt = _controller_user_prompt(
 		query="In what country did Bain attend doctoral seminars of Wlad Godzich?",
 		bundle={
@@ -1129,14 +1688,14 @@ def test_controller_prompt_mentions_explicit_support_coverage():
 				{
 					"edge_id": "1",
 					"target_title": "University of Geneva",
-					"support_coverage_hint": 0.82,
+					"answer_bearing_link_bonus": 0.82,
 				}
 			],
 		},
 		mode="two_hop",
 	)
 
-	assert "support_coverage" in prompt
+	assert "answer_bearing_link_bonus" in prompt
 	assert "prefer that candidate over stop" in prompt
 	assert "explicit support-bearing node" in prompt
 
@@ -1186,6 +1745,37 @@ def _build_bridge_graph() -> LinkContextGraph:
 			target="answer",
 			anchor_text="harbor location",
 			sentence="harbor location",
+			sent_idx=0,
+		)
+	)
+	return graph
+
+
+def _build_all_dangling_graph() -> LinkContextGraph:
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode(
+				"root",
+				"Dangling Root",
+				("Dangling Root points only to malformed or missing targets.",),
+			),
+		]
+	)
+	graph.add_link(
+		LinkContext(
+			source="root",
+			target="26833.Wlad Godzich",
+			anchor_text="26833.Wlad Godzich",
+			sentence="A malformed person target should never be exposed.",
+			sent_idx=0,
+		)
+	)
+	graph.add_link(
+		LinkContext(
+			source="root",
+			target="books?as auth=Wlad+Godzich",
+			anchor_text="books?as auth=Wlad+Godzich",
+			sentence="A malformed query target should never be exposed.",
 			sent_idx=0,
 		)
 	)

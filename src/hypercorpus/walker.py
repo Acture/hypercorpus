@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Callable, Protocol, Sequence
 
+from hypercorpus.controller_runtime import (
+	ControllerCandidateTrace,
+	ControllerExecutionResult,
+	ControllerRuntimeScorer,
+	ControllerStepTrace,
+	resolve_controller_backtrack,
+)
 from hypercorpus.graph import LinkContext, LinkContextGraph
 from hypercorpus.text import normalized_token_overlap
 
@@ -57,14 +64,6 @@ class StepScoreCard:
 	llm_calls: int | None = None
 	best_next_edge_id: str | None = None
 	raw_response: str | None = None
-	decision_action: str | None = None
-	raw_decision_action: str | None = None
-	primary_edge_id: str | None = None
-	secondary_edge_id: str | None = None
-	backup_edge_id: str | None = None
-	stop_score: float | None = None
-	evidence_cluster_confidence: float | None = None
-	prefiltered_candidate_count: int | None = None
 
 
 @dataclass(slots=True)
@@ -100,13 +99,7 @@ class WalkStepLog:
 	text: str | None
 	raw_response: str | None
 	llm_calls: int | None = None
-	decision_action: str | None = None
-	raw_decision_action: str | None = None
-	secondary_edge_id: str | None = None
-	backup_edge_id: str | None = None
-	stop_score: float | None = None
-	evidence_cluster_confidence: float | None = None
-	prefiltered_candidate_count: int | None = None
+	controller: ControllerStepTrace | None = None
 	stop_reason: str | None = None
 	candidates: list[StepCandidateTrace] = field(default_factory=list)
 
@@ -215,6 +208,139 @@ def step_candidate_trace_from_dict(payload: dict[str, Any]) -> StepCandidateTrac
 	)
 
 
+def controller_candidate_trace_to_dict(trace: ControllerCandidateTrace) -> dict[str, Any]:
+	return {
+		"edge_id": trace.edge_id,
+		"source_node_id": trace.source_node_id,
+		"target_node_id": trace.target_node_id,
+		"anchor_text": trace.anchor_text,
+		"sentence": trace.sentence,
+		"total_score": trace.total_score,
+		"subscores": dict(trace.subscores),
+		"rationale": trace.rationale,
+		"best_next_edge_id": trace.best_next_edge_id,
+		"fallback_reason": trace.fallback_reason,
+		"exposure_status": trace.exposure_status,
+		"utility": trace.utility,
+		"answer_bearing_link_bonus": trace.answer_bearing_link_bonus,
+		"direct_support": trace.direct_support,
+		"bridge_potential": trace.bridge_potential,
+		"future_potential": trace.future_potential,
+		"redundancy_risk": trace.redundancy_risk,
+	}
+
+
+def controller_candidate_trace_from_dict(payload: dict[str, Any]) -> ControllerCandidateTrace:
+	return ControllerCandidateTrace(
+		edge_id=str(payload["edge_id"]),
+		source_node_id=str(payload["source_node_id"]),
+		target_node_id=str(payload["target_node_id"]),
+		anchor_text=str(payload["anchor_text"]),
+		sentence=str(payload["sentence"]),
+		total_score=float(payload["total_score"]),
+		subscores={
+			str(key): float(value)
+			for key, value in dict(payload.get("subscores", {})).items()
+		},
+		rationale=None
+		if payload.get("rationale") is None
+		else str(payload["rationale"]),
+		best_next_edge_id=None
+		if payload.get("best_next_edge_id") is None
+		else str(payload["best_next_edge_id"]),
+		fallback_reason=None
+		if payload.get("fallback_reason") is None
+		else str(payload["fallback_reason"]),
+		exposure_status=str(payload.get("exposure_status", "filtered_prefilter")),
+		utility=None if payload.get("utility") is None else float(payload["utility"]),
+		answer_bearing_link_bonus=None
+		if payload.get("answer_bearing_link_bonus") is None
+		else float(payload["answer_bearing_link_bonus"]),
+		direct_support=None
+		if payload.get("direct_support") is None
+		else float(payload["direct_support"]),
+		bridge_potential=None
+		if payload.get("bridge_potential") is None
+		else float(payload["bridge_potential"]),
+		future_potential=None
+		if payload.get("future_potential") is None
+		else float(payload["future_potential"]),
+		redundancy_risk=None
+		if payload.get("redundancy_risk") is None
+		else float(payload["redundancy_risk"]),
+	)
+
+
+def controller_step_trace_to_dict(trace: ControllerStepTrace) -> dict[str, Any]:
+	return {
+		"kind": trace.kind,
+		"raw_action": trace.raw_action,
+		"effective_action": trace.effective_action,
+		"primary_edge_id": trace.primary_edge_id,
+		"secondary_edge_id": trace.secondary_edge_id,
+		"backup_edge_id": trace.backup_edge_id,
+		"stop_score": trace.stop_score,
+		"evidence_cluster_confidence": trace.evidence_cluster_confidence,
+		"llm_calls": trace.llm_calls,
+		"raw_candidate_count": trace.raw_candidate_count,
+		"valid_candidate_count": trace.valid_candidate_count,
+		"small_page_bypass": trace.small_page_bypass,
+		"dangling_edge_ids": list(trace.dangling_edge_ids),
+		"lexical_prefilter_edge_ids": list(trace.lexical_prefilter_edge_ids),
+		"semantic_prefilter_edge_ids": list(trace.semantic_prefilter_edge_ids),
+		"bonus_rescued_edge_ids": list(trace.bonus_rescued_edge_ids),
+		"visible_edge_ids": list(trace.visible_edge_ids),
+		"candidates": [
+			controller_candidate_trace_to_dict(candidate)
+			for candidate in trace.candidates
+		],
+	}
+
+
+def controller_step_trace_from_dict(payload: dict[str, Any]) -> ControllerStepTrace:
+	return ControllerStepTrace(
+		kind=str(payload["kind"]),
+		raw_action=None
+		if payload.get("raw_action") is None
+		else str(payload["raw_action"]),
+		effective_action=str(payload["effective_action"]),
+		primary_edge_id=None
+		if payload.get("primary_edge_id") is None
+		else str(payload["primary_edge_id"]),
+		secondary_edge_id=None
+		if payload.get("secondary_edge_id") is None
+		else str(payload["secondary_edge_id"]),
+		backup_edge_id=None
+		if payload.get("backup_edge_id") is None
+		else str(payload["backup_edge_id"]),
+		stop_score=None
+		if payload.get("stop_score") is None
+		else float(payload["stop_score"]),
+		evidence_cluster_confidence=None
+		if payload.get("evidence_cluster_confidence") is None
+		else float(payload["evidence_cluster_confidence"]),
+		llm_calls=None if payload.get("llm_calls") is None else int(payload["llm_calls"]),
+		raw_candidate_count=int(payload.get("raw_candidate_count", 0)),
+		valid_candidate_count=int(payload.get("valid_candidate_count", 0)),
+		small_page_bypass=bool(payload.get("small_page_bypass", False)),
+		dangling_edge_ids=[str(edge_id) for edge_id in payload.get("dangling_edge_ids", [])],
+		lexical_prefilter_edge_ids=[
+			str(edge_id) for edge_id in payload.get("lexical_prefilter_edge_ids", [])
+		],
+		semantic_prefilter_edge_ids=[
+			str(edge_id) for edge_id in payload.get("semantic_prefilter_edge_ids", [])
+		],
+		bonus_rescued_edge_ids=[
+			str(edge_id) for edge_id in payload.get("bonus_rescued_edge_ids", [])
+		],
+		visible_edge_ids=[str(edge_id) for edge_id in payload.get("visible_edge_ids", [])],
+		candidates=[
+			controller_candidate_trace_from_dict(candidate)
+			for candidate in payload.get("candidates", [])
+		],
+	)
+
+
 def walk_step_log_to_dict(log: WalkStepLog) -> dict[str, Any]:
 	return {
 		"step_index": log.step_index,
@@ -234,13 +360,11 @@ def walk_step_log_to_dict(log: WalkStepLog) -> dict[str, Any]:
 		"llm_calls": log.llm_calls,
 		"text": log.text,
 		"raw_response": log.raw_response,
-		"decision_action": log.decision_action,
-		"raw_decision_action": log.raw_decision_action,
-		"secondary_edge_id": log.secondary_edge_id,
-		"backup_edge_id": log.backup_edge_id,
-		"stop_score": log.stop_score,
-		"evidence_cluster_confidence": log.evidence_cluster_confidence,
-		"prefiltered_candidate_count": log.prefiltered_candidate_count,
+		"controller": (
+			controller_step_trace_to_dict(log.controller)
+			if log.controller is not None
+			else None
+		),
 		"stop_reason": log.stop_reason,
 		"candidates": [
 			step_candidate_trace_to_dict(candidate) for candidate in log.candidates
@@ -283,31 +407,9 @@ def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
 		raw_response=None
 		if payload.get("raw_response") is None
 		else str(payload["raw_response"]),
-		decision_action=None
-		if payload.get("decision_action") is None
-		else str(payload["decision_action"]),
-		raw_decision_action=None
-		if payload.get("raw_decision_action") is None
-		else str(payload["raw_decision_action"]),
-		secondary_edge_id=None
-		if payload.get("secondary_edge_id") is None
-		else str(payload["secondary_edge_id"]),
-		backup_edge_id=None
-		if payload.get("backup_edge_id") is None
-		else str(payload["backup_edge_id"]),
-		stop_score=None
-		if payload.get("stop_score") is None
-		else float(payload["stop_score"]),
-		evidence_cluster_confidence=(
-			None
-			if payload.get("evidence_cluster_confidence") is None
-			else float(payload["evidence_cluster_confidence"])
-		),
-		prefiltered_candidate_count=(
-			None
-			if payload.get("prefiltered_candidate_count") is None
-			else int(payload["prefiltered_candidate_count"])
-		),
+		controller=None
+		if payload.get("controller") is None
+		else controller_step_trace_from_dict(dict(payload["controller"])),
 		stop_reason=None
 		if payload.get("stop_reason") is None
 		else str(payload["stop_reason"]),
@@ -315,6 +417,106 @@ def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
 			step_candidate_trace_from_dict(candidate)
 			for candidate in payload.get("candidates", [])
 		],
+	)
+
+
+def build_step_candidate_traces(
+	*,
+	candidate_links: Sequence[LinkContext],
+	score_cards: Sequence[StepScoreCard],
+) -> list[StepCandidateTrace]:
+	return [
+		StepCandidateTrace(
+			edge_id=card.edge_id,
+			source_node_id=link.source,
+			target_node_id=link.target,
+			anchor_text=link.anchor_text,
+			sentence=link.sentence,
+			total_score=card.total_score,
+			subscores=dict(card.subscores),
+			rationale=card.rationale,
+			best_next_edge_id=card.best_next_edge_id,
+			fallback_reason=card.fallback_reason,
+		)
+		for link, card in zip(candidate_links, score_cards, strict=False)
+	]
+
+
+def build_walk_step_log(
+	*,
+	step_index: int,
+	current_node_id: str,
+	path_node_ids: Sequence[str],
+	chosen_edge_id: str | None,
+	chosen_target_node_id: str | None,
+	backend: str,
+	provider: str | None,
+	model: str | None,
+	latency_s: float,
+	prompt_tokens: int | None,
+	completion_tokens: int | None,
+	total_tokens: int | None,
+	cache_hit: bool | None,
+	fallback_reason: str | None,
+	llm_calls: int | None,
+	text: str | None,
+	raw_response: str | None,
+	stop_reason: str | None,
+	candidates: Sequence[StepCandidateTrace] = (),
+	controller: ControllerStepTrace | None = None,
+) -> WalkStepLog:
+	return WalkStepLog(
+		step_index=step_index,
+		current_node_id=current_node_id,
+		path_node_ids=list(path_node_ids),
+		chosen_edge_id=chosen_edge_id,
+		chosen_target_node_id=chosen_target_node_id,
+		backend=backend,
+		provider=provider,
+		model=model,
+		latency_s=latency_s,
+		prompt_tokens=prompt_tokens,
+		completion_tokens=completion_tokens,
+		total_tokens=total_tokens,
+		cache_hit=cache_hit,
+		fallback_reason=fallback_reason,
+		llm_calls=llm_calls,
+		text=text,
+		raw_response=raw_response,
+		controller=controller,
+		stop_reason=stop_reason,
+		candidates=list(candidates),
+	)
+
+
+def build_controller_walk_step_log(
+	*,
+	step_index: int,
+	current_node_id: str,
+	path_node_ids: Sequence[str],
+	execution: ControllerExecutionResult,
+) -> WalkStepLog:
+	primary = execution.primary
+	return build_walk_step_log(
+		step_index=step_index,
+		current_node_id=current_node_id,
+		path_node_ids=path_node_ids,
+		chosen_edge_id=primary.edge_id if primary is not None else None,
+		chosen_target_node_id=primary.link.target if primary is not None else None,
+		backend=execution.backend,
+		provider=execution.provider,
+		model=execution.model,
+		latency_s=execution.latency_s,
+		prompt_tokens=execution.prompt_tokens,
+		completion_tokens=execution.completion_tokens,
+		total_tokens=execution.total_tokens,
+		cache_hit=execution.cache_hit,
+		fallback_reason=execution.fallback_reason,
+		llm_calls=execution.trace.llm_calls,
+		text=execution.text,
+		raw_response=execution.raw_response,
+		controller=execution.trace,
+		stop_reason=execution.stop_reason,
 	)
 
 
@@ -623,13 +825,14 @@ class DynamicWalker:
 				candidate_links.extend(self.graph.links_between(current, neighbor))
 
 			if not candidate_links:
-				if _apply_single_backup(
+				if apply_controller_backtrack(
 					current_node_id=current,
 					visited_nodes=visited_nodes,
 					visited_set=visited_set,
 					steps=steps,
 					selector_logs=selector_logs,
 					backtracks_used=backtracks_used,
+					max_backtracks=1,
 				):
 					backtracks_used += 1
 					current = visited_nodes[-1]
@@ -637,99 +840,112 @@ class DynamicWalker:
 				stop_reason = StopReason.DEAD_END
 				break
 
-			score_cards = self.scorer.score_candidates(
-				query=query,
-				graph=self.graph,
-				current_node_id=current,
-				candidate_links=candidate_links,
-				visited_nodes=visited_set,
-				path_node_ids=visited_nodes,
-				remaining_steps=remaining_steps,
-			)
-			if not score_cards:
-				if _apply_single_backup(
+			if isinstance(self.scorer, ControllerRuntimeScorer):
+				execution = self.scorer.evaluate_controller_step(
+					query=query,
+					graph=self.graph,
 					current_node_id=current,
-					visited_nodes=visited_nodes,
-					visited_set=visited_set,
-					steps=steps,
-					selector_logs=selector_logs,
+					candidate_links=candidate_links,
+					visited_nodes=visited_set,
+					path_node_ids=visited_nodes,
+					remaining_steps=remaining_steps,
+					current_depth=max(len(steps) - 1, 0),
+					forks_used=0,
 					backtracks_used=backtracks_used,
-				):
-					backtracks_used += 1
-					current = visited_nodes[-1]
-					continue
-				stop_reason = StopReason.DEAD_END
-				break
-
-			best_index, best_card, best_link = _choose_walk_edge(
-				candidate_links=candidate_links,
-				score_cards=score_cards,
-			)
-
-			controller_stop = (
-				best_card.decision_action == "stop"
-				and len(steps) >= 3
-				and (best_card.stop_score or 0.0) >= 0.65
-			)
-
-			selector_logs.append(
-				WalkStepLog(
-					step_index=len(steps) - 1,
-					current_node_id=current,
-					path_node_ids=list(visited_nodes),
-					chosen_edge_id=best_card.edge_id,
-					chosen_target_node_id=best_link.target,
-					backend=best_card.backend,
-					provider=best_card.provider,
-					model=best_card.model,
-					latency_s=best_card.latency_s,
-					prompt_tokens=best_card.prompt_tokens,
-					completion_tokens=best_card.completion_tokens,
-					total_tokens=best_card.total_tokens,
-					cache_hit=best_card.cache_hit,
-					fallback_reason=best_card.fallback_reason,
-					llm_calls=best_card.llm_calls,
-					text=best_card.text,
-					raw_response=best_card.raw_response,
-					decision_action=best_card.decision_action,
-					raw_decision_action=best_card.raw_decision_action,
-					secondary_edge_id=best_card.secondary_edge_id,
-					backup_edge_id=best_card.backup_edge_id,
-					stop_score=best_card.stop_score,
-					evidence_cluster_confidence=best_card.evidence_cluster_confidence,
-					prefiltered_candidate_count=best_card.prefiltered_candidate_count,
-					candidates=[
-						StepCandidateTrace(
-							edge_id=card.edge_id,
-							source_node_id=link.source,
-							target_node_id=link.target,
-							anchor_text=link.anchor_text,
-							sentence=link.sentence,
-							total_score=card.total_score,
-							subscores=dict(card.subscores),
-							rationale=card.rationale,
-							best_next_edge_id=card.best_next_edge_id,
-							fallback_reason=card.fallback_reason,
-						)
-						for link, card in zip(
-							candidate_links, score_cards, strict=False
-						)
-					],
 				)
-			)
-
-			if controller_stop:
-				stop_reason = StopReason.CONTROLLER_STOP
-				break
+				selector_logs.append(
+					build_controller_walk_step_log(
+						step_index=len(steps) - 1,
+						current_node_id=current,
+						path_node_ids=visited_nodes,
+						execution=execution,
+					)
+				)
+				if execution.effective_action == "stop":
+					if execution.stop_reason == "dead_end" and apply_controller_backtrack(
+						current_node_id=current,
+						visited_nodes=visited_nodes,
+						visited_set=visited_set,
+						steps=steps,
+						selector_logs=selector_logs,
+						backtracks_used=backtracks_used,
+						max_backtracks=1,
+					):
+						backtracks_used += 1
+						current = visited_nodes[-1]
+						continue
+					stop_reason = StopReason(execution.stop_reason or StopReason.DEAD_END)
+					break
+				best_edge = execution.primary
+				assert best_edge is not None
+				best_index = best_edge.index
+				best_card = best_edge.score_card
+				best_link = best_edge.link
+			else:
+				score_cards = self.scorer.score_candidates(
+					query=query,
+					graph=self.graph,
+					current_node_id=current,
+					candidate_links=candidate_links,
+					visited_nodes=visited_set,
+					path_node_ids=visited_nodes,
+					remaining_steps=remaining_steps,
+				)
+				if not score_cards:
+					if apply_controller_backtrack(
+						current_node_id=current,
+						visited_nodes=visited_nodes,
+						visited_set=visited_set,
+						steps=steps,
+						selector_logs=selector_logs,
+						backtracks_used=backtracks_used,
+						max_backtracks=1,
+					):
+						backtracks_used += 1
+						current = visited_nodes[-1]
+						continue
+					stop_reason = StopReason.DEAD_END
+					break
+				best_index, best_card, best_link = _choose_walk_edge(
+					candidate_links=candidate_links,
+					score_cards=score_cards,
+				)
+				selector_logs.append(
+					build_walk_step_log(
+						step_index=len(steps) - 1,
+						current_node_id=current,
+						path_node_ids=visited_nodes,
+						chosen_edge_id=best_card.edge_id,
+						chosen_target_node_id=best_link.target,
+						backend=best_card.backend,
+						provider=best_card.provider,
+						model=best_card.model,
+						latency_s=best_card.latency_s,
+						prompt_tokens=best_card.prompt_tokens,
+						completion_tokens=best_card.completion_tokens,
+						total_tokens=best_card.total_tokens,
+						cache_hit=best_card.cache_hit,
+						fallback_reason=best_card.fallback_reason,
+						llm_calls=best_card.llm_calls,
+						text=best_card.text,
+						raw_response=best_card.raw_response,
+						stop_reason=None,
+						candidates=build_step_candidate_traces(
+							candidate_links=candidate_links,
+							score_cards=score_cards,
+						),
+					)
+				)
 
 			if best_card.total_score < budget.min_score:
-				if _apply_single_backup(
+				if apply_controller_backtrack(
 					current_node_id=current,
 					visited_nodes=visited_nodes,
 					visited_set=visited_set,
 					steps=steps,
 					selector_logs=selector_logs,
 					backtracks_used=backtracks_used,
+					max_backtracks=1,
 				):
 					backtracks_used += 1
 					current = visited_nodes[-1]
@@ -807,19 +1023,6 @@ def _choose_walk_edge(
 	]
 	if not indexed:
 		raise ValueError("walk edge selection requires non-empty candidates.")
-	primary_edge_id = next(
-		(
-			card.primary_edge_id
-			for _index, card, _link in indexed
-			if card.decision_action in {"choose_one", "choose_two"}
-			and card.primary_edge_id is not None
-		),
-		None,
-	)
-	if primary_edge_id is not None:
-		for index, card, link in indexed:
-			if card.edge_id == primary_edge_id:
-				return index, card, link
 	return max(
 		indexed,
 		key=lambda item: (
@@ -830,7 +1033,7 @@ def _choose_walk_edge(
 	)
 
 
-def _apply_single_backup(
+def apply_controller_backtrack(
 	*,
 	current_node_id: str,
 	visited_nodes: list[str],
@@ -838,71 +1041,59 @@ def _apply_single_backup(
 	steps: list[WalkStep],
 	selector_logs: list[WalkStepLog],
 	backtracks_used: int,
+	max_backtracks: int,
 ) -> bool:
-	if backtracks_used >= 1 or len(steps) <= 1 or not selector_logs:
+	if not selector_logs:
 		return False
-	previous_log = selector_logs[-1]
-	backup_edge_id = previous_log.backup_edge_id
-	if backup_edge_id is None:
-		return False
-	if current_node_id != steps[-1].node_id:
-		return False
-	backup_candidate = next(
-		(
-			candidate
-			for candidate in previous_log.candidates
-			if candidate.edge_id == backup_edge_id
-		),
-		None,
+	resolution = resolve_controller_backtrack(
+		current_node_id=current_node_id,
+		steps=steps,
+		visited_set=visited_set,
+		previous_log=selector_logs[-1],
+		backtracks_used=backtracks_used,
+		max_backtracks=max_backtracks,
 	)
-	if backup_candidate is None or backup_candidate.target_node_id in visited_set:
+	if resolution is None:
 		return False
 	removed = steps.pop()
 	if removed.node_id in visited_set:
 		visited_set.remove(removed.node_id)
-	if visited_nodes and visited_nodes[-1] == removed.node_id:
+	if visited_nodes and visited_nodes[-1] == resolution.removed_node_id:
 		visited_nodes.pop()
-	parent_node_id = steps[-1].node_id
 	selector_logs.append(
-		WalkStepLog(
+		build_walk_step_log(
 			step_index=len(steps) - 1,
-			current_node_id=parent_node_id,
-			path_node_ids=list(visited_nodes),
-			chosen_edge_id=backup_candidate.edge_id,
-			chosen_target_node_id=backup_candidate.target_node_id,
-			backend=previous_log.backend,
-			provider=previous_log.provider,
-			model=previous_log.model,
+			current_node_id=resolution.parent_node_id,
+			path_node_ids=visited_nodes,
+			chosen_edge_id=resolution.edge.edge_id,
+			chosen_target_node_id=resolution.edge.link.target,
+			backend=resolution.backend,
+			provider=resolution.provider,
+			model=resolution.model,
 			latency_s=0.0,
 			prompt_tokens=None,
 			completion_tokens=None,
 			total_tokens=None,
 			cache_hit=None,
-			fallback_reason="controller_backtrack",
+			fallback_reason=resolution.fallback_reason,
 			llm_calls=0,
-			text=previous_log.text,
-			raw_response=previous_log.raw_response,
-			decision_action="backtrack",
-			raw_decision_action="backtrack",
-			secondary_edge_id=previous_log.secondary_edge_id,
-			backup_edge_id=None,
-			stop_score=previous_log.stop_score,
-			evidence_cluster_confidence=previous_log.evidence_cluster_confidence,
-			prefiltered_candidate_count=previous_log.prefiltered_candidate_count,
-			candidates=list(previous_log.candidates),
+			text=resolution.text,
+			raw_response=resolution.raw_response,
+			controller=resolution.trace,
+			stop_reason=None,
 		)
 	)
-	visited_nodes.append(backup_candidate.target_node_id)
-	visited_set.add(backup_candidate.target_node_id)
+	visited_nodes.append(resolution.edge.link.target)
+	visited_set.add(resolution.edge.link.target)
 	steps.append(
 		WalkStep(
 			index=len(steps),
-			node_id=backup_candidate.target_node_id,
-			score=backup_candidate.total_score,
-			source_node_id=backup_candidate.source_node_id,
-			anchor_text=backup_candidate.anchor_text,
-			sentence=backup_candidate.sentence,
-			edge_id=backup_candidate.edge_id,
+			node_id=resolution.edge.link.target,
+			score=resolution.edge.score_card.total_score,
+			source_node_id=resolution.edge.link.source,
+			anchor_text=resolution.edge.link.anchor_text,
+			sentence=resolution.edge.link.sentence,
+			edge_id=resolution.edge.edge_id,
 		)
 	)
 	return True

@@ -6,17 +6,30 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Protocol, Sequence
+from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 import urllib.request
 from urllib.parse import urlparse
 
+from hypercorpus.controller_exposure import (
+	ControllerCandidateBundle,
+	ControllerExposurePlan,
+	build_controller_candidate_bundle,
+	build_controller_exposure_plan,
+	prefilter_indices,
+)
+from hypercorpus.controller_runtime import (
+	ControllerExecutionPolicy,
+	ControllerExecutionResult,
+	ControllerRuntimeScorer,
+	build_controller_execution_result,
+)
 from hypercorpus.graph import LinkContext, LinkContextGraph
-from hypercorpus.text import content_tokens
 from hypercorpus.walker import (
 	LinkContextOverlapStepScorer,
 	StepScorerMetadata,
 	StepLinkScorer,
 	StepScoreCard,
+	TitleAwareOverlapStepScorer,
 	_clamp_score,
 )
 
@@ -53,8 +66,12 @@ class SelectorLLMConfig:
 	prompt_version: str = "v1"
 	candidate_prefilter_top_n: int = 8
 	two_hop_prefilter_top_n: int = 4
-	controller_prompt_version: str = "controller_v4"
-	controller_prefilter_top_n: int = 6
+	controller_prompt_version: str = "controller_v5"
+	controller_prefilter_top_n: int = 16
+	controller_small_page_bypass_n: int = 16
+	controller_lexical_top_n: int = 8
+	controller_semantic_top_n: int = 8
+	controller_bonus_keep_n: int = 4
 	controller_future_top_n: int = 2
 	controller_max_attempts: int = 3
 	enable_stop: bool = True
@@ -82,6 +99,14 @@ class SelectorLLMConfig:
 			raise ValueError("two_hop_prefilter_top_n must be positive.")
 		if self.controller_prefilter_top_n <= 0:
 			raise ValueError("controller_prefilter_top_n must be positive.")
+		if self.controller_small_page_bypass_n <= 0:
+			raise ValueError("controller_small_page_bypass_n must be positive.")
+		if self.controller_lexical_top_n <= 0:
+			raise ValueError("controller_lexical_top_n must be positive.")
+		if self.controller_semantic_top_n <= 0:
+			raise ValueError("controller_semantic_top_n must be positive.")
+		if self.controller_bonus_keep_n < 0:
+			raise ValueError("controller_bonus_keep_n must be non-negative.")
 		if self.controller_future_top_n <= 0:
 			raise ValueError("controller_future_top_n must be positive.")
 		if self.controller_max_attempts <= 0:
@@ -99,7 +124,7 @@ ControllerAction = Literal["stop", "choose_one", "choose_two"]
 class ControllerCandidate:
 	edge_id: str
 	utility: float
-	support_coverage: float
+	answer_bearing_link_bonus: float
 	direct_support: float
 	bridge_potential: float
 	future_potential: float | None = None
@@ -114,6 +139,9 @@ class ControllerDecision:
 	effective_action: ControllerAction | None = None
 	secondary_edge_id: str | None = None
 	backup_edge_id: str | None = None
+	backend: str = "llm_controller"
+	provider: str | None = None
+	model: str | None = None
 	stop_score: float = 0.0
 	evidence_cluster_confidence: float = 0.0
 	candidates: list[ControllerCandidate] = field(default_factory=list)
@@ -126,6 +154,14 @@ class ControllerDecision:
 	cache_hit: bool | None = None
 	fallback_reason: str | None = None
 	llm_attempts: int = 1
+	raw_candidate_count: int = 0
+	valid_candidate_count: int = 0
+	small_page_bypass: bool = False
+	dangling_edge_ids: list[str] = field(default_factory=list)
+	lexical_prefilter_edge_ids: list[str] = field(default_factory=list)
+	semantic_prefilter_edge_ids: list[str] = field(default_factory=list)
+	bonus_rescued_edge_ids: list[str] = field(default_factory=list)
+	visible_edge_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -589,18 +625,30 @@ class LLMStepLinkScorer:
 		if not fallback_cards or not prefilter_cards:
 			return fallback_cards
 
-		prefiltered_indices = _prefilter_indices(
+		prefiltered_indices = prefilter_indices(
 			prefilter_cards,
 			top_n=min(self.config.candidate_prefilter_top_n, len(prefilter_cards)),
 			query=query,
 			graph=graph,
 			candidate_links=candidate_links,
 		)
-		bundle = _candidate_bundle(
+		exposure_plan = ControllerExposurePlan(
+			raw_candidate_count=len(candidate_links),
+			valid_candidate_count=len(candidate_links),
+			small_page_bypass=False,
+			valid_indices=list(range(len(candidate_links))),
+			dangling_indices=[],
+			lexical_prefilter_edge_ids=[str(index) for index in prefiltered_indices],
+			semantic_prefilter_edge_ids=[],
+			bonus_rescued_edge_ids=[],
+			visible_indices=list(prefiltered_indices),
+		)
+		bundle = build_controller_candidate_bundle(
 			graph=graph,
 			candidate_links=candidate_links,
 			score_cards=prefilter_cards,
-			prefiltered_indices=prefiltered_indices,
+			semantic_score_cards=None,
+			exposure_plan=exposure_plan,
 			query=query,
 			current_node_id=current_node_id,
 			path_node_ids=path_node_ids,
@@ -608,6 +656,7 @@ class LLMStepLinkScorer:
 			mode=self.mode,
 			future_top_n=self.config.two_hop_prefilter_top_n,
 		)
+		bundle_payload = bundle.to_prompt_payload()
 		cache_key = _selector_cache_key(
 			selector_name=f"link_context_llm_{self.mode}",
 			provider=self.config.provider,
@@ -616,7 +665,7 @@ class LLMStepLinkScorer:
 			prompt_version=self.config.prompt_version,
 			query=query,
 			path_node_ids=path_node_ids,
-			bundle=bundle,
+			bundle=bundle_payload,
 		)
 
 		cached = self._cache.get(cache_key) if self._cache is not None else None
@@ -631,13 +680,13 @@ class LLMStepLinkScorer:
 					text=cached_text,
 					raw_response=str(cached.get("raw_response", "")) or None,
 					prompt_tokens=_maybe_int(cached.get("prompt_tokens")),
-					completion_tokens=_maybe_int(cached.get("completion_tokens")),
-					total_tokens=_maybe_int(cached.get("total_tokens")),
-					latency_s=0.0,
-					cache_hit=True,
-					candidate_links=candidate_links,
-					prefiltered_indices=prefiltered_indices,
-				)
+						completion_tokens=_maybe_int(cached.get("completion_tokens")),
+						total_tokens=_maybe_int(cached.get("total_tokens")),
+						latency_s=0.0,
+						cache_hit=True,
+						candidate_links=candidate_links,
+						exposure_plan=exposure_plan,
+					)
 			except Exception as exc:  # pragma: no cover - cache corruption path
 				return _cards_with_fallback(
 					fallback_cards,
@@ -659,7 +708,7 @@ class LLMStepLinkScorer:
 			response = self._get_backend().complete_json(
 				model=self.config.model or "",
 				system_prompt=_system_prompt(self.mode),
-				user_prompt=_user_prompt(query=query, bundle=bundle),
+				user_prompt=_user_prompt(query=query, bundle=bundle_payload),
 				temperature=self.config.temperature,
 				response_schema=_response_schema(self.mode),
 			)
@@ -698,7 +747,7 @@ class LLMStepLinkScorer:
 				latency_s=latency_s,
 				cache_hit=False,
 				candidate_links=candidate_links,
-				prefiltered_indices=prefiltered_indices,
+				exposure_plan=exposure_plan,
 			)
 		except SelectorLLMResponseError as exc:
 			return _cards_with_fallback(
@@ -748,7 +797,7 @@ class LLMStepLinkScorer:
 		latency_s: float,
 		cache_hit: bool,
 		candidate_links: Sequence[LinkContext],
-		prefiltered_indices: Sequence[int],
+		exposure_plan: ControllerExposurePlan,
 	) -> list[StepScoreCard]:
 		entries = payload.get("scores")
 		if not isinstance(entries, list):
@@ -762,10 +811,11 @@ class LLMStepLinkScorer:
 				parsed[edge_id] = entry
 
 		cards: list[StepScoreCard] = []
-		prefiltered_set = {str(index) for index in prefiltered_indices}
+		visible_set = {str(index) for index in exposure_plan.visible_indices}
+		dangling_set = {str(index) for index in exposure_plan.dangling_indices}
 		for index, _link in enumerate(candidate_links):
 			edge_id = str(index)
-			if edge_id not in prefiltered_set:
+			if edge_id not in visible_set:
 				cards.append(
 					StepScoreCard(
 						edge_id=edge_id,
@@ -781,7 +831,11 @@ class LLMStepLinkScorer:
 						completion_tokens=completion_tokens,
 						total_tokens=total_tokens,
 						cache_hit=cache_hit,
-						fallback_reason="prefiltered_out",
+						fallback_reason=(
+							"filtered_dangling_target"
+							if edge_id in dangling_set
+							else "filtered_prefilter"
+						),
 					)
 				)
 				continue
@@ -853,12 +907,14 @@ class LLMController:
 		config: SelectorLLMConfig,
 		mode: Literal["single_hop", "two_hop"],
 		prefilter_scorer: StepLinkScorer | None = None,
+		semantic_prefilter_scorer: StepLinkScorer | None = None,
 		fallback_scorer: StepLinkScorer | None = None,
 		backend_factory: Callable[[SelectorLLMConfig], BackendAdapter] | None = None,
 	):
 		self.config = config
 		self.mode = mode
-		self.prefilter_scorer = prefilter_scorer or LinkContextOverlapStepScorer()
+		self.prefilter_scorer = prefilter_scorer or TitleAwareOverlapStepScorer()
+		self.semantic_prefilter_scorer = semantic_prefilter_scorer
 		self.fallback_scorer = fallback_scorer or LinkContextOverlapStepScorer()
 		self.backend_factory = backend_factory or _default_backend_factory
 		self._cache = (
@@ -879,63 +935,27 @@ class LLMController:
 		self,
 		*,
 		query: str,
-		graph: LinkContextGraph,
-		current_node_id: str,
-		candidate_links: Sequence[LinkContext],
-		visited_nodes: set[str],
 		path_node_ids: Sequence[str],
-		remaining_steps: int,
 		current_depth: int,
+		fallback_cards: Sequence[StepScoreCard],
+		exposure_plan: ControllerExposurePlan,
+		bundle: ControllerCandidateBundle,
 		forks_used: int = 0,
 		backtracks_used: int = 0,
 	) -> ControllerDecision:
-		fallback_cards = self.fallback_scorer.score_candidates(
-			query=query,
-			graph=graph,
-			current_node_id=current_node_id,
-			candidate_links=candidate_links,
-			visited_nodes=visited_nodes,
-			path_node_ids=path_node_ids,
-			remaining_steps=remaining_steps,
-		)
-		prefilter_cards = self.prefilter_scorer.score_candidates(
-			query=query,
-			graph=graph,
-			current_node_id=current_node_id,
-			candidate_links=candidate_links,
-			visited_nodes=visited_nodes,
-			path_node_ids=path_node_ids,
-			remaining_steps=remaining_steps,
-		)
-		if not fallback_cards or not prefilter_cards:
+		"""Turn a precomputed controller bundle into one parsed controller decision."""
+
+		bundle_payload = bundle.to_prompt_payload()
+		if not fallback_cards or not exposure_plan.visible_indices:
 			return self._fallback_decision(
 				fallback_cards=fallback_cards,
-				prefiltered_indices=[],
+				exposure_plan=exposure_plan,
 				current_depth=current_depth,
 				forks_used=forks_used,
 				backtracks_used=backtracks_used,
 				fallback_reason="empty_candidates",
 			)
 
-		prefiltered_indices = _prefilter_indices(
-			prefilter_cards,
-			top_n=min(self.config.controller_prefilter_top_n, len(prefilter_cards)),
-			query=query,
-			graph=graph,
-			candidate_links=candidate_links,
-		)
-		bundle = _candidate_bundle(
-			graph=graph,
-			candidate_links=candidate_links,
-			score_cards=prefilter_cards,
-			prefiltered_indices=prefiltered_indices,
-			query=query,
-			current_node_id=current_node_id,
-			path_node_ids=path_node_ids,
-			visited_nodes=visited_nodes,
-			mode=self.mode,
-			future_top_n=self.config.controller_future_top_n,
-		)
 		cache_key = _selector_cache_key(
 			selector_name=f"link_context_llm_controller_{self.mode}",
 			provider=self.config.provider,
@@ -944,7 +964,7 @@ class LLMController:
 			prompt_version=self.config.controller_prompt_version,
 			query=query,
 			path_node_ids=path_node_ids,
-			bundle=bundle,
+			bundle=bundle_payload,
 		)
 
 		cached = self._cache.get(cache_key) if self._cache is not None else None
@@ -966,17 +986,13 @@ class LLMController:
 					total_tokens=_maybe_int(cached.get("total_tokens")),
 					latency_s=0.0,
 					cache_hit=True,
-					prefiltered_indices=prefiltered_indices,
-					fallback_cards=fallback_cards,
-					current_depth=current_depth,
-					forks_used=forks_used,
-					backtracks_used=backtracks_used,
+					exposure_plan=exposure_plan,
 					llm_attempts=1,
 				)
 			except Exception as exc:  # pragma: no cover - cache corruption path
 				return self._fallback_decision(
 					fallback_cards=fallback_cards,
-					prefiltered_indices=prefiltered_indices,
+					exposure_plan=exposure_plan,
 					current_depth=current_depth,
 					forks_used=forks_used,
 					backtracks_used=backtracks_used,
@@ -993,7 +1009,9 @@ class LLMController:
 		started_at = time.perf_counter()
 		self.validate_environment()
 		system_prompt = _controller_system_prompt(self.mode)
-		user_prompt = _controller_user_prompt(query=query, bundle=bundle, mode=self.mode)
+		user_prompt = _controller_user_prompt(
+			query=query, bundle=bundle_payload, mode=self.mode
+		)
 		response_schema = _controller_response_schema(self.mode)
 		response: BackendCompletion | None = None
 		last_parse_error: SelectorLLMResponseError | None = None
@@ -1013,7 +1031,7 @@ class LLMController:
 				latency_s = time.perf_counter() - started_at
 				return self._fallback_decision(
 					fallback_cards=fallback_cards,
-					prefiltered_indices=prefiltered_indices,
+					exposure_plan=exposure_plan,
 					current_depth=current_depth,
 					forks_used=forks_used,
 					backtracks_used=backtracks_used,
@@ -1049,11 +1067,7 @@ class LLMController:
 					total_tokens=_aggregate_usage_total(total_token_values),
 					latency_s=latency_s,
 					cache_hit=False,
-					prefiltered_indices=prefiltered_indices,
-					fallback_cards=fallback_cards,
-					current_depth=current_depth,
-					forks_used=forks_used,
-					backtracks_used=backtracks_used,
+					exposure_plan=exposure_plan,
 					llm_attempts=attempt_index + 1,
 				)
 				break
@@ -1063,7 +1077,7 @@ class LLMController:
 					latency_s = time.perf_counter() - started_at
 					return self._fallback_decision(
 						fallback_cards=fallback_cards,
-						prefiltered_indices=prefiltered_indices,
+						exposure_plan=exposure_plan,
 						current_depth=current_depth,
 						forks_used=forks_used,
 						backtracks_used=backtracks_used,
@@ -1078,7 +1092,7 @@ class LLMController:
 					)
 				user_prompt = _controller_repair_user_prompt(
 					query=query,
-					bundle=bundle,
+					bundle=bundle_payload,
 					mode=self.mode,
 					previous_response=response.text,
 					validation_error=exc.fallback_reason,
@@ -1097,9 +1111,9 @@ class LLMController:
 					"response_payload": payload,
 					"response_text": json.dumps(payload, ensure_ascii=False),
 					"raw_response": response.raw_response,
-					"prompt_tokens": response.prompt_tokens,
-					"completion_tokens": response.completion_tokens,
-					"total_tokens": response.total_tokens,
+					"prompt_tokens": _aggregate_usage_total(prompt_token_values),
+					"completion_tokens": _aggregate_usage_total(completion_token_values),
+					"total_tokens": _aggregate_usage_total(total_token_values),
 				},
 			)
 		return decision
@@ -1121,29 +1135,27 @@ class LLMController:
 		total_tokens: int | None,
 		latency_s: float,
 		cache_hit: bool,
-		prefiltered_indices: Sequence[int],
-		fallback_cards: Sequence[StepScoreCard],
-		current_depth: int,
-		forks_used: int,
-		backtracks_used: int,
+		exposure_plan: ControllerExposurePlan,
 		llm_attempts: int,
 	) -> ControllerDecision:
 		entries = payload.get("candidates")
 		if not isinstance(entries, list):
 			raise SelectorLLMResponseError("schema_error", "missing_candidates_list")
 		parsed_candidates: list[ControllerCandidate] = []
-		prefiltered_set = {str(index) for index in prefiltered_indices}
+		visible_set = {str(index) for index in exposure_plan.visible_indices}
 		for entry in entries:
 			if not isinstance(entry, dict):
 				continue
 			edge_id = str(entry.get("edge_id", "")).strip()
-			if not edge_id or edge_id not in prefiltered_set:
+			if not edge_id or edge_id not in visible_set:
 				continue
 			parsed_candidates.append(
-				ControllerCandidate(
-					edge_id=edge_id,
-					utility=_clamp_score(entry.get("utility")),
-					support_coverage=_clamp_score(entry.get("support_coverage")),
+						ControllerCandidate(
+							edge_id=edge_id,
+							utility=_clamp_score(entry.get("utility")),
+							answer_bearing_link_bonus=_clamp_score(
+								entry.get("answer_bearing_link_bonus")
+							),
 					direct_support=_clamp_score(entry.get("direct_support")),
 					bridge_potential=_clamp_score(entry.get("bridge_potential")),
 					future_potential=(
@@ -1162,10 +1174,12 @@ class LLMController:
 			raise SelectorLLMResponseError("schema_error", "invalid_action")
 		decision = ControllerDecision(
 			action=action,  # type: ignore[arg-type]
-			effective_action=action,  # type: ignore[arg-type]
 			primary_edge_id=_maybe_text(payload.get("primary_edge_id")),
 			secondary_edge_id=_maybe_text(payload.get("secondary_edge_id")),
 			backup_edge_id=_maybe_text(payload.get("backup_edge_id")),
+			backend="llm_controller",
+			provider=self.config.provider,
+			model=self.config.model,
 			stop_score=_clamp_score(payload.get("stop_score")),
 			evidence_cluster_confidence=_clamp_score(
 				payload.get("evidence_cluster_confidence")
@@ -1179,21 +1193,26 @@ class LLMController:
 			latency_s=latency_s,
 			cache_hit=cache_hit,
 			llm_attempts=llm_attempts,
+			raw_candidate_count=exposure_plan.raw_candidate_count,
+			valid_candidate_count=exposure_plan.valid_candidate_count,
+			small_page_bypass=exposure_plan.small_page_bypass,
+			dangling_edge_ids=[str(index) for index in exposure_plan.dangling_indices],
+			lexical_prefilter_edge_ids=list(exposure_plan.lexical_prefilter_edge_ids),
+			semantic_prefilter_edge_ids=list(exposure_plan.semantic_prefilter_edge_ids),
+			bonus_rescued_edge_ids=list(exposure_plan.bonus_rescued_edge_ids),
+			visible_edge_ids=[str(index) for index in exposure_plan.visible_indices],
 		)
-		return self._normalize_decision(
-			decision,
-			fallback_cards=fallback_cards,
-			prefiltered_indices=prefiltered_indices,
-			current_depth=current_depth,
-			forks_used=forks_used,
-			backtracks_used=backtracks_used,
+		decision.evidence_cluster_confidence = _clamp_score(
+			decision.evidence_cluster_confidence
 		)
+		decision.stop_score = _clamp_score(decision.stop_score)
+		return decision
 
 	def _fallback_decision(
 		self,
 		*,
 		fallback_cards: Sequence[StepScoreCard],
-		prefiltered_indices: Sequence[int],
+		exposure_plan: ControllerExposurePlan,
 		current_depth: int,
 		forks_used: int,
 		backtracks_used: int,
@@ -1213,22 +1232,18 @@ class LLMController:
 				edge_id=str(index),
 				two_hop=self.mode == "two_hop",
 			)
-			for index in prefiltered_indices
+			for index in exposure_plan.visible_indices
 			if index < len(fallback_cards)
 		]
-		if not candidates and fallback_cards:
-			candidates = [
-				_controller_candidate_from_card(
-					card, edge_id=card.edge_id, two_hop=self.mode == "two_hop"
-				)
-				for card in fallback_cards
-			]
 		candidates.sort(key=lambda item: (item.utility, item.edge_id), reverse=True)
 		best = candidates[0] if candidates else None
 		second = candidates[1] if len(candidates) > 1 else None
 		action: ControllerAction = "choose_one"
 		stop_score = _clamp_score(1.0 - (best.utility if best is not None else 0.0))
-		if self.config.enable_stop and current_depth >= 2 and stop_score >= 0.80:
+		if best is None:
+			action = "stop"
+			stop_score = 1.0
+		elif self.config.enable_stop and current_depth >= 2 and stop_score >= 0.80:
 			action = "stop"
 		elif _allow_choose_two(
 			config=self.config,
@@ -1252,6 +1267,9 @@ class LLMController:
 				and second is not None
 				else None
 			),
+			backend="llm_controller",
+			provider=self.config.provider,
+			model=self.config.model,
 			stop_score=stop_score,
 			evidence_cluster_confidence=best.utility if best is not None else 0.0,
 			candidates=candidates,
@@ -1264,85 +1282,15 @@ class LLMController:
 			cache_hit=cache_hit,
 			fallback_reason=fallback_reason,
 			llm_attempts=llm_attempts,
+			raw_candidate_count=exposure_plan.raw_candidate_count,
+			valid_candidate_count=exposure_plan.valid_candidate_count,
+			small_page_bypass=exposure_plan.small_page_bypass,
+			dangling_edge_ids=[str(index) for index in exposure_plan.dangling_indices],
+			lexical_prefilter_edge_ids=list(exposure_plan.lexical_prefilter_edge_ids),
+			semantic_prefilter_edge_ids=list(exposure_plan.semantic_prefilter_edge_ids),
+			bonus_rescued_edge_ids=list(exposure_plan.bonus_rescued_edge_ids),
+			visible_edge_ids=[str(index) for index in exposure_plan.visible_indices],
 		)
-		return self._normalize_decision(
-			decision,
-			fallback_cards=fallback_cards,
-			prefiltered_indices=prefiltered_indices,
-			current_depth=current_depth,
-			forks_used=forks_used,
-			backtracks_used=backtracks_used,
-		)
-
-	def _normalize_decision(
-		self,
-		decision: ControllerDecision,
-		*,
-		fallback_cards: Sequence[StepScoreCard],
-		prefiltered_indices: Sequence[int],
-		current_depth: int,
-		forks_used: int,
-		backtracks_used: int,
-	) -> ControllerDecision:
-		candidates_by_id = {
-			candidate.edge_id: candidate for candidate in decision.candidates
-		}
-		if not candidates_by_id:
-			for index in prefiltered_indices:
-				if index < len(fallback_cards):
-					card = fallback_cards[index]
-					candidates_by_id[str(index)] = _controller_candidate_from_card(
-						card,
-						edge_id=str(index),
-						two_hop=self.mode == "two_hop",
-					)
-			decision.candidates = list(candidates_by_id.values())
-		ranked = sorted(
-			candidates_by_id.values(),
-			key=lambda item: (item.utility, item.edge_id),
-			reverse=True,
-		)
-		if decision.primary_edge_id not in candidates_by_id:
-			decision.primary_edge_id = ranked[0].edge_id if ranked else None
-		effective_action = decision.effective_action or decision.action
-		if effective_action == "choose_two":
-			secondary = candidates_by_id.get(decision.secondary_edge_id or "")
-			if not _allow_choose_two(
-				config=self.config,
-				candidates=ranked,
-				primary=candidates_by_id.get(decision.primary_edge_id or ""),
-				secondary=secondary
-				if secondary is not None
-				else (ranked[1] if len(ranked) > 1 else None),
-				forks_used=forks_used,
-			):
-				decision.secondary_edge_id = None
-			elif decision.secondary_edge_id not in candidates_by_id:
-				decision.secondary_edge_id = (
-					ranked[1].edge_id if len(ranked) > 1 else None
-				)
-		else:
-			decision.secondary_edge_id = None
-		decision.effective_action = effective_action
-		if (
-			not self.config.enable_backtrack
-			or backtracks_used >= self.config.max_backtracks_per_case
-			or decision.backup_edge_id not in candidates_by_id
-			or decision.backup_edge_id == decision.primary_edge_id
-			or decision.backup_edge_id == decision.secondary_edge_id
-		):
-			fallback_backup = next(
-				(
-					candidate.edge_id
-					for candidate in ranked
-					if candidate.edge_id
-					not in {decision.primary_edge_id, decision.secondary_edge_id}
-				),
-				None,
-			)
-			decision.backup_edge_id = (
-				fallback_backup if self.config.enable_backtrack else None
-			)
 		decision.evidence_cluster_confidence = _clamp_score(
 			decision.evidence_cluster_confidence
 		)
@@ -1350,7 +1298,8 @@ class LLMController:
 		return decision
 
 
-class LLMControllerStepScorer:
+
+class LLMControllerStepScorer(ControllerRuntimeScorer):
 	scorer_kind = "llm_controller"
 
 	def __init__(
@@ -1393,6 +1342,32 @@ class LLMControllerStepScorer:
 		path_node_ids: Sequence[str],
 		remaining_steps: int,
 	) -> list[StepScoreCard]:
+		return self.fallback_scorer.score_candidates(
+			query=query,
+			graph=graph,
+			current_node_id=current_node_id,
+			candidate_links=candidate_links,
+			visited_nodes=visited_nodes,
+			path_node_ids=path_node_ids,
+			remaining_steps=remaining_steps,
+		)
+
+	def evaluate_controller_step(
+		self,
+		*,
+		query: str,
+		graph: LinkContextGraph,
+		current_node_id: str,
+		candidate_links: Sequence[LinkContext],
+		visited_nodes: set[str],
+		path_node_ids: Sequence[str],
+		remaining_steps: int,
+		current_depth: int,
+		forks_used: int = 0,
+		backtracks_used: int = 0,
+	) -> ControllerExecutionResult:
+		"""Compute controller exposure once and execute one controller step."""
+
 		fallback_cards = self.fallback_scorer.score_candidates(
 			query=query,
 			graph=graph,
@@ -1402,7 +1377,7 @@ class LLMControllerStepScorer:
 			path_node_ids=path_node_ids,
 			remaining_steps=remaining_steps,
 		)
-		decision = self.controller.decide(
+		lexical_cards = self.controller.prefilter_scorer.score_candidates(
 			query=query,
 			graph=graph,
 			current_node_id=current_node_id,
@@ -1410,16 +1385,89 @@ class LLMControllerStepScorer:
 			visited_nodes=visited_nodes,
 			path_node_ids=path_node_ids,
 			remaining_steps=remaining_steps,
-			current_depth=max(len(path_node_ids) - 1, 0),
 		)
-		return _decision_to_cards(
-			decision=decision,
-			fallback_cards=fallback_cards,
+		semantic_cards = (
+			self.controller.semantic_prefilter_scorer.score_candidates(
+				query=query,
+				graph=graph,
+				current_node_id=current_node_id,
+				candidate_links=candidate_links,
+				visited_nodes=visited_nodes,
+				path_node_ids=path_node_ids,
+				remaining_steps=remaining_steps,
+			)
+			if self.controller.semantic_prefilter_scorer is not None
+			else None
+		)
+		exposure_plan = build_controller_exposure_plan(
+			query=query,
+			graph=graph,
 			candidate_links=candidate_links,
-			provider=self.config.provider,
-			model=self.config.model,
+			lexical_cards=lexical_cards,
+			semantic_cards=semantic_cards,
+			small_page_bypass_n=self.config.controller_small_page_bypass_n,
+			lexical_top_n=self.config.controller_lexical_top_n,
+			semantic_top_n=self.config.controller_semantic_top_n,
+			bonus_keep_n=self.config.controller_bonus_keep_n,
+			visible_cap=self.config.controller_prefilter_top_n,
+		)
+		bundle = build_controller_candidate_bundle(
+			graph=graph,
+			candidate_links=candidate_links,
+			score_cards=lexical_cards,
+			semantic_score_cards=semantic_cards,
+			exposure_plan=exposure_plan,
+			query=query,
+			current_node_id=current_node_id,
+			path_node_ids=path_node_ids,
+			visited_nodes=visited_nodes,
 			mode=self.mode,
-			prefilter_top_n=self.config.controller_prefilter_top_n,
+			future_top_n=self.config.controller_future_top_n,
+		)
+		decision = self.controller.decide(
+			query=query,
+			path_node_ids=path_node_ids,
+			current_depth=current_depth,
+			fallback_cards=fallback_cards,
+			exposure_plan=exposure_plan,
+			bundle=bundle,
+			forks_used=forks_used,
+			backtracks_used=backtracks_used,
+		)
+		primary_candidate = next(
+			(
+				candidate
+				for candidate in decision.candidates
+				if candidate.edge_id == decision.primary_edge_id
+			),
+			None,
+		)
+		secondary_candidate = next(
+			(
+				candidate
+				for candidate in decision.candidates
+				if candidate.edge_id == decision.secondary_edge_id
+			),
+			None,
+		)
+		return build_controller_execution_result(
+			decision=decision,
+			candidate_links=candidate_links,
+			score_cards=fallback_cards,
+			policy=ControllerExecutionPolicy(
+				allow_stop=self.config.enable_stop,
+				allow_choose_two=_allow_choose_two(
+					config=self.config,
+					candidates=decision.candidates,
+					primary=primary_candidate,
+					secondary=secondary_candidate,
+					forks_used=forks_used,
+				),
+				allow_backtrack=(
+					self.config.enable_backtrack
+					and backtracks_used < self.config.max_backtracks_per_case
+				),
+			),
 		)
 
 
@@ -1451,7 +1499,7 @@ def _selector_cache_key(
 	prompt_version: str,
 	query: str,
 	path_node_ids: Sequence[str],
-	bundle: dict[str, Any],
+	bundle: Mapping[str, Any],
 ) -> str:
 	payload = json.dumps(
 		{
@@ -1472,201 +1520,6 @@ def _selector_cache_key(
 		ensure_ascii=False,
 	)
 	return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _prefilter_indices(
-	cards: Sequence[StepScoreCard],
-	*,
-	top_n: int,
-	query: str | None = None,
-	graph: LinkContextGraph | None = None,
-	candidate_links: Sequence[LinkContext] | None = None,
-	support_keep_n: int = 2,
-) -> list[int]:
-	ranked = sorted(
-		enumerate(cards),
-		key=lambda item: (item[1].total_score, -item[0]),
-		reverse=True,
-	)
-	selected: set[int] = {index for index, _card in ranked[:top_n]}
-	if query is None or graph is None or candidate_links is None or support_keep_n <= 0:
-		return [index for index, _card in ranked[:top_n]]
-	support_ranked = sorted(
-		enumerate(cards),
-		key=lambda item: (
-			_support_coverage_hint(
-				query=query,
-				graph=graph,
-				link=candidate_links[item[0]],
-				card=item[1],
-			),
-			item[1].total_score,
-			-item[0],
-		),
-		reverse=True,
-	)
-	added = 0
-	for index, card in support_ranked:
-		if index in selected:
-			continue
-		support_hint = _support_coverage_hint(
-			query=query,
-			graph=graph,
-			link=candidate_links[index],
-			card=card,
-		)
-		if support_hint < 0.55:
-			continue
-		selected.add(index)
-		added += 1
-		if added >= support_keep_n:
-			break
-	return [index for index, _card in ranked if index in selected]
-
-
-def _candidate_bundle(
-	*,
-	graph: LinkContextGraph,
-	candidate_links: Sequence[LinkContext],
-	score_cards: Sequence[StepScoreCard],
-	prefiltered_indices: Sequence[int],
-	query: str,
-	current_node_id: str,
-	path_node_ids: Sequence[str],
-	visited_nodes: set[str],
-	mode: str,
-	future_top_n: int,
-) -> dict[str, Any]:
-	entries: list[dict[str, Any]] = []
-	future_scorer = LinkContextOverlapStepScorer()
-	for index in prefiltered_indices:
-		link = candidate_links[index]
-		score_card = score_cards[index]
-		target_title = _node_title(graph, link.target)
-		sentence_mentions_target = _title_coverage_in_sentence(
-			title=target_title,
-			sentence=link.sentence,
-		)
-		support_coverage_hint = _support_coverage_hint(
-			query=query,
-			graph=graph,
-			link=link,
-			card=score_card,
-		)
-		entry: dict[str, Any] = {
-			"edge_id": str(index),
-			"source_title": _node_title(graph, link.source),
-			"target_title": target_title,
-			"anchor_text": link.anchor_text,
-			"sentence": link.sentence,
-			"prefilter_score": score_card.total_score,
-			"query_anchor_overlap": _clamp_score(
-				score_card.subscores.get("anchor_overlap", 0.0)
-			),
-			"query_sentence_overlap": _clamp_score(
-				score_card.subscores.get("sentence_overlap", 0.0)
-			),
-			"query_target_overlap": _clamp_score(
-				score_card.subscores.get("target_overlap", 0.0)
-			),
-			"support_coverage_hint": support_coverage_hint,
-			"source_sentence_mentions_target_title": sentence_mentions_target >= 0.75,
-		}
-		if mode == "two_hop":
-			next_links = [
-				next_link
-				for next_link in graph.links_from(link.target)
-				if next_link.target not in visited_nodes
-				and next_link.target != link.source
-			]
-			future_cards = future_scorer.score_candidates(
-				query=query,
-				graph=graph,
-				current_node_id=link.target,
-				candidate_links=next_links,
-				visited_nodes=visited_nodes | {link.target},
-				path_node_ids=[*path_node_ids, link.target],
-				remaining_steps=1,
-			)
-			future_indices = _prefilter_indices(
-				future_cards,
-				top_n=min(future_top_n, len(future_cards)),
-				query=query,
-				graph=graph,
-				candidate_links=next_links,
-				support_keep_n=1,
-			)
-			entry["future_candidates"] = [
-				{
-					"edge_id": f"{index}-{future_index}",
-					"target_title": _node_title(graph, next_links[future_index].target),
-					"anchor_text": next_links[future_index].anchor_text,
-					"sentence": next_links[future_index].sentence,
-					"prefilter_score": future_cards[future_index].total_score,
-					"query_anchor_overlap": _clamp_score(
-						future_cards[future_index].subscores.get("anchor_overlap", 0.0)
-					),
-					"query_sentence_overlap": _clamp_score(
-						future_cards[future_index].subscores.get("sentence_overlap", 0.0)
-					),
-					"query_target_overlap": _clamp_score(
-						future_cards[future_index].subscores.get("target_overlap", 0.0)
-					),
-					"support_coverage_hint": _support_coverage_hint(
-						query=query,
-						graph=graph,
-						link=next_links[future_index],
-						card=future_cards[future_index],
-					),
-				}
-				for future_index in future_indices
-			]
-		entries.append(entry)
-
-	return {
-		"query": query,
-		"current_node_id": current_node_id,
-		"path_titles": [_node_title(graph, node_id) for node_id in path_node_ids],
-		"candidates": entries,
-	}
-
-
-def _title_coverage_in_sentence(*, title: str, sentence: str) -> float:
-	title_tokens = content_tokens(title)
-	if not title_tokens:
-		return 0.0
-	sentence_tokens = set(content_tokens(sentence))
-	shared = sum(1 for token in title_tokens if token in sentence_tokens)
-	return shared / max(len(title_tokens), 1)
-
-
-def _support_coverage_hint(
-	*,
-	query: str,
-	graph: LinkContextGraph,
-	link: LinkContext,
-	card: StepScoreCard,
-) -> float:
-	target_title = _node_title(graph, link.target)
-	title_coverage = _title_coverage_in_sentence(title=target_title, sentence=link.sentence)
-	sentence_overlap = _clamp_score(card.subscores.get("sentence_overlap", 0.0))
-	target_overlap = _clamp_score(card.subscores.get("target_overlap", 0.0))
-	anchor_overlap = _clamp_score(card.subscores.get("anchor_overlap", 0.0))
-	query_tokens = set(content_tokens(query))
-	target_tokens = content_tokens(target_title)
-	target_query_overlap = (
-		sum(1 for token in target_tokens if token in query_tokens)
-		/ max(len(target_tokens), 1)
-		if target_tokens
-		else 0.0
-	)
-	return _clamp_score(
-		0.45 * sentence_overlap
-		+ 0.25 * title_coverage
-		+ 0.20 * target_overlap
-		+ 0.05 * anchor_overlap
-		+ 0.05 * target_query_overlap
-	)
 
 
 def _response_schema(mode: str) -> dict[str, Any]:
@@ -1708,7 +1561,7 @@ def _controller_response_schema(mode: str) -> dict[str, Any]:
 	candidate_properties: dict[str, Any] = {
 		"edge_id": {"type": "string"},
 		"utility": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"support_coverage": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+		"answer_bearing_link_bonus": {"type": "number", "minimum": 0.0, "maximum": 1.0},
 		"direct_support": {"type": "number", "minimum": 0.0, "maximum": 1.0},
 		"bridge_potential": {"type": "number", "minimum": 0.0, "maximum": 1.0},
 		"redundancy_risk": {"type": "number", "minimum": 0.0, "maximum": 1.0},
@@ -1717,7 +1570,7 @@ def _controller_response_schema(mode: str) -> dict[str, Any]:
 	required = [
 		"edge_id",
 		"utility",
-		"support_coverage",
+		"answer_bearing_link_bonus",
 		"direct_support",
 		"bridge_potential",
 		"redundancy_risk",
@@ -1805,7 +1658,7 @@ def _controller_system_prompt(mode: str) -> str:
 	)
 
 
-def _user_prompt(*, query: str, bundle: dict[str, Any]) -> str:
+def _user_prompt(*, query: str, bundle: Mapping[str, Any]) -> str:
 	return (
 		f"Question:\n{query}\n\n"
 		"Retriever context:\n"
@@ -1815,7 +1668,9 @@ def _user_prompt(*, query: str, bundle: dict[str, Any]) -> str:
 	)
 
 
-def _controller_user_prompt(*, query: str, bundle: dict[str, Any], mode: str) -> str:
+def _controller_user_prompt(
+	*, query: str, bundle: Mapping[str, Any], mode: str
+) -> str:
 	return (
 		f"Question:\n{query}\n\n"
 		"Retriever context:\n"
@@ -1825,7 +1680,7 @@ def _controller_user_prompt(*, query: str, bundle: dict[str, Any], mode: str) ->
 		"Choose the next retrieval action under a budget. "
 		"Use stop only if the currently retrieved nodes already make the key supporting entity or institution explicit and "
 		"no remaining candidate offers materially better explicit support coverage. "
-		"Treat support_coverage as a first-class utility component: if a candidate would add an explicit support-bearing node, "
+		"Treat answer_bearing_link_bonus as a first-class utility component: if a candidate would add an explicit support-bearing node, "
 		"prefer that candidate over stop unless redundancy is very high. "
 		"Use choose_two only for a genuine near-tie. "
 		"Return JSON only."
@@ -1835,7 +1690,7 @@ def _controller_user_prompt(*, query: str, bundle: dict[str, Any], mode: str) ->
 def _controller_repair_user_prompt(
 	*,
 	query: str,
-	bundle: dict[str, Any],
+	bundle: Mapping[str, Any],
 	mode: str,
 	previous_response: str,
 	validation_error: str,
@@ -1858,7 +1713,7 @@ def _controller_schema_instructions(mode: str) -> str:
 	candidate_fields = [
 		'"edge_id": "<one of the listed candidate edge ids>"',
 		'"utility": 0.0-1.0',
-		'"support_coverage": 0.0-1.0',
+		'"answer_bearing_link_bonus": 0.0-1.0',
 		'"direct_support": 0.0-1.0',
 		'"bridge_potential": 0.0-1.0',
 	]
@@ -1880,15 +1735,10 @@ def _controller_schema_instructions(mode: str) -> str:
 		'"evidence_cluster_confidence":0.0-1.0,'
 		f'"candidates":[{{{candidate_schema}}}]}} '
 		"Rules: candidates must be a non-empty array, every edge_id must come from the provided candidate list, "
-		"action must be one of stop/choose_one/choose_two, and utility should explicitly account for support_coverage "
+		"action must be one of stop/choose_one/choose_two, and utility should explicitly account for answer_bearing_link_bonus "
 		"(adding an explicit support-bearing node beats an early stop when redundancy is not extreme). "
 		"The response must be exactly one JSON object."
 	)
-
-
-def _node_title(graph: LinkContextGraph, node_id: str) -> str:
-	return str(graph.node_attr.get(node_id, {}).get("title", node_id))
-
 
 def _cards_with_fallback(
 	cards: Sequence[StepScoreCard],
@@ -1936,10 +1786,10 @@ def _controller_candidate_from_card(
 	return ControllerCandidate(
 		edge_id=edge_id,
 		utility=_clamp_score(card.total_score),
-		support_coverage=_clamp_score(
+		answer_bearing_link_bonus=_clamp_score(
 			card.subscores.get(
-				"support_coverage",
-				card.subscores.get("support_coverage_hint", card.total_score),
+				"answer_bearing_link_bonus",
+				card.total_score,
 			)
 		),
 		direct_support=_clamp_score(
@@ -1979,117 +1829,6 @@ def _allow_choose_two(
 	if primary.utility < 0.55 or secondary.utility < 0.55:
 		return False
 	return (primary.utility - secondary.utility) <= 0.07
-
-
-def _decision_to_cards(
-	*,
-	decision: ControllerDecision,
-	fallback_cards: Sequence[StepScoreCard],
-	candidate_links: Sequence[LinkContext],
-	provider: str,
-	model: str | None,
-	mode: str,
-	prefilter_top_n: int,
-) -> list[StepScoreCard]:
-	candidate_map = {candidate.edge_id: candidate for candidate in decision.candidates}
-	top_prefiltered = set(candidate_map)
-	if not top_prefiltered:
-		top_prefiltered = {
-			card.edge_id
-			for card in sorted(
-				fallback_cards,
-				key=lambda item: (item.total_score, item.edge_id),
-				reverse=True,
-			)[:prefilter_top_n]
-		}
-	cards: list[StepScoreCard] = []
-	for index, _link in enumerate(candidate_links):
-		edge_id = str(index)
-		fallback_card = fallback_cards[index] if index < len(fallback_cards) else None
-		if edge_id not in top_prefiltered:
-			cards.append(
-				StepScoreCard(
-					edge_id=edge_id,
-					total_score=0.0,
-					subscores={"prefilter_score": 0.0},
-					rationale=None,
-					text=decision.text,
-					backend=provider,
-					provider=provider,
-					model=model,
-					latency_s=decision.latency_s,
-					prompt_tokens=decision.prompt_tokens,
-					completion_tokens=decision.completion_tokens,
-					total_tokens=decision.total_tokens,
-				cache_hit=decision.cache_hit,
-					fallback_reason="prefiltered_out",
-					raw_response=decision.raw_response,
-					llm_calls=decision.llm_attempts,
-					decision_action=decision.effective_action or decision.action,
-					raw_decision_action=decision.action,
-					primary_edge_id=decision.primary_edge_id,
-					secondary_edge_id=decision.secondary_edge_id,
-						backup_edge_id=decision.backup_edge_id,
-					stop_score=decision.stop_score,
-					evidence_cluster_confidence=decision.evidence_cluster_confidence,
-					prefiltered_candidate_count=len(top_prefiltered),
-				)
-			)
-			continue
-		candidate = candidate_map.get(edge_id)
-		subscores: dict[str, float]
-		total_score: float
-		rationale: str | None
-		if candidate is not None:
-			subscores = {
-				"controller_utility": candidate.utility,
-				"support_coverage": candidate.support_coverage,
-				"direct_support": candidate.direct_support,
-				"bridge_potential": candidate.bridge_potential,
-				"redundancy_risk": candidate.redundancy_risk,
-			}
-			if mode == "two_hop":
-				subscores["future_potential"] = _clamp_score(candidate.future_potential)
-			total_score = candidate.utility
-			rationale = candidate.rationale
-		elif fallback_card is not None:
-			subscores = dict(fallback_card.subscores)
-			total_score = fallback_card.total_score
-			rationale = fallback_card.rationale
-		else:
-			subscores = {"controller_utility": 0.0}
-			total_score = 0.0
-			rationale = None
-		cards.append(
-			StepScoreCard(
-				edge_id=edge_id,
-				total_score=total_score,
-				subscores=subscores,
-				rationale=rationale,
-				text=decision.text,
-				backend=provider,
-				provider=provider,
-				model=model,
-				latency_s=decision.latency_s,
-				prompt_tokens=decision.prompt_tokens,
-				completion_tokens=decision.completion_tokens,
-				total_tokens=decision.total_tokens,
-				cache_hit=decision.cache_hit,
-				fallback_reason=decision.fallback_reason,
-				raw_response=decision.raw_response,
-				llm_calls=decision.llm_attempts,
-				decision_action=decision.effective_action or decision.action,
-				raw_decision_action=decision.action,
-				primary_edge_id=decision.primary_edge_id,
-				secondary_edge_id=decision.secondary_edge_id,
-				backup_edge_id=decision.backup_edge_id,
-				stop_score=decision.stop_score,
-				evidence_cluster_confidence=decision.evidence_cluster_confidence,
-				prefiltered_candidate_count=len(top_prefiltered),
-			)
-		)
-	return cards
-
 
 def _parse_completion_payload(text: str) -> dict[str, Any]:
 	stripped = text.strip()
