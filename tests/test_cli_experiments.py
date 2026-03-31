@@ -679,9 +679,11 @@ def test_print_summary_renders_main_table_only_for_non_llm_rows():
 	assert "prec_nonempty" in output
 	assert "f1_nonempty" in output
 	assert "f1_all" in output
+	assert "sel_mass" in output
 	assert "util" in output
 	assert "empty" in output
-	assert "ans_em" in output
+	assert "ans_em" not in output
+	assert "ans_f1" not in output
 	assert "selector legend" not in output
 	assert "selector health" not in output
 	assert "2wikimultihop selector health" not in output
@@ -712,7 +714,7 @@ def test_print_summary_renders_selector_health_table_for_llm_rows():
 	output = console.export_text()
 	assert "2wikimultihop summary" in output
 	assert "2wikimultihop selector health" in output
-	assert "sel_tokens" in output
+	assert "llm_toks" in output
 	assert "sel_calls" in output
 	assert "fallback" in output
 	assert "parse_fail" in output

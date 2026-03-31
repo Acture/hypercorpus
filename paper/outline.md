@@ -91,8 +91,8 @@ For naturally linked corpora, a dense-started, budgeted selector can recover str
 - **Metrics:**
   - Primary: `support_f1_zero_on_empty` (penalizes empty selections).
   - Secondary: `support_precision`, `support_recall`, `budget_utilization`, `budget_adherence`.
-  - Diagnostic: `selection_runtime_s`, `selector_total_tokens`, `selected_nodes_count`, `selected_token_estimate`.
-  - QA metrics (`answer_em`, `answer_f1`) as reviewer-facing sanity checks only; not primary.
+  - Diagnostic: `selection_runtime_s`, `selector_total_tokens`, `selected_nodes_count`, `selected_corpus_mass`.
+  - Answer-generation metrics remain available in generic summaries but are out of scope for this selector paper.
 - **Budgets:**
   - `2Wiki` calibration: fixed budgets such as `128` and `256`.
   - `IIRC` main table: selector-budget ratios such as `0.01`, `0.02`, `0.05`, `0.10`, and `1.0` as the full-corpus reference.

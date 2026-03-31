@@ -2258,13 +2258,11 @@ def _build_main_summary_table(summary, *, title: str | None = None) -> Table:
 	main_table.add_column("prec_nonempty", justify="right", no_wrap=True)
 	main_table.add_column("f1_nonempty", justify="right", no_wrap=True)
 	main_table.add_column("f1_all", justify="right", no_wrap=True)
-	main_table.add_column("sel_tokens", justify="right", no_wrap=True)
+	main_table.add_column("sel_mass", justify="right", no_wrap=True)
 	main_table.add_column("util", justify="right", no_wrap=True)
 	main_table.add_column("empty", justify="right", no_wrap=True)
 	main_table.add_column("adhere", justify="right", no_wrap=True)
 	main_table.add_column("rt_s", justify="right", no_wrap=True)
-	main_table.add_column("ans_em", justify="right", no_wrap=True)
-	main_table.add_column("ans_f1", justify="right", no_wrap=True)
 
 	for row in summary.selector_budgets:
 		cells = [
@@ -2274,13 +2272,11 @@ def _build_main_summary_table(summary, *, title: str | None = None) -> Table:
 			_format_metric(row.avg_support_precision),
 			_format_metric(row.avg_support_f1),
 			_format_metric(row.avg_support_f1_zero_on_empty),
-			_format_metric(row.avg_selected_token_estimate),
+			_format_metric(row.avg_selected_corpus_mass),
 			_format_metric(row.avg_budget_utilization),
 			_format_metric(row.avg_empty_selection_rate),
 			_format_metric(row.avg_budget_adherence),
 			_format_metric(row.avg_selection_runtime_s),
-			_format_metric(row.avg_answer_em),
-			_format_metric(row.avg_answer_f1),
 		]
 		main_table.add_row(*cells)
 
@@ -2291,7 +2287,7 @@ def _build_selector_health_table(summary, *, title: str | None = None) -> Table:
 	health_table = Table(title=title or f"{summary.dataset_name} selector health")
 	health_table.add_column("selector", overflow="fold", max_width=88)
 	health_table.add_column("budget", justify="right", no_wrap=True)
-	health_table.add_column("sel_tokens", justify="right", no_wrap=True)
+	health_table.add_column("llm_toks", justify="right", no_wrap=True)
 	health_table.add_column("sel_calls", justify="right", no_wrap=True)
 	health_table.add_column("sel_rt_s", justify="right", no_wrap=True)
 	health_table.add_column("fallback", justify="right", no_wrap=True)

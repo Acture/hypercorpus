@@ -97,6 +97,10 @@ class SelectedCorpus:
 	token_estimate: int
 	root_node_ids: list[str] = field(default_factory=list)
 
+	@property
+	def corpus_mass(self) -> int:
+		return self.token_estimate
+
 
 @dataclass(slots=True)
 class SelectionMetrics:
@@ -120,6 +124,26 @@ class SelectionMetrics:
 	support_f1_zero_on_empty: float | None = None
 	support_set_em: float | None = None
 	path_hit: bool | None = None
+
+	@property
+	def selector_budget_tokens(self) -> int | None:
+		return self.token_budget_tokens
+
+	@property
+	def selector_budget_ratio(self) -> float | None:
+		return self.token_budget_ratio
+
+	@property
+	def selector_budget_limit(self) -> int:
+		return self.budget_token_limit
+
+	@property
+	def selected_corpus_mass(self) -> int:
+		return self.selected_token_estimate
+
+	@property
+	def retained_corpus_mass_ratio(self) -> float:
+		return self.compression_ratio
 
 
 @dataclass(slots=True)
@@ -192,6 +216,22 @@ class SelectorBudgetSummary:
 	avg_answer_em: float | None
 	avg_answer_f1: float | None
 	avg_support_set_em: float | None = None
+
+	@property
+	def selector_budget_tokens(self) -> int | None:
+		return self.token_budget_tokens
+
+	@property
+	def selector_budget_ratio(self) -> float | None:
+		return self.token_budget_ratio
+
+	@property
+	def avg_selected_corpus_mass(self) -> float:
+		return self.avg_selected_token_estimate
+
+	@property
+	def avg_retained_corpus_mass_ratio(self) -> float:
+		return self.avg_compression_ratio
 
 
 @dataclass(slots=True)

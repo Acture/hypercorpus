@@ -31,8 +31,8 @@ SUMMARY_REPORT_FIELDNAMES = [
 	"budget_mode",
 	"budget_value",
 	"budget_label",
-	"token_budget_tokens",
-	"token_budget_ratio",
+	"selector_budget_tokens",
+	"selector_budget_ratio",
 	"num_cases",
 	"support_recall",
 	"support_precision",
@@ -43,13 +43,12 @@ SUMMARY_REPORT_FIELDNAMES = [
 	"budget_adherence",
 	"empty_selection_rate",
 	"selected_nodes",
-	"selected_token_estimate",
+	"selected_corpus_mass",
+	"retained_corpus_mass_ratio",
 	"selection_runtime_s",
 	"selector_total_tokens",
 	"selector_runtime_s",
 	"selector_llm_calls",
-	"answer_em",
-	"answer_f1",
 ]
 
 STUDY_COMPARISON_FIELDNAMES = [
@@ -449,8 +448,8 @@ def _selector_budget_report_row(
 		"budget_mode": selector_budget.budget_mode,
 		"budget_value": selector_budget.budget_value,
 		"budget_label": selector_budget.budget_label,
-		"token_budget_tokens": selector_budget.token_budget_tokens,
-		"token_budget_ratio": selector_budget.token_budget_ratio,
+		"selector_budget_tokens": selector_budget.selector_budget_tokens,
+		"selector_budget_ratio": selector_budget.selector_budget_ratio,
 		"num_cases": selector_budget.num_cases,
 		"support_recall": selector_budget.avg_support_recall,
 		"support_precision": selector_budget.avg_support_precision,
@@ -461,13 +460,12 @@ def _selector_budget_report_row(
 		"budget_adherence": selector_budget.avg_budget_adherence,
 		"empty_selection_rate": selector_budget.avg_empty_selection_rate,
 		"selected_nodes": selector_budget.avg_selected_nodes,
-		"selected_token_estimate": selector_budget.avg_selected_token_estimate,
+		"selected_corpus_mass": selector_budget.avg_selected_corpus_mass,
+		"retained_corpus_mass_ratio": selector_budget.avg_retained_corpus_mass_ratio,
 		"selection_runtime_s": selector_budget.avg_selection_runtime_s,
 		"selector_total_tokens": selector_budget.avg_selector_total_tokens,
 		"selector_runtime_s": selector_budget.avg_selector_runtime_s,
 		"selector_llm_calls": selector_budget.avg_selector_llm_calls,
-		"answer_em": selector_budget.avg_answer_em,
-		"answer_f1": selector_budget.avg_answer_f1,
 	}
 	row.update(spec)
 	return row

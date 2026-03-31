@@ -182,6 +182,10 @@ Do not run the full study preset first. Run only this shortlist:
 - `gold_support_context`
 - `full_corpus_upper_bound`
 
+Canonical implementation preset for this surface:
+
+- `iirc_selector_main`
+
 Selector budgets for the current paper are ratio-controlled on the selected subgraph, not downstream reader-context budgets:
 
 - `0.01`
@@ -203,7 +207,7 @@ The comparison must land on the same selector-budget frame, using:
 - `support_recall`
 - `avg_path_hit`
 - `selected_nodes_count`
-- `selected_token_estimate`
+- `selected_corpus_mass`
 - `selection_runtime_s`
 - `selector_total_tokens`
 

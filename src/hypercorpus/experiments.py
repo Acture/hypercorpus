@@ -103,6 +103,7 @@ StudyPresetName = Literal[
 	"single_path_edge_ablation_local",
 	"baseline_retest_local",
 	"branchy_profiles_384_512",
+	"iirc_selector_main",
 ]
 
 
@@ -135,6 +136,7 @@ class StudyPresetSpec:
 	selector_preset: str | None = None
 	selector_names: tuple[str, ...] | None = None
 	token_budgets: tuple[int, ...] | None = None
+	budget_ratios: tuple[float, ...] | None = None
 	include_diagnostics: bool = True
 	control_selector_name: str | None = None
 
@@ -208,6 +210,15 @@ _BASELINE_RETEST_SELECTORS: tuple[str, ...] = (
 	"full_corpus_upper_bound",
 )
 
+_IIRC_SELECTOR_MAIN_SELECTORS: tuple[str, ...] = (
+	"top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+	"top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
+	"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
+	"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2",
+	"gold_support_context",
+	"full_corpus_upper_bound",
+)
+
 _STUDY_PRESETS: tuple[StudyPresetSpec, ...] = (
 	StudyPresetSpec(
 		name="single_path_edge_ablation_local",
@@ -232,6 +243,14 @@ _STUDY_PRESETS: tuple[StudyPresetSpec, ...] = (
 		token_budgets=(384, 512),
 		include_diagnostics=True,
 		control_selector_name="top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1__profile_overlap_balanced",
+	),
+	StudyPresetSpec(
+		name="iirc_selector_main",
+		description="Canonical full-IIRC selector-only comparison on ratio-controlled corpus-mass budgets.",
+		selector_names=_IIRC_SELECTOR_MAIN_SELECTORS,
+		budget_ratios=(0.01, 0.02, 0.05, 0.10, 1.0),
+		include_diagnostics=True,
+		control_selector_name="top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
 	),
 )
 
@@ -1492,14 +1511,21 @@ def _resolve_experiment_config(
 			include_diagnostics = study.include_diagnostics
 
 	resolved_token_budgets = list(token_budgets) if token_budgets is not None else None
+	resolved_budget_ratios = list(budget_ratios) if budget_ratios is not None else None
 	if (
 		resolved_token_budgets is None
-		and budget_ratios is None
+		and resolved_budget_ratios is None
 		and study is not None
 		and study.token_budgets is not None
 	):
 		resolved_token_budgets = list(study.token_budgets)
-	resolved_budget_ratios = list(budget_ratios) if budget_ratios is not None else None
+	if (
+		resolved_token_budgets is None
+		and resolved_budget_ratios is None
+		and study is not None
+		and study.budget_ratios is not None
+	):
+		resolved_budget_ratios = list(study.budget_ratios)
 
 	return _ResolvedExperimentConfig(
 		selector_names=resolved_selector_names,

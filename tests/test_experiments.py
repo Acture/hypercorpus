@@ -130,6 +130,7 @@ def test_available_study_presets_are_fixed():
 		"single_path_edge_ablation_local",
 		"baseline_retest_local",
 		"branchy_profiles_384_512",
+		"iirc_selector_main",
 	]
 
 
@@ -137,6 +138,7 @@ def test_resolve_study_preset_returns_expected_selectors_and_defaults():
 	single_path = resolve_study_preset("single_path_edge_ablation_local")
 	baseline = resolve_study_preset("baseline_retest_local")
 	branchy = resolve_study_preset("branchy_profiles_384_512")
+	iirc_main = resolve_study_preset("iirc_selector_main")
 
 	assert single_path.token_budgets == (128, 256)
 	assert single_path.selector_names is not None
@@ -149,6 +151,12 @@ def test_resolve_study_preset_returns_expected_selectors_and_defaults():
 	assert branchy.selector_preset == "branchy_profiles"
 	assert branchy.token_budgets == (384, 512)
 	assert branchy.selector_names is None
+	assert iirc_main.token_budgets is None
+	assert iirc_main.budget_ratios == (0.01, 0.02, 0.05, 0.10, 1.0)
+	assert iirc_main.selector_names is not None
+	assert iirc_main.control_selector_name == (
+		"top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop"
+	)
 
 
 def test_run_2wiki_experiment_rejects_conflicting_budget_inputs(
@@ -469,6 +477,45 @@ def test_run_2wiki_experiment_uses_study_preset_defaults(
 	assert observed["include_diagnostics"] is True
 
 
+def test_run_2wiki_experiment_uses_iirc_selector_main_ratio_defaults(
+	two_wiki_files, tmp_path, monkeypatch
+):
+	questions_path, graph_path = two_wiki_files
+	observed: dict[str, object] = {}
+
+	def _fake_select_selectors(names=None, **kwargs):
+		observed["names"] = names
+		observed["preset"] = kwargs["preset"]
+		return [build_selector(CANONICAL_DENSE)]
+
+	monkeypatch.setattr(
+		"hypercorpus.experiments.select_selectors", _fake_select_selectors
+	)
+
+	evaluations, summary = run_2wiki_experiment(
+		questions_path=questions_path,
+		graph_records_path=graph_path,
+		output_dir=tmp_path / "study-iirc-selector-main",
+		limit=1,
+		study_preset="iirc_selector_main",
+		with_e2e=False,
+		export_graphrag_inputs=False,
+	)
+
+	assert len(evaluations) == 1
+	assert [row.budget_label for row in summary.selector_budgets] == [
+		"ratio-0.0100",
+		"ratio-0.0200",
+		"ratio-0.0500",
+		"ratio-0.1000",
+		"ratio-1.0000",
+	]
+	assert observed["preset"] == "full"
+	expected_names = resolve_study_preset("iirc_selector_main").selector_names
+	assert expected_names is not None
+	assert observed["names"] == list(expected_names)
+
+
 def test_run_2wiki_experiment_explicit_selector_preset_overrides_study_selector_defaults(
 	two_wiki_files, tmp_path, monkeypatch
 ):
@@ -617,6 +664,12 @@ def test_summary_report_rows_include_profile_and_budget_fill_fields():
 	assert rows[0]["budget_fill_pool_k"] == 64
 	assert rows[0]["budget_fill_score_floor"] is None
 	assert rows[0]["budget_fill_relative_drop_ratio"] == 0.5
+	assert rows[0]["selector_budget_tokens"] == 128
+	assert rows[0]["selector_budget_ratio"] is None
+	assert rows[0]["selected_corpus_mass"] == 64.0
+	assert rows[0]["retained_corpus_mass_ratio"] == 0.1
+	assert "answer_em" not in rows[0]
+	assert "answer_f1" not in rows[0]
 	assert rows[1]["profile_name"] is None
 	assert rows[1]["budget_fill_mode"] is None
 	assert rows[1]["budget_fill_pool_k"] is None

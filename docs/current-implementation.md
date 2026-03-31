@@ -16,7 +16,7 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
 
 - The primary claim is pre-RAG subgraph/corpus discovery, not end-to-end QA dominance.
 - The headline metric is `support_f1_zero_on_empty`.
-- `answer_em` and `answer_f1` are secondary reviewer-facing sanity checks.
+- `answer_em` and `answer_f1` remain available in generic experiment summaries, but they are out of scope for the current selector-paper export surface.
 - The full-corpus comparison is a GraphRAG proxy, not a full GraphRAG integration.
 - The current method story is `dense-started constrained subgraph selection`, not "walk instead of dense".
 - The current version is intentionally lightweight, zero-shot where possible, and budget-aware.
@@ -37,7 +37,7 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
 - Start policies return ranked node lists through a stable `StartPolicy.select_start(...)` contract.
 - Dense and lexical seed selection are both supported.
 - The current experiment runner supports named selector presets, including `paper_recommended`, `paper_recommended_local`, and `branchy_profiles`, plus extra diagnostic selectors outside the default study set.
-- The experiment runner also supports local-only study presets, including `single_path_edge_ablation_local`, `baseline_retest_local`, and `branchy_profiles_384_512`, which bundle selector defaults and token budgets for planned experiments.
+- The experiment runner also supports local-only study presets, including `single_path_edge_ablation_local`, `baseline_retest_local`, and `branchy_profiles_384_512`, plus the canonical selector-paper preset `iirc_selector_main`, which bundles shortlist selectors with ratio-controlled selector budgets.
 - `paper_recommended` is the full paper-facing preset and requires explicit selector LLM configuration. `paper_recommended_local` is the local-only variant that avoids `link_context_llm`.
 - Each run now writes `run_manifest.json`, `evaluated_case_ids.txt`, and `study_comparison_rows.csv`, so broader phase samples can be replayed exactly without relying on `--limit`.
 - Each run also writes `subset_comparison_rows.csv`, so harder-case and path-aware slices can be compared against the dense control without reprocessing raw logs.
@@ -46,8 +46,8 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
 
 ### Budgeted Evaluation
 
-- The experiment layer uses an explicit budget object with `max_steps`, `top_k`, `token_budget_tokens`, and `token_budget_ratio`.
-- Both absolute token budgets and corpus-ratio budgets are implemented.
+- The experiment layer uses an explicit selector budget object with `token_budget_tokens` and `token_budget_ratio`.
+- Both fixed selector-budget tokens and selector-budget corpus ratios are implemented.
 - Fixed token budgets remain useful on fragment-level calibration surfaces such as reduced `2Wiki`.
 - Ratio budgets are the cleaner control surface for coarse full-node selector studies such as canonical `IIRC`, where full-document node size makes tiny fixed token caps misleading.
 - The evaluator treats subgraph/corpus discovery as the primary output.
@@ -62,15 +62,11 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
   - `empty_selection`
   - `selection_runtime_s`
   - `selected_nodes_count`
-  - `selected_token_estimate`
+  - `selected_corpus_mass` in paper-facing CSV/report exports (internally still backed by whole-node token estimates)
 - Reviewer-facing diagnostics also include:
   - `avg_path_hit` as the unified path-level exactness metric (`Path Recall` analogue)
   - `bridge` / `comparison` subset slices when `question_type` is available or inferable
-- Secondary metrics include:
-  - `answer_em`
-  - `answer_f1`
-  - `answer`
-  - `confidence`
+- Downstream answer metrics remain available in generic experiment summaries, but they are no longer part of the default selector-paper CSV/table surface.
 - Summaries are grouped by `selector x budget x selector_provider x selector_model`.
 
 ### 2Wiki Runtime and Storage
@@ -129,7 +125,8 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
 
 - `constrained_multipath` is a controller-guided branchy family with at most two live branches and one scout fork.
 - It is designed as a dense-anchored selector, not a general beam-search replacement.
-- It keeps branch count, backtracking, and budget pacing explicitly bounded so precision collapse is measurable rather than hidden inside a broad search frontier.
+- It keeps branch count and backtracking explicitly bounded so precision collapse is measurable rather than hidden inside a broad search frontier.
+- `budget_pacing_stop` remains available only for fixed-token diagnostic runs; ratio-controlled selector-paper runs do not use it by default.
 
 ### Broad Search Variants
 

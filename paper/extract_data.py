@@ -8,7 +8,6 @@ These CSVs are the single source of truth for paper tables.
 """
 
 import csv
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,7 +25,7 @@ METRIC_COLS = [
 	"budget_adherence",
 	"empty_selection_rate",
 	"selected_nodes",
-	"selected_token_estimate",
+	"selected_corpus_mass",
 	"selection_runtime_s",
 	"selector_total_tokens",
 ]
@@ -50,8 +49,23 @@ KEY_COLS = [
 	"budget_mode",
 	"budget_value",
 	"budget_label",
-	"token_budget_tokens",
+	"selector_budget_tokens",
+	"selector_budget_ratio",
 ]
+
+LEGACY_ROW_ALIASES = {
+	"selector_budget_tokens": "token_budget_tokens",
+	"selector_budget_ratio": "token_budget_ratio",
+	"selected_corpus_mass": "selected_token_estimate",
+}
+
+
+def _normalize_summary_row(row: dict[str, str]) -> dict[str, str]:
+	normalized = dict(row)
+	for canonical_key, legacy_key in LEGACY_ROW_ALIASES.items():
+		if normalized.get(canonical_key, "") == "" and normalized.get(legacy_key, "") != "":
+			normalized[canonical_key] = normalized[legacy_key]
+	return normalized
 
 
 def _weighted_avg(rows: list[dict]) -> dict:
@@ -83,7 +97,7 @@ def read_summary_rows(run_dir: Path) -> list[dict]:
 	top = run_dir / "summary_rows.csv"
 	if top.exists():
 		with open(top) as f:
-			return list(csv.DictReader(f))
+			return [_normalize_summary_row(row) for row in csv.DictReader(f)]
 
 	# Chunked format: read all chunks, then aggregate
 	raw_rows: list[dict] = []
@@ -93,7 +107,7 @@ def read_summary_rows(run_dir: Path) -> list[dict]:
 			csv_path = chunk / "summary_rows.csv"
 			if csv_path.exists():
 				with open(csv_path) as f:
-					raw_rows.extend(csv.DictReader(f))
+					raw_rows.extend(_normalize_summary_row(row) for row in csv.DictReader(f))
 
 	if not raw_rows:
 		return []

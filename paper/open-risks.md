@@ -44,8 +44,8 @@
 - Risk: reviewers read the work as a QA paper and judge it against answer-generation systems.
 - Mitigation:
   - Selector-first framing in `docs/paper-positioning.md`.
-  - All primary metrics are support F1, not answer F1.
-  - QA metrics are secondary sanity checks only.
+  - All primary metrics are support F1, support-set exactness, selector runtime, and retained corpus mass.
+  - Answer-generation metrics remain available in generic summaries but are out of scope for the default selector-paper export surface.
 - Remaining need: keep experiments, abstract, and related work aligned with retrieval / evidence discovery.
 
 ### 7. External baseline coverage is still limited
