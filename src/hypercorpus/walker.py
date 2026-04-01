@@ -227,6 +227,8 @@ def controller_candidate_trace_to_dict(trace: ControllerCandidateTrace) -> dict[
 		"bridge_potential": trace.bridge_potential,
 		"future_potential": trace.future_potential,
 		"redundancy_risk": trace.redundancy_risk,
+		"generic_concept_like": trace.generic_concept_like,
+		"generic_concept_penalty": trace.generic_concept_penalty,
 	}
 
 
@@ -268,6 +270,12 @@ def controller_candidate_trace_from_dict(payload: dict[str, Any]) -> ControllerC
 		redundancy_risk=None
 		if payload.get("redundancy_risk") is None
 		else float(payload["redundancy_risk"]),
+		generic_concept_like=None
+		if payload.get("generic_concept_like") is None
+		else bool(payload["generic_concept_like"]),
+		generic_concept_penalty=None
+		if payload.get("generic_concept_penalty") is None
+		else float(payload["generic_concept_penalty"]),
 	)
 
 
@@ -279,6 +287,12 @@ def controller_step_trace_to_dict(trace: ControllerStepTrace) -> dict[str, Any]:
 		"primary_edge_id": trace.primary_edge_id,
 		"secondary_edge_id": trace.secondary_edge_id,
 		"backup_edge_id": trace.backup_edge_id,
+		"primary_node_role": trace.primary_node_role,
+		"primary_node_role_confidence": trace.primary_node_role_confidence,
+		"primary_node_role_rationale": trace.primary_node_role_rationale,
+		"secondary_node_role": trace.secondary_node_role,
+		"secondary_node_role_confidence": trace.secondary_node_role_confidence,
+		"secondary_node_role_rationale": trace.secondary_node_role_rationale,
 		"stop_score": trace.stop_score,
 		"evidence_cluster_confidence": trace.evidence_cluster_confidence,
 		"llm_calls": trace.llm_calls,
@@ -313,6 +327,24 @@ def controller_step_trace_from_dict(payload: dict[str, Any]) -> ControllerStepTr
 		backup_edge_id=None
 		if payload.get("backup_edge_id") is None
 		else str(payload["backup_edge_id"]),
+		primary_node_role=None
+		if payload.get("primary_node_role") is None
+		else str(payload["primary_node_role"]),
+		primary_node_role_confidence=None
+		if payload.get("primary_node_role_confidence") is None
+		else float(payload["primary_node_role_confidence"]),
+		primary_node_role_rationale=None
+		if payload.get("primary_node_role_rationale") is None
+		else str(payload["primary_node_role_rationale"]),
+		secondary_node_role=None
+		if payload.get("secondary_node_role") is None
+		else str(payload["secondary_node_role"]),
+		secondary_node_role_confidence=None
+		if payload.get("secondary_node_role_confidence") is None
+		else float(payload["secondary_node_role_confidence"]),
+		secondary_node_role_rationale=None
+		if payload.get("secondary_node_role_rationale") is None
+		else str(payload["secondary_node_role_rationale"]),
 		stop_score=None
 		if payload.get("stop_score") is None
 		else float(payload["stop_score"]),

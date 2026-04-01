@@ -5,6 +5,7 @@ from typing import cast
 
 import pytest
 
+import hypercorpus.selector_llm as selector_llm_module
 from hypercorpus.eval import EvaluationBudget, EvaluationCase
 from hypercorpus.selector import RuntimeBudget, build_selector, select_selectors
 from hypercorpus.controller_exposure import (
@@ -13,6 +14,8 @@ from hypercorpus.controller_exposure import (
 	answer_bearing_link_bonus,
 	build_controller_candidate_bundle,
 	build_controller_exposure_plan,
+	generic_concept_penalty,
+	is_generic_concept_candidate,
 )
 from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
 from hypercorpus.selector_llm import (
@@ -22,6 +25,8 @@ from hypercorpus.selector_llm import (
 	LLMControllerStepScorer,
 	OpenAIBackendAdapter,
 	SelectorLLMConfig,
+	_controller_response_schema,
+	_controller_schema_instructions,
 	_controller_user_prompt,
 )
 from hypercorpus.walker import StepScoreCard
@@ -139,6 +144,32 @@ class FakeTextSequenceBackend:
 		)
 
 
+def _primary_role_fields(
+	role: str = "bridge_support",
+	*,
+	confidence: float = 0.88,
+	rationale: str = "Primary edge role for the chosen node.",
+) -> dict[str, object]:
+	return {
+		"primary_node_role": role,
+		"primary_node_role_confidence": confidence,
+		"primary_node_role_rationale": rationale,
+	}
+
+
+def _secondary_role_fields(
+	role: str = "bridge_support",
+	*,
+	confidence: float = 0.74,
+	rationale: str = "Secondary edge role for the chosen node.",
+) -> dict[str, object]:
+	return {
+		"secondary_node_role": role,
+		"secondary_node_role_confidence": confidence,
+		"secondary_node_role_rationale": rationale,
+	}
+
+
 class FakeSequenceBackend:
 	def __init__(
 		self,
@@ -171,6 +202,43 @@ class FakeSequenceBackend:
 			completion_tokens=self.completion_tokens,
 			total_tokens=self.prompt_tokens + self.completion_tokens,
 			raw_response=json.dumps({"payload": payload}, ensure_ascii=False),
+		)
+
+
+class FakeRetrySequenceBackend:
+	def __init__(
+		self,
+		items: list[dict[str, object] | Exception],
+		*,
+		prompt_tokens: int = 17,
+		completion_tokens: int = 9,
+	):
+		self.items = items
+		self.prompt_tokens = prompt_tokens
+		self.completion_tokens = completion_tokens
+		self.call_count = 0
+
+	def complete_json(
+		self,
+		*,
+		model: str,
+		system_prompt: str,
+		user_prompt: str,
+		temperature: float,
+		response_schema=None,
+	) -> BackendCompletion:
+		del model, system_prompt, user_prompt, temperature, response_schema
+		item = self.items[min(self.call_count, len(self.items) - 1)]
+		self.call_count += 1
+		if isinstance(item, Exception):
+			raise item
+		return BackendCompletion(
+			text=json.dumps(item, ensure_ascii=False),
+			payload=item,
+			prompt_tokens=self.prompt_tokens,
+			completion_tokens=self.completion_tokens,
+			total_tokens=self.prompt_tokens + self.completion_tokens,
+			raw_response=json.dumps({"payload": item}, ensure_ascii=False),
 		)
 
 
@@ -294,6 +362,7 @@ def _prepare_controller_inputs(
 		visited_nodes=visited_nodes,
 		mode=controller.mode,
 		future_top_n=controller.config.controller_future_top_n,
+		generic_page_policy=controller.config.controller_generic_page_policy,
 	)
 	return fallback_cards, exposure_plan, bundle
 
@@ -809,6 +878,10 @@ def test_controller_single_path_records_decision_and_backtrack(monkeypatch):
 				"primary_edge_id": "0",
 				"secondary_edge_id": "1",
 				"backup_edge_id": "1",
+				**_primary_role_fields(
+					"background_entity",
+					rationale="The flashy edge is a background entity detour.",
+				),
 				"stop_score": 0.20,
 				"evidence_cluster_confidence": 0.42,
 				"candidates": [
@@ -837,6 +910,10 @@ def test_controller_single_path_records_decision_and_backtrack(monkeypatch):
 				"primary_edge_id": "0",
 				"secondary_edge_id": "",
 				"backup_edge_id": "",
+				**_primary_role_fields(
+					"answer_bearing_support",
+					rationale="The answer edge is explicit support.",
+				),
 				"stop_score": 0.10,
 				"evidence_cluster_confidence": 0.86,
 				"candidates": [
@@ -891,6 +968,14 @@ def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatc
 				"primary_edge_id": "1",
 				"secondary_edge_id": "0",
 				"backup_edge_id": "0",
+				**_primary_role_fields(
+					"bridge_support",
+					rationale="The bridge branch carries the best support path.",
+				),
+				**_secondary_role_fields(
+					"background_entity",
+					rationale="The flashy branch is weaker context.",
+				),
 				"stop_score": 0.18,
 				"evidence_cluster_confidence": 0.78,
 				"candidates": [
@@ -919,6 +1004,10 @@ def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatc
 				"primary_edge_id": "0",
 				"secondary_edge_id": "",
 				"backup_edge_id": "",
+				**_primary_role_fields(
+					"answer_bearing_support",
+					rationale="The answer edge is explicit support.",
+				),
 				"stop_score": 0.12,
 				"evidence_cluster_confidence": 0.90,
 				"candidates": [
@@ -965,12 +1054,16 @@ def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
 		[
 			'{"action":": "}',
 			json.dumps(
-				{
-					"action": "choose_one",
-					"primary_edge_id": "0",
-					"secondary_edge_id": "",
-					"backup_edge_id": "",
-					"stop_score": 0.10,
+						{
+							"action": "choose_one",
+							"primary_edge_id": "0",
+							"secondary_edge_id": "",
+							"backup_edge_id": "",
+							**_primary_role_fields(
+								"answer_bearing_support",
+								rationale="The bridge answer edge is explicit support.",
+							),
+							"stop_score": 0.10,
 					"evidence_cluster_confidence": 0.86,
 					"candidates": [
 						{
@@ -1080,6 +1173,140 @@ def test_controller_retries_three_times_then_falls_back(monkeypatch):
 	assert decision.fallback_reason.startswith("schema_error:")
 
 
+def test_controller_retries_provider_rate_limit_then_succeeds(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	sleep_delays: list[float] = []
+	monkeypatch.setattr(
+		selector_llm_module.time,
+		"sleep",
+		lambda delay_s: sleep_delays.append(delay_s),
+	)
+	graph = _build_bridge_graph()
+	backend = FakeRetrySequenceBackend(
+		[
+			RuntimeError("HTTP Error 429: Too Many Requests"),
+			RuntimeError("HTTP Error 429: Too Many Requests"),
+			{
+				"action": "choose_one",
+				"primary_edge_id": "0",
+				"secondary_edge_id": "",
+				"backup_edge_id": "",
+				**_primary_role_fields(
+					"answer_bearing_support",
+					rationale="The bridge answer edge is explicit support.",
+				),
+				"stop_score": 0.10,
+				"evidence_cluster_confidence": 0.86,
+				"candidates": [
+					{
+						"edge_id": "0",
+						"utility": 0.86,
+						"answer_bearing_link_bonus": 0.86,
+						"direct_support": 0.72,
+						"bridge_potential": 0.98,
+						"future_potential": 0.94,
+						"redundancy_risk": 0.08,
+						"rationale": "This finishes the bridge path.",
+					}
+				],
+			},
+		]
+	)
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: backend,
+	)
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
+		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+	)
+
+	assert backend.call_count == 3
+	assert sleep_delays == [1.0, 2.0]
+	assert decision.fallback_reason is None
+	assert decision.llm_attempts == 3
+	assert decision.primary_edge_id == "0"
+
+
+def test_llm_step_scorer_retries_provider_rate_limit_then_succeeds(
+	sample_graph, monkeypatch
+):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	sleep_delays: list[float] = []
+	monkeypatch.setattr(
+		selector_llm_module.time,
+		"sleep",
+		lambda delay_s: sleep_delays.append(delay_s),
+	)
+	backend = FakeRetrySequenceBackend(
+		[
+			RuntimeError("HTTP Error 429: Too Many Requests"),
+			{
+				"scores": [
+					{
+						"edge_id": "0",
+						"direct_support": 1.0,
+						"bridge_potential": 0.8,
+						"novelty": 0.6,
+						"rationale": "Cape directly supports the answer.",
+					},
+					{
+						"edge_id": "1",
+						"direct_support": 0.1,
+						"bridge_potential": 0.2,
+						"novelty": 0.5,
+						"rationale": "Director path is weak.",
+					},
+				]
+			},
+		]
+	)
+	scorer = selector_llm_module.LLMStepLinkScorer(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="single_hop",
+		backend_factory=lambda _config: backend,
+	)
+
+	cards = scorer.score_candidates(
+		query="Which city hosts the launch site?",
+		graph=sample_graph,
+		current_node_id="mission",
+		candidate_links=list(sample_graph.links_from("mission")),
+		visited_nodes={"mission"},
+		path_node_ids=["mission"],
+		remaining_steps=1,
+	)
+
+	assert backend.call_count == 2
+	assert sleep_delays == [1.0]
+	assert cards[0].fallback_reason is None
+	assert cards[0].prompt_tokens == 17
+
+
 def test_controller_step_scoring_happens_once_per_stage(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	graph = _build_bridge_graph()
@@ -1089,6 +1316,10 @@ def test_controller_step_scoring_happens_once_per_stage(monkeypatch):
 			"primary_edge_id": "0",
 			"secondary_edge_id": "",
 			"backup_edge_id": "",
+			**_primary_role_fields(
+				"bridge_support",
+				rationale="The bridge edge should be followed.",
+			),
 			"stop_score": 0.05,
 			"evidence_cluster_confidence": 0.91,
 			"candidates": [
@@ -1196,6 +1427,10 @@ def test_controller_preserves_raw_stop_action_in_nested_trace(
 				"primary_edge_id": "0",
 				"secondary_edge_id": "",
 				"backup_edge_id": "",
+				**_primary_role_fields(
+					"answer_bearing_support",
+					rationale="The answer edge is explicit support.",
+				),
 				"stop_score": 0.10,
 				"evidence_cluster_confidence": 0.90,
 				"candidates": [
@@ -1241,6 +1476,10 @@ def test_controller_ratio_budget_does_not_trigger_budget_pacing_stop(monkeypatch
 				"primary_edge_id": "1",
 				"secondary_edge_id": "",
 				"backup_edge_id": "0",
+				**_primary_role_fields(
+					"bridge_support",
+					rationale="The bridge edge should be preferred first.",
+				),
 				"stop_score": 0.10,
 				"evidence_cluster_confidence": 0.20,
 				"candidates": [
@@ -1269,6 +1508,10 @@ def test_controller_ratio_budget_does_not_trigger_budget_pacing_stop(monkeypatch
 				"primary_edge_id": "0",
 				"secondary_edge_id": "",
 				"backup_edge_id": "",
+				**_primary_role_fields(
+					"answer_bearing_support",
+					rationale="The answer edge is explicit support.",
+				),
 				"stop_score": 0.10,
 				"evidence_cluster_confidence": 0.95,
 				"candidates": [
@@ -1310,6 +1553,10 @@ def test_lexical_controller_selector_does_not_require_embedder(monkeypatch):
 			"primary_edge_id": "1",
 			"secondary_edge_id": "",
 			"backup_edge_id": "0",
+			**_primary_role_fields(
+				"bridge_support",
+				rationale="Follow the bridge page.",
+			),
 			"stop_score": 0.05,
 			"evidence_cluster_confidence": 0.92,
 			"candidates": [
@@ -1684,11 +1931,14 @@ def test_controller_prompt_mentions_answer_bearing_bonus():
 			"query": "In what country did Bain attend doctoral seminars of Wlad Godzich?",
 			"current_node_id": "root",
 			"path_titles": ["Thomas Bain (Orange)"],
+			"generic_page_policy": "strong_generic_penalty",
 			"candidates": [
 				{
 					"edge_id": "1",
 					"target_title": "University of Geneva",
 					"answer_bearing_link_bonus": 0.82,
+					"generic_concept_like": False,
+					"generic_concept_penalty": 0.0,
 				}
 			],
 		},
@@ -1698,6 +1948,156 @@ def test_controller_prompt_mentions_answer_bearing_bonus():
 	assert "answer_bearing_link_bonus" in prompt
 	assert "prefer that candidate over stop" in prompt
 	assert "explicit support-bearing node" in prompt
+	assert "primary_node_role" in prompt
+	assert "generic concept, program, or degree pages" in prompt
+	assert "generic_concept_penalty" in prompt
+
+
+def test_generic_concept_title_matcher_and_policy_penalties():
+	card = StepScoreCard(
+		edge_id="0",
+		total_score=0.35,
+		subscores={
+			"target_overlap": 0.0,
+			"anchor_overlap": 0.0,
+		},
+	)
+	link = LinkContext(
+		source="geneva",
+		target="doctorate",
+		anchor_text="Doctorate",
+		sentence="Doctorate is a degree concept.",
+		sent_idx=0,
+	)
+
+	assert is_generic_concept_candidate(
+		target_title="Doctorate",
+		anchor_text="Doctorate",
+	)
+	assert is_generic_concept_candidate(
+		target_title="Master of Advanced Studies",
+		anchor_text="Master of Advanced Studies",
+	)
+	assert not is_generic_concept_candidate(
+		target_title="University of Geneva",
+		anchor_text="University of Geneva",
+	)
+	assert not is_generic_concept_candidate(
+		target_title="Wlad Godzich",
+		anchor_text="Wlad Godzich",
+	)
+	assert (
+		generic_concept_penalty(
+			policy="prompt_only",
+			query="What country is the University of Geneva in?",
+			link=link,
+			target_title="Doctorate",
+			card=card,
+			answer_bearing_bonus=0.0,
+		)
+		== 0.0
+	)
+	light_penalty = generic_concept_penalty(
+		policy="light_generic_penalty",
+		query="What country is the University of Geneva in?",
+		link=link,
+		target_title="Doctorate",
+		card=card,
+		answer_bearing_bonus=0.0,
+	)
+	strong_penalty = generic_concept_penalty(
+		policy="strong_generic_penalty",
+		query="What country is the University of Geneva in?",
+		link=link,
+		target_title="Doctorate",
+		card=card,
+		answer_bearing_bonus=0.0,
+	)
+
+	assert light_penalty > 0.0
+	assert strong_penalty > light_penalty
+
+
+def test_controller_schema_requires_self_label_fields():
+	schema = _controller_response_schema("two_hop")
+	instructions = _controller_schema_instructions("two_hop")
+
+	assert "primary_node_role" in schema["properties"]
+	assert "primary_node_role_confidence" in schema["properties"]
+	assert "primary_node_role_rationale" in schema["properties"]
+	assert "secondary_node_role" in schema["properties"]
+	assert any(
+		"primary_node_role" in clause.get("then", {}).get("required", [])
+		for clause in schema["allOf"]
+	)
+	assert "primary_node_role" in instructions
+	assert "secondary_node_role" in instructions
+
+
+def test_controller_trace_records_self_label_diagnostics(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	backend = FakeBackend(
+		{
+			"action": "choose_one",
+			"primary_edge_id": "1",
+			"secondary_edge_id": "",
+			"backup_edge_id": "0",
+			**_primary_role_fields(
+				"answer_bearing_support",
+				confidence=0.93,
+				rationale="University of Geneva is the explicit answer-bearing support node.",
+			),
+			"stop_score": 0.05,
+			"evidence_cluster_confidence": 0.92,
+			"candidates": [
+				{
+					"edge_id": "1",
+					"utility": 0.92,
+					"answer_bearing_link_bonus": 0.82,
+					"direct_support": 0.80,
+					"bridge_potential": 0.90,
+					"future_potential": 0.55,
+					"redundancy_risk": 0.05,
+					"rationale": "Take the explicit institution support node.",
+				},
+				{
+					"edge_id": "0",
+					"utility": 0.28,
+					"answer_bearing_link_bonus": 0.0,
+					"direct_support": 0.10,
+					"bridge_potential": 0.15,
+					"future_potential": 0.10,
+					"redundancy_risk": 0.85,
+					"rationale": "The degree concept is weak follow-up evidence.",
+				},
+			],
+		}
+	)
+	selector = build_selector(
+		CONTROLLER_SINGLE_PATH,
+		selector_provider="openai",
+		selector_model="gpt-test-mini",
+		selector_api_key_env="OPENAI_API_KEY",
+		selector_backend_factory=lambda _config: backend,
+	)
+	case = EvaluationCase(
+		case_id="q-self-label",
+		query="In what country did Bain attend doctoral seminars of Wlad Godzich?",
+	)
+	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_ratio=0.01))
+
+	result = selector.select(_build_geneva_doctorate_graph(), case, budget)
+
+	assert result.selector_logs[0].controller is not None
+	assert result.selector_logs[0].controller.primary_node_role == "answer_bearing_support"
+	assert result.selector_logs[0].controller.primary_node_role_confidence == pytest.approx(0.93)
+	assert "explicit answer-bearing support node" in (
+		result.selector_logs[0].controller.primary_node_role_rationale or ""
+	)
+	assert any(
+		candidate.generic_concept_like is True
+		for candidate in result.selector_logs[0].controller.candidates
+	)
 
 
 def _build_bridge_graph() -> LinkContextGraph:
@@ -1776,6 +2176,49 @@ def _build_all_dangling_graph() -> LinkContextGraph:
 			target="books?as auth=Wlad+Godzich",
 			anchor_text="books?as auth=Wlad+Godzich",
 			sentence="A malformed query target should never be exposed.",
+			sent_idx=0,
+		)
+	)
+	return graph
+
+
+def _build_geneva_doctorate_graph() -> LinkContextGraph:
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode(
+				"root",
+				"Thomas Bain (Orange)",
+				(
+					"Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
+				),
+			),
+			DocumentNode(
+				"geneva",
+				"University of Geneva",
+				("The University of Geneva is in Switzerland.",),
+			),
+			DocumentNode(
+				"doctorate",
+				"Doctorate",
+				("A doctorate is an academic degree.",),
+			),
+		]
+	)
+	graph.add_link(
+		LinkContext(
+			source="root",
+			target="doctorate",
+			anchor_text="Doctorate",
+			sentence="Doctorate is a generic degree concept.",
+			sent_idx=0,
+		)
+	)
+	graph.add_link(
+		LinkContext(
+			source="root",
+			target="geneva",
+			anchor_text="University of Geneva",
+			sentence="Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
 			sent_idx=0,
 		)
 	)

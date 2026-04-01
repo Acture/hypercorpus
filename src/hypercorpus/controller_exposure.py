@@ -12,7 +12,7 @@ than recomputing candidate visibility or rebuilding prompt payloads ad hoc.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 from hypercorpus.graph import LinkContext, LinkContextGraph
 from hypercorpus.text import content_tokens
@@ -21,6 +21,11 @@ from hypercorpus.walker import (
 	StepScoreCard,
 	_clamp_score,
 )
+
+
+ControllerGenericPagePolicy = Literal[
+	"prompt_only", "light_generic_penalty", "strong_generic_penalty"
+]
 
 
 @dataclass(slots=True)
@@ -69,6 +74,8 @@ class ControllerCandidateBundleEntry:
 	answer_bearing_link_bonus: float
 	source_sentence_mentions_target_title: bool
 	semantic_prefilter_score: float
+	generic_concept_like: bool
+	generic_concept_penalty: float
 	future_candidates: list[ControllerFutureCandidateBundle] = field(default_factory=list)
 
 
@@ -87,6 +94,7 @@ class ControllerCandidateBundle:
 	semantic_prefilter_edge_ids: list[str]
 	bonus_rescued_edge_ids: list[str]
 	visible_edge_ids: list[str]
+	generic_page_policy: ControllerGenericPagePolicy
 	candidates: list[ControllerCandidateBundleEntry]
 
 	def to_prompt_payload(self) -> dict[str, Any]:
@@ -104,6 +112,7 @@ class ControllerCandidateBundle:
 			"semantic_prefilter_edge_ids": list(self.semantic_prefilter_edge_ids),
 			"bonus_rescued_edge_ids": list(self.bonus_rescued_edge_ids),
 			"visible_edge_ids": list(self.visible_edge_ids),
+			"generic_page_policy": self.generic_page_policy,
 			"candidates": [
 				{
 					"edge_id": entry.edge_id,
@@ -118,6 +127,8 @@ class ControllerCandidateBundle:
 					"answer_bearing_link_bonus": entry.answer_bearing_link_bonus,
 					"source_sentence_mentions_target_title": entry.source_sentence_mentions_target_title,
 					"semantic_prefilter_score": entry.semantic_prefilter_score,
+					"generic_concept_like": entry.generic_concept_like,
+					"generic_concept_penalty": entry.generic_concept_penalty,
 					"future_candidates": [
 						{
 							"edge_id": future.edge_id,
@@ -263,6 +274,7 @@ def build_controller_candidate_bundle(
 	visited_nodes: set[str],
 	mode: str,
 	future_top_n: int,
+	generic_page_policy: ControllerGenericPagePolicy,
 ) -> ControllerCandidateBundle:
 	"""Build the typed prompt bundle for the already-planned visible candidates."""
 
@@ -276,11 +288,23 @@ def build_controller_candidate_bundle(
 			title=target_title,
 			sentence=link.sentence,
 		)
+		generic_concept_like = is_generic_concept_candidate(
+			target_title=target_title,
+			anchor_text=link.anchor_text,
+		)
 		answer_bonus = answer_bearing_link_bonus(
 			query=query,
 			graph=graph,
 			link=link,
 			card=score_card,
+		)
+		generic_penalty = generic_concept_penalty(
+			policy=generic_page_policy,
+			query=query,
+			link=link,
+			target_title=target_title,
+			card=score_card,
+			answer_bearing_bonus=answer_bonus,
 		)
 		entry = ControllerCandidateBundleEntry(
 			edge_id=str(index),
@@ -305,6 +329,8 @@ def build_controller_candidate_bundle(
 				if semantic_score_cards is not None
 				else 0.0
 			),
+			generic_concept_like=generic_concept_like,
+			generic_concept_penalty=generic_penalty,
 		)
 		if mode == "two_hop":
 			next_links = [
@@ -369,6 +395,7 @@ def build_controller_candidate_bundle(
 		semantic_prefilter_edge_ids=list(exposure_plan.semantic_prefilter_edge_ids),
 		bonus_rescued_edge_ids=list(exposure_plan.bonus_rescued_edge_ids),
 		visible_edge_ids=[str(index) for index in exposure_plan.visible_indices],
+		generic_page_policy=generic_page_policy,
 		candidates=entries,
 	)
 
@@ -476,6 +503,65 @@ def answer_bearing_link_bonus(
 		+ 0.05 * anchor_overlap
 		+ 0.05 * target_query_overlap
 	)
+
+
+_GENERIC_CONCEPT_MARKERS: tuple[str, ...] = (
+	"doctorate",
+	"doctoral",
+	"master of",
+	"master of advanced studies",
+	"master advanced studies",
+	"master's",
+	"masters",
+	"bachelor",
+	"licentiate",
+	"certificate",
+	"diploma",
+	"academic degree",
+	"degree",
+	"programme",
+	"program",
+)
+
+
+def is_generic_concept_candidate(*, target_title: str, anchor_text: str) -> bool:
+	target_text = " ".join(content_tokens(target_title))
+	anchor_text_normalized = " ".join(content_tokens(anchor_text))
+	combined = " ".join(
+		part for part in (target_text, anchor_text_normalized) if part
+	).strip()
+	if not combined:
+		return False
+	return any(marker in combined for marker in _GENERIC_CONCEPT_MARKERS)
+
+
+def generic_concept_penalty(
+	*,
+	policy: ControllerGenericPagePolicy,
+	query: str,
+	link: LinkContext,
+	target_title: str,
+	card: StepScoreCard,
+	answer_bearing_bonus: float,
+) -> float:
+	if policy == "prompt_only":
+		return 0.0
+	if not is_generic_concept_candidate(
+		target_title=target_title,
+		anchor_text=link.anchor_text,
+	):
+		return 0.0
+	query_tokens = set(content_tokens(query))
+	target_tokens = set(content_tokens(target_title))
+	if target_tokens and target_tokens & query_tokens:
+		return 0.0
+	target_overlap = _clamp_score(card.subscores.get("target_overlap", 0.0))
+	anchor_overlap = _clamp_score(card.subscores.get("anchor_overlap", 0.0))
+	if answer_bearing_bonus > 0.15 or target_overlap > 0.20 or anchor_overlap > 0.35:
+		return 0.0
+	if policy == "light_generic_penalty":
+		return 0.20
+	return 0.40
 
 
 def node_title(graph: LinkContextGraph, node_id: str) -> str:

@@ -25,6 +25,8 @@ class ControllerDecisionCandidate(Protocol):
 	future_potential: float | None
 	redundancy_risk: float
 	rationale: str | None
+	generic_concept_like: bool
+	generic_concept_penalty: float
 
 
 class ControllerDecisionPayload(Protocol):
@@ -33,6 +35,12 @@ class ControllerDecisionPayload(Protocol):
 	primary_edge_id: str | None
 	secondary_edge_id: str | None
 	backup_edge_id: str | None
+	primary_node_role: str | None
+	primary_node_role_confidence: float | None
+	primary_node_role_rationale: str | None
+	secondary_node_role: str | None
+	secondary_node_role_confidence: float | None
+	secondary_node_role_rationale: str | None
 	backend: str
 	provider: str | None
 	model: str | None
@@ -136,6 +144,8 @@ class ControllerCandidateTrace:
 	bridge_potential: float | None = None
 	future_potential: float | None = None
 	redundancy_risk: float | None = None
+	generic_concept_like: bool | None = None
+	generic_concept_penalty: float | None = None
 
 
 @dataclass(slots=True)
@@ -146,6 +156,12 @@ class ControllerStepTrace:
 	primary_edge_id: str | None
 	secondary_edge_id: str | None
 	backup_edge_id: str | None
+	primary_node_role: str | None
+	primary_node_role_confidence: float | None
+	primary_node_role_rationale: str | None
+	secondary_node_role: str | None
+	secondary_node_role_confidence: float | None
+	secondary_node_role_rationale: str | None
 	stop_score: float | None
 	evidence_cluster_confidence: float | None
 	llm_calls: int | None
@@ -247,6 +263,12 @@ def build_controller_execution_result(
 		primary_edge_id=decision.primary_edge_id,
 		secondary_edge_id=decision.secondary_edge_id,
 		backup_edge_id=decision.backup_edge_id,
+		primary_node_role=decision.primary_node_role,
+		primary_node_role_confidence=decision.primary_node_role_confidence,
+		primary_node_role_rationale=decision.primary_node_role_rationale,
+		secondary_node_role=decision.secondary_node_role,
+		secondary_node_role_confidence=decision.secondary_node_role_confidence,
+		secondary_node_role_rationale=decision.secondary_node_role_rationale,
 		stop_score=decision.stop_score,
 		evidence_cluster_confidence=decision.evidence_cluster_confidence,
 		llm_calls=decision.llm_attempts,
@@ -384,6 +406,12 @@ def make_backtrack_trace(
 		primary_edge_id=backup.edge_id,
 		secondary_edge_id=previous_trace.secondary_edge_id,
 		backup_edge_id=None,
+		primary_node_role=previous_trace.primary_node_role,
+		primary_node_role_confidence=previous_trace.primary_node_role_confidence,
+		primary_node_role_rationale=previous_trace.primary_node_role_rationale,
+		secondary_node_role=previous_trace.secondary_node_role,
+		secondary_node_role_confidence=previous_trace.secondary_node_role_confidence,
+		secondary_node_role_rationale=previous_trace.secondary_node_role_rationale,
 		stop_score=previous_trace.stop_score,
 		evidence_cluster_confidence=previous_trace.evidence_cluster_confidence,
 		llm_calls=0,
@@ -502,6 +530,16 @@ def _build_candidate_trace(
 		),
 		redundancy_risk=(
 			decision_candidate.redundancy_risk if decision_candidate is not None else None
+		),
+		generic_concept_like=(
+			decision_candidate.generic_concept_like
+			if decision_candidate is not None
+			else None
+		),
+		generic_concept_penalty=(
+			decision_candidate.generic_concept_penalty
+			if decision_candidate is not None
+			else None
 		),
 	)
 

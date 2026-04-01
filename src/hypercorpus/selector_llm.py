@@ -6,13 +6,15 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
+from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, cast
 import urllib.request
 from urllib.parse import urlparse
 
 from hypercorpus.controller_exposure import (
+	ControllerCandidateBundleEntry,
 	ControllerCandidateBundle,
 	ControllerExposurePlan,
+	ControllerGenericPagePolicy,
 	build_controller_candidate_bundle,
 	build_controller_exposure_plan,
 	prefilter_indices,
@@ -63,10 +65,13 @@ class SelectorLLMConfig:
 	openai_api_mode: OpenAIApiMode = "chat_completions"
 	cache_path: Path | None = None
 	temperature: float = 0.0
+	provider_max_attempts: int = 3
+	provider_retry_base_delay_s: float = 1.0
+	provider_retry_max_delay_s: float = 8.0
 	prompt_version: str = "v1"
 	candidate_prefilter_top_n: int = 8
 	two_hop_prefilter_top_n: int = 4
-	controller_prompt_version: str = "controller_v5"
+	controller_prompt_version: str = "controller_v6"
 	controller_prefilter_top_n: int = 16
 	controller_small_page_bypass_n: int = 16
 	controller_lexical_top_n: int = 8
@@ -74,6 +79,7 @@ class SelectorLLMConfig:
 	controller_bonus_keep_n: int = 4
 	controller_future_top_n: int = 2
 	controller_max_attempts: int = 3
+	controller_generic_page_policy: ControllerGenericPagePolicy = "prompt_only"
 	enable_stop: bool = True
 	enable_backtrack: bool = True
 	enable_scout_fork: bool = True
@@ -95,6 +101,14 @@ class SelectorLLMConfig:
 			)
 		if self.candidate_prefilter_top_n <= 0:
 			raise ValueError("candidate_prefilter_top_n must be positive.")
+		if self.provider_max_attempts <= 0:
+			raise ValueError("provider_max_attempts must be positive.")
+		if self.provider_retry_base_delay_s < 0:
+			raise ValueError("provider_retry_base_delay_s must be non-negative.")
+		if self.provider_retry_max_delay_s < self.provider_retry_base_delay_s:
+			raise ValueError(
+				"provider_retry_max_delay_s must be at least provider_retry_base_delay_s."
+			)
 		if self.two_hop_prefilter_top_n <= 0:
 			raise ValueError("two_hop_prefilter_top_n must be positive.")
 		if self.controller_prefilter_top_n <= 0:
@@ -118,6 +132,13 @@ class SelectorLLMConfig:
 
 
 ControllerAction = Literal["stop", "choose_one", "choose_two"]
+ControllerNodeRole = Literal[
+	"answer_bearing_support",
+	"bridge_support",
+	"generic_concept",
+	"background_entity",
+	"other",
+]
 
 
 @dataclass(slots=True)
@@ -130,6 +151,8 @@ class ControllerCandidate:
 	future_potential: float | None = None
 	redundancy_risk: float = 0.0
 	rationale: str | None = None
+	generic_concept_like: bool = False
+	generic_concept_penalty: float = 0.0
 
 
 @dataclass(slots=True)
@@ -139,6 +162,12 @@ class ControllerDecision:
 	effective_action: ControllerAction | None = None
 	secondary_edge_id: str | None = None
 	backup_edge_id: str | None = None
+	primary_node_role: ControllerNodeRole | None = None
+	primary_node_role_confidence: float | None = None
+	primary_node_role_rationale: str | None = None
+	secondary_node_role: ControllerNodeRole | None = None
+	secondary_node_role_confidence: float | None = None
+	secondary_node_role_rationale: str | None = None
 	backend: str = "llm_controller"
 	provider: str | None = None
 	model: str | None = None
@@ -172,6 +201,13 @@ class BackendCompletion:
 	completion_tokens: int | None
 	total_tokens: int | None
 	raw_response: str | None
+
+
+@dataclass(slots=True)
+class BackendAttemptResult:
+	response: BackendCompletion | None
+	attempts: int
+	error: Exception | None = None
 
 
 class SelectorLLMResponseError(ValueError):
@@ -655,6 +691,7 @@ class LLMStepLinkScorer:
 			visited_nodes=visited_nodes,
 			mode=self.mode,
 			future_top_n=self.config.two_hop_prefilter_top_n,
+			generic_page_policy="prompt_only",
 		)
 		bundle_payload = bundle.to_prompt_payload()
 		cache_key = _selector_cache_key(
@@ -702,23 +739,26 @@ class LLMStepLinkScorer:
 				)
 
 		started_at = time.perf_counter()
-		response: BackendCompletion | None = None
-		try:
-			self.validate_environment()
-			response = self._get_backend().complete_json(
-				model=self.config.model or "",
-				system_prompt=_system_prompt(self.mode),
-				user_prompt=_user_prompt(query=query, bundle=bundle_payload),
-				temperature=self.config.temperature,
-				response_schema=_response_schema(self.mode),
-			)
-		except Exception as exc:
+		self.validate_environment()
+		attempt_result = _complete_json_with_provider_retries(
+			backend=self._get_backend(),
+			model=self.config.model or "",
+			system_prompt=_system_prompt(self.mode),
+			user_prompt=_user_prompt(query=query, bundle=bundle_payload),
+			temperature=self.config.temperature,
+			response_schema=_response_schema(self.mode),
+			max_attempts=self.config.provider_max_attempts,
+			base_delay_s=self.config.provider_retry_base_delay_s,
+			max_delay_s=self.config.provider_retry_max_delay_s,
+		)
+		response = attempt_result.response
+		if attempt_result.error is not None:
 			latency_s = time.perf_counter() - started_at
 			return _cards_with_fallback(
 				fallback_cards,
 				provider=self.config.provider,
 				model=self.config.model,
-				fallback_reason=f"provider_error:{_compact_error_detail(str(exc))}",
+				fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
 				latency_s=latency_s,
 				text=response.text if response is not None else None,
 				raw_response=response.raw_response if response is not None else None,
@@ -950,6 +990,7 @@ class LLMController:
 			return self._fallback_decision(
 				fallback_cards=fallback_cards,
 				exposure_plan=exposure_plan,
+				bundle=bundle,
 				current_depth=current_depth,
 				forks_used=forks_used,
 				backtracks_used=backtracks_used,
@@ -987,12 +1028,14 @@ class LLMController:
 					latency_s=0.0,
 					cache_hit=True,
 					exposure_plan=exposure_plan,
+					bundle=bundle,
 					llm_attempts=1,
 				)
 			except Exception as exc:  # pragma: no cover - cache corruption path
 				return self._fallback_decision(
 					fallback_cards=fallback_cards,
 					exposure_plan=exposure_plan,
+					bundle=bundle,
 					current_depth=current_depth,
 					forks_used=forks_used,
 					backtracks_used=backtracks_used,
@@ -1018,31 +1061,38 @@ class LLMController:
 		prompt_token_values: list[int] = []
 		completion_token_values: list[int] = []
 		total_token_values: list[int] = []
+		backend_attempts = 0
 		for attempt_index in range(self.config.controller_max_attempts):
-			try:
-				response = self._get_backend().complete_json(
-					model=self.config.model or "",
-					system_prompt=system_prompt,
-					user_prompt=user_prompt,
-					temperature=self.config.temperature,
-					response_schema=response_schema,
-				)
-			except Exception as exc:
+			attempt_result = _complete_json_with_provider_retries(
+				backend=self._get_backend(),
+				model=self.config.model or "",
+				system_prompt=system_prompt,
+				user_prompt=user_prompt,
+				temperature=self.config.temperature,
+				response_schema=response_schema,
+				max_attempts=self.config.provider_max_attempts,
+				base_delay_s=self.config.provider_retry_base_delay_s,
+				max_delay_s=self.config.provider_retry_max_delay_s,
+			)
+			backend_attempts += attempt_result.attempts
+			response = attempt_result.response
+			if attempt_result.error is not None:
 				latency_s = time.perf_counter() - started_at
 				return self._fallback_decision(
 					fallback_cards=fallback_cards,
 					exposure_plan=exposure_plan,
+					bundle=bundle,
 					current_depth=current_depth,
 					forks_used=forks_used,
 					backtracks_used=backtracks_used,
-					fallback_reason=f"provider_error:{_compact_error_detail(str(exc))}",
+					fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
 					latency_s=latency_s,
 					text=response.text if response is not None else None,
 					raw_response=response.raw_response if response is not None else None,
 					prompt_tokens=_aggregate_usage_total(prompt_token_values),
 					completion_tokens=_aggregate_usage_total(completion_token_values),
 					total_tokens=_aggregate_usage_total(total_token_values),
-					llm_attempts=attempt_index + 1,
+					llm_attempts=backend_attempts,
 				)
 			assert response is not None
 			if response.prompt_tokens is not None:
@@ -1068,7 +1118,8 @@ class LLMController:
 					latency_s=latency_s,
 					cache_hit=False,
 					exposure_plan=exposure_plan,
-					llm_attempts=attempt_index + 1,
+					bundle=bundle,
+					llm_attempts=backend_attempts,
 				)
 				break
 			except SelectorLLMResponseError as exc:
@@ -1078,6 +1129,7 @@ class LLMController:
 					return self._fallback_decision(
 						fallback_cards=fallback_cards,
 						exposure_plan=exposure_plan,
+						bundle=bundle,
 						current_depth=current_depth,
 						forks_used=forks_used,
 						backtracks_used=backtracks_used,
@@ -1088,7 +1140,7 @@ class LLMController:
 						prompt_tokens=_aggregate_usage_total(prompt_token_values),
 						completion_tokens=_aggregate_usage_total(completion_token_values),
 						total_tokens=_aggregate_usage_total(total_token_values),
-						llm_attempts=attempt_index + 1,
+						llm_attempts=backend_attempts,
 					)
 				user_prompt = _controller_repair_user_prompt(
 					query=query,
@@ -1136,6 +1188,7 @@ class LLMController:
 		latency_s: float,
 		cache_hit: bool,
 		exposure_plan: ControllerExposurePlan,
+		bundle: ControllerCandidateBundle,
 		llm_attempts: int,
 	) -> ControllerDecision:
 		entries = payload.get("candidates")
@@ -1143,12 +1196,14 @@ class LLMController:
 			raise SelectorLLMResponseError("schema_error", "missing_candidates_list")
 		parsed_candidates: list[ControllerCandidate] = []
 		visible_set = {str(index) for index in exposure_plan.visible_indices}
+		bundle_entries = {entry.edge_id: entry for entry in bundle.candidates}
 		for entry in entries:
 			if not isinstance(entry, dict):
 				continue
 			edge_id = str(entry.get("edge_id", "")).strip()
 			if not edge_id or edge_id not in visible_set:
 				continue
+			bundle_entry = bundle_entries.get(edge_id)
 			parsed_candidates.append(
 						ControllerCandidate(
 							edge_id=edge_id,
@@ -1163,9 +1218,15 @@ class LLMController:
 						if self.mode == "single_hop"
 						else _clamp_score(entry.get("future_potential"))
 					),
-					redundancy_risk=_clamp_score(entry.get("redundancy_risk")),
-					rationale=_maybe_text(entry.get("rationale")),
-				)
+							redundancy_risk=_clamp_score(entry.get("redundancy_risk")),
+							rationale=_maybe_text(entry.get("rationale")),
+							generic_concept_like=(
+								bundle_entry.generic_concept_like if bundle_entry is not None else False
+							),
+							generic_concept_penalty=(
+								bundle_entry.generic_concept_penalty if bundle_entry is not None else 0.0
+							),
+						)
 			)
 		if not parsed_candidates:
 			raise SelectorLLMResponseError("schema_error", "no_prefiltered_candidates")
@@ -1177,6 +1238,36 @@ class LLMController:
 			primary_edge_id=_maybe_text(payload.get("primary_edge_id")),
 			secondary_edge_id=_maybe_text(payload.get("secondary_edge_id")),
 			backup_edge_id=_maybe_text(payload.get("backup_edge_id")),
+			primary_node_role=_parse_controller_node_role(
+				payload.get("primary_node_role"),
+				required=action != "stop",
+				field_name="primary_node_role",
+			),
+			primary_node_role_confidence=_parse_optional_controller_score(
+				payload.get("primary_node_role_confidence"),
+				required=action != "stop",
+				field_name="primary_node_role_confidence",
+			),
+			primary_node_role_rationale=_parse_optional_controller_text(
+				payload.get("primary_node_role_rationale"),
+				required=action != "stop",
+				field_name="primary_node_role_rationale",
+			),
+			secondary_node_role=_parse_controller_node_role(
+				payload.get("secondary_node_role"),
+				required=action == "choose_two",
+				field_name="secondary_node_role",
+			),
+			secondary_node_role_confidence=_parse_optional_controller_score(
+				payload.get("secondary_node_role_confidence"),
+				required=action == "choose_two",
+				field_name="secondary_node_role_confidence",
+			),
+			secondary_node_role_rationale=_parse_optional_controller_text(
+				payload.get("secondary_node_role_rationale"),
+				required=action == "choose_two",
+				field_name="secondary_node_role_rationale",
+			),
 			backend="llm_controller",
 			provider=self.config.provider,
 			model=self.config.model,
@@ -1213,6 +1304,7 @@ class LLMController:
 		*,
 		fallback_cards: Sequence[StepScoreCard],
 		exposure_plan: ControllerExposurePlan,
+		bundle: ControllerCandidateBundle,
 		current_depth: int,
 		forks_used: int,
 		backtracks_used: int,
@@ -1226,11 +1318,13 @@ class LLMController:
 		cache_hit: bool | None = None,
 		llm_attempts: int = 1,
 	) -> ControllerDecision:
+		bundle_entries = {entry.edge_id: entry for entry in bundle.candidates}
 		candidates = [
 			_controller_candidate_from_card(
 				fallback_cards[index],
 				edge_id=str(index),
 				two_hop=self.mode == "two_hop",
+				bundle_entry=bundle_entries.get(str(index)),
 			)
 			for index in exposure_plan.visible_indices
 			if index < len(fallback_cards)
@@ -1423,6 +1517,7 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 			visited_nodes=visited_nodes,
 			mode=self.mode,
 			future_top_n=self.config.controller_future_top_n,
+			generic_page_policy=self.config.controller_generic_page_policy,
 		)
 		decision = self.controller.decide(
 			query=query,
@@ -1558,6 +1653,13 @@ def _response_schema(mode: str) -> dict[str, Any]:
 
 
 def _controller_response_schema(mode: str) -> dict[str, Any]:
+	node_role_enum = [
+		"answer_bearing_support",
+		"bridge_support",
+		"generic_concept",
+		"background_entity",
+		"other",
+	]
 	candidate_properties: dict[str, Any] = {
 		"edge_id": {"type": "string"},
 		"utility": {"type": "number", "minimum": 0.0, "maximum": 1.0},
@@ -1591,6 +1693,20 @@ def _controller_response_schema(mode: str) -> dict[str, Any]:
 			"primary_edge_id": {"type": "string"},
 			"secondary_edge_id": {"type": "string"},
 			"backup_edge_id": {"type": "string"},
+			"primary_node_role": {"type": "string", "enum": node_role_enum},
+			"primary_node_role_confidence": {
+				"type": "number",
+				"minimum": 0.0,
+				"maximum": 1.0,
+			},
+			"primary_node_role_rationale": {"type": "string"},
+			"secondary_node_role": {"type": "string", "enum": node_role_enum},
+			"secondary_node_role_confidence": {
+				"type": "number",
+				"minimum": 0.0,
+				"maximum": 1.0,
+			},
+			"secondary_node_role_rationale": {"type": "string"},
 			"stop_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
 			"evidence_cluster_confidence": {
 				"type": "number",
@@ -1614,6 +1730,38 @@ def _controller_response_schema(mode: str) -> dict[str, Any]:
 			"stop_score",
 			"evidence_cluster_confidence",
 			"candidates",
+		],
+		"allOf": [
+			{
+				"if": {
+					"properties": {
+						"action": {"enum": ["choose_one", "choose_two"]},
+					},
+					"required": ["action"],
+				},
+				"then": {
+					"required": [
+						"primary_node_role",
+						"primary_node_role_confidence",
+						"primary_node_role_rationale",
+					]
+				},
+			},
+			{
+				"if": {
+					"properties": {
+						"action": {"enum": ["choose_two"]},
+					},
+					"required": ["action"],
+				},
+				"then": {
+					"required": [
+						"secondary_node_role",
+						"secondary_node_role_confidence",
+						"secondary_node_role_rationale",
+					]
+				},
+			},
 		],
 	}
 
@@ -1671,6 +1819,15 @@ def _user_prompt(*, query: str, bundle: Mapping[str, Any]) -> str:
 def _controller_user_prompt(
 	*, query: str, bundle: Mapping[str, Any], mode: str
 ) -> str:
+	policy = str(bundle.get("generic_page_policy", "prompt_only"))
+	policy_instruction = (
+		"Use the provided generic_concept_penalty field to lower utility for generic concept or degree pages "
+		"when they are not directly answer-bearing. "
+		if policy == "light_generic_penalty"
+		else "Apply the provided generic_concept_penalty aggressively: generic concept or degree pages should usually not outrank named entities or locations once explicit support is already present. "
+		if policy == "strong_generic_penalty"
+		else ""
+	)
 	return (
 		f"Question:\n{query}\n\n"
 		"Retriever context:\n"
@@ -1680,8 +1837,12 @@ def _controller_user_prompt(
 		"Choose the next retrieval action under a budget. "
 		"Use stop only if the currently retrieved nodes already make the key supporting entity or institution explicit and "
 		"no remaining candidate offers materially better explicit support coverage. "
+		"If the current retrieval state already contains a strong answer-bearing institution or location node, generic concept, program, or degree pages are usually weak follow-ups, and stopping is preferred unless a remaining named entity or place is clearly stronger. "
 		"Treat answer_bearing_link_bonus as a first-class utility component: if a candidate would add an explicit support-bearing node, "
 		"prefer that candidate over stop unless redundancy is very high. "
+		f"{policy_instruction}"
+		"When you choose a primary edge, also label its role using primary_node_role / primary_node_role_confidence / primary_node_role_rationale. "
+		"If you choose two edges, label the secondary edge too. "
 		"Use choose_two only for a genuine near-tie. "
 		"Return JSON only."
 	)
@@ -1731,12 +1892,20 @@ def _controller_schema_instructions(mode: str) -> str:
 		'"primary_edge_id":"<edge id or empty string>",'
 		'"secondary_edge_id":"<edge id or empty string>",'
 		'"backup_edge_id":"<edge id or empty string>",'
+		'"primary_node_role":"answer_bearing_support|bridge_support|generic_concept|background_entity|other",'
+		'"primary_node_role_confidence":0.0-1.0,'
+		'"primary_node_role_rationale":"<short rationale string>",'
+		'"secondary_node_role":"answer_bearing_support|bridge_support|generic_concept|background_entity|other",'
+		'"secondary_node_role_confidence":0.0-1.0,'
+		'"secondary_node_role_rationale":"<short rationale string>",'
 		'"stop_score":0.0-1.0,'
 		'"evidence_cluster_confidence":0.0-1.0,'
 		f'"candidates":[{{{candidate_schema}}}]}} '
 		"Rules: candidates must be a non-empty array, every edge_id must come from the provided candidate list, "
 		"action must be one of stop/choose_one/choose_two, and utility should explicitly account for answer_bearing_link_bonus "
 		"(adding an explicit support-bearing node beats an early stop when redundancy is not extreme). "
+		"Whenever action is choose_one or choose_two, the primary node role fields are required. "
+		"When action is choose_two, the secondary node role fields are also required. "
 		"The response must be exactly one JSON object."
 	)
 
@@ -1782,6 +1951,7 @@ def _controller_candidate_from_card(
 	*,
 	edge_id: str,
 	two_hop: bool,
+	bundle_entry: ControllerCandidateBundleEntry | None = None,
 ) -> ControllerCandidate:
 	return ControllerCandidate(
 		edge_id=edge_id,
@@ -1809,6 +1979,12 @@ def _controller_candidate_from_card(
 		),
 		redundancy_risk=_clamp_score(1.0 - card.subscores.get("novelty", 1.0)),
 		rationale=card.rationale,
+		generic_concept_like=(
+			bundle_entry.generic_concept_like if bundle_entry is not None else False
+		),
+		generic_concept_penalty=(
+			bundle_entry.generic_concept_penalty if bundle_entry is not None else 0.0
+		),
 	)
 
 
@@ -1829,6 +2005,55 @@ def _allow_choose_two(
 	if primary.utility < 0.55 or secondary.utility < 0.55:
 		return False
 	return (primary.utility - secondary.utility) <= 0.07
+
+
+def _parse_controller_node_role(
+	value: Any,
+	*,
+	required: bool,
+	field_name: str,
+) -> ControllerNodeRole | None:
+	text = _maybe_text(value)
+	if text is None:
+		if required:
+			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
+		return None
+	if text not in {
+		"answer_bearing_support",
+		"bridge_support",
+		"generic_concept",
+		"background_entity",
+		"other",
+	}:
+		raise SelectorLLMResponseError("schema_error", f"invalid_{field_name}")
+	return cast(ControllerNodeRole, text)
+
+
+def _parse_optional_controller_score(
+	value: Any,
+	*,
+	required: bool,
+	field_name: str,
+) -> float | None:
+	if value is None or value == "":
+		if required:
+			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
+		return None
+	return _clamp_score(value)
+
+
+def _parse_optional_controller_text(
+	value: Any,
+	*,
+	required: bool,
+	field_name: str,
+) -> str | None:
+	text = _maybe_text(value)
+	if text is None:
+		if required:
+			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
+		return None
+	return text
 
 def _parse_completion_payload(text: str) -> dict[str, Any]:
 	stripped = text.strip()
@@ -1920,6 +2145,71 @@ def _compact_error_detail(detail: str | None) -> str | None:
 
 def _aggregate_usage_total(values: Sequence[int]) -> int | None:
 	return sum(values) if values else None
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+	status_code = getattr(exc, "status_code", None)
+	if status_code == 429:
+		return True
+	detail = str(exc).lower()
+	return (
+		"429" in detail
+		or "too many requests" in detail
+		or "rate limit" in detail
+		or "ratelimit" in detail
+	)
+
+
+def _provider_retry_delay_s(
+	*, retry_index: int, base_delay_s: float, max_delay_s: float
+) -> float:
+	if retry_index < 0:
+		return 0.0
+	return min(base_delay_s * (2**retry_index), max_delay_s)
+
+
+def _complete_json_with_provider_retries(
+	*,
+	backend: BackendAdapter,
+	model: str,
+	system_prompt: str,
+	user_prompt: str,
+	temperature: float,
+	response_schema: dict[str, Any] | None,
+	max_attempts: int,
+	base_delay_s: float,
+	max_delay_s: float,
+) -> BackendAttemptResult:
+	last_exc: Exception | None = None
+	for attempt_index in range(max_attempts):
+		try:
+			return BackendAttemptResult(
+				response=backend.complete_json(
+					model=model,
+					system_prompt=system_prompt,
+					user_prompt=user_prompt,
+					temperature=temperature,
+					response_schema=response_schema,
+				),
+				attempts=attempt_index + 1,
+			)
+		except Exception as exc:
+			last_exc = exc
+			if attempt_index + 1 >= max_attempts or not _is_retryable_provider_error(exc):
+				return BackendAttemptResult(
+					response=None,
+					attempts=attempt_index + 1,
+					error=exc,
+				)
+			delay_s = _provider_retry_delay_s(
+				retry_index=attempt_index,
+				base_delay_s=base_delay_s,
+				max_delay_s=max_delay_s,
+			)
+			if delay_s > 0:
+				time.sleep(delay_s)
+	assert last_exc is not None
+	return BackendAttemptResult(response=None, attempts=max_attempts, error=last_exc)
 
 
 def _openai_usage_triplet(usage: Any) -> tuple[int | None, int | None, int | None]:
