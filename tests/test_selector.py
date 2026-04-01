@@ -3,6 +3,7 @@ import pytest
 from hypercorpus.eval import EvaluationBudget, EvaluationCase
 from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
 from hypercorpus.selector import (
+	_controller_runtime_max_steps,
 	SelectorBudget,
 	SelectionMode,
 	SemanticAStarSelector,
@@ -10,6 +11,7 @@ from hypercorpus.selector import (
 	SemanticPPRSelector,
 	SemanticUCSSelector,
 	SentenceTransformerStepScorer,
+	available_selector_names,
 	build_selector,
 	parse_selector_spec,
 )
@@ -36,10 +38,10 @@ def test_parse_selector_spec_handles_canonical_forms():
 		"top_3_seed__sentence_transformer__hop_3__beam__link_context_llm__lookahead_2"
 	)
 	controller = parse_selector_spec(
-		"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2"
+		"top_1_seed__sentence_transformer__hop_adaptive__single_path_walk__link_context_llm_controller__lookahead_2"
 	)
 	multipath = parse_selector_spec(
-		"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2"
+		"top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2"
 	)
 
 	assert dense.family == "baseline"
@@ -61,16 +63,21 @@ def test_parse_selector_spec_handles_canonical_forms():
 	assert controller.search_structure == "single_path_walk"
 	assert controller.edge_scorer == "link_context_llm_controller"
 	assert controller.lookahead_depth == 2
+	assert controller.hop_budget is None
 	assert multipath.search_structure == "constrained_multipath"
 	assert multipath.edge_scorer == "link_context_llm_controller"
+	assert multipath.hop_budget is None
 
 
 @pytest.mark.parametrize(
 	"selector_name",
 	[
 		"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_overlap__lookahead_2",
-		"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_1",
-		"top_1_seed__sentence_transformer__hop_2__beam__link_context_llm_controller__lookahead_2",
+		"top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_1",
+		"top_1_seed__sentence_transformer__hop_adaptive__beam__link_context_llm_controller__lookahead_2",
+		"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2",
+		"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2",
+		"top_1_seed__sentence_transformer__hop_adaptive__single_path_walk__link_context_overlap__lookahead_1",
 	],
 )
 def test_parse_selector_spec_rejects_invalid_controller_search_combinations(
@@ -80,6 +87,27 @@ def test_parse_selector_spec_rejects_invalid_controller_search_combinations(
 		parse_selector_spec(selector_name)
 
 	assert str(exc.value) == f"Unknown selector: {selector_name}"
+
+
+def test_controller_only_hop_adaptive_uses_internal_safety_cap():
+	names = available_selector_names(include_diagnostics=False)
+	spec = parse_selector_spec(
+		"top_1_seed__sentence_transformer__hop_adaptive__single_path_walk__link_context_llm_controller__lookahead_2"
+	)
+
+	assert (
+		"top_1_seed__sentence_transformer__hop_adaptive__single_path_walk__link_context_llm_controller__lookahead_2"
+		in names
+	)
+	assert (
+		"top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2"
+		in names
+	)
+	assert (
+		"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2"
+		not in names
+	)
+	assert _controller_runtime_max_steps(spec) == 11
 
 
 def test_parse_selector_spec_accepts_budget_fill_suffixes_and_rejects_diagnostics():

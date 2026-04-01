@@ -214,7 +214,7 @@ _IIRC_SELECTOR_MAIN_SELECTORS: tuple[str, ...] = (
 	"top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
 	"top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop",
 	"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
-	"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2",
+	"top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2",
 	"gold_support_context",
 	"full_corpus_upper_bound",
 )

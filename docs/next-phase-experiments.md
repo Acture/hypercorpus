@@ -136,8 +136,8 @@ Current best `single_path` winner:
 
 Current semantic-controller lane to develop next:
 
-- `top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2`
-- `top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2`
+- `top_1_seed__sentence_transformer__hop_adaptive__single_path_walk__link_context_llm_controller__lookahead_2`
+- `top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2`
 
 Current `2Wiki` baseline retest status:
 

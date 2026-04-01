@@ -118,11 +118,13 @@ _BUDGET_FILL_SUFFIXES: dict[str, BudgetFillMode] = {
 	"budget_fill_relative_drop": "relative_drop",
 }
 _SELECTOR_PATTERN = re.compile(
-	r"^top_(?P<seed_top_k>\d+)_seed__(?P<seed_strategy>sentence_transformer|lexical_overlap)__hop_(?P<hop_budget>\d+)__(?P<rest>.+)$"
+	r"^top_(?P<seed_top_k>\d+)_seed__(?P<seed_strategy>sentence_transformer|lexical_overlap)__hop_(?P<hop_budget>\d+|adaptive)__(?P<rest>.+)$"
 )
 _DIAGNOSTIC_SELECTORS = ("gold_support_context", "full_corpus_upper_bound")
 _OVERLAP_PROFILE_DEFAULT = "overlap_balanced"
 _SENTENCE_TRANSFORMER_PROFILE_DEFAULT = "st_balanced"
+_CONTROLLER_ADAPTIVE_HOP_TOKEN = "adaptive"
+_CONTROLLER_INTERNAL_SAFETY_HOPS = 10
 _OVERLAP_PROFILES: dict[str, dict[str, float]] = {
 	"overlap_balanced": {
 		"anchor": 0.60,
@@ -2318,7 +2320,7 @@ class CanonicalSinglePathSelector(_SentenceTransformerSupport):
 			case.query,
 			start_nodes,
 			WalkBudget(
-				max_steps=(self.spec.hop_budget or 0) + 1,
+				max_steps=_controller_runtime_max_steps(self.spec),
 				min_score=0.05,
 				allow_revisit=False,
 			),
@@ -2392,7 +2394,7 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 			raise ValueError(
 				"constrained_multipath requires link_context_llm_controller."
 			)
-		max_steps = (self.spec.hop_budget or 0) + 1
+		max_steps = _controller_runtime_max_steps(self.spec)
 		token_budget_limit = _runtime_budget_token_limit(graph, budget)
 		if resume_state is not None:
 			current = str(resume_state["current_node"])
@@ -3299,10 +3301,17 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		raise ValueError(f"Unknown selector: {name}")
 	seed_top_k = int(match.group("seed_top_k"))
 	seed_strategy = match.group("seed_strategy")
-	hop_budget = int(match.group("hop_budget"))
+	hop_token = match.group("hop_budget")
+	hop_budget = (
+		None
+		if hop_token == _CONTROLLER_ADAPTIVE_HOP_TOKEN
+		else int(hop_token)
+	)
 	rest = match.group("rest")
 	parts = rest.split("__")
 	if len(parts) == 1:
+		if hop_budget is None:
+			raise ValueError(f"Unknown selector: {name}")
 		baseline = parts[0]
 		if baseline not in _BASELINES:
 			raise ValueError(f"Unknown selector: {name}")
@@ -3345,6 +3354,12 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		or lookahead not in _LOOKAHEADS
 	):
 		raise ValueError(f"Unknown selector: {name}")
+	if edge_scorer == "link_context_llm_controller":
+		if hop_budget is not None:
+			raise ValueError(f"Unknown selector: {name}")
+	else:
+		if hop_budget is None:
+			raise ValueError(f"Unknown selector: {name}")
 	if edge_scorer == "link_context_llm_controller" and search_structure not in {
 		"single_path_walk",
 		"constrained_multipath",
@@ -3393,8 +3408,8 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
 				f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2",
 				f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_llm__lookahead_1",
 				f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_llm__lookahead_2",
-				f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_llm_controller__lookahead_2",
-				f"top_1_seed__{seed_strategy}__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2",
+				f"top_1_seed__{seed_strategy}__hop_adaptive__single_path_walk__link_context_llm_controller__lookahead_2",
+				f"top_1_seed__{seed_strategy}__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2",
 				f"top_3_seed__{seed_strategy}__hop_0__dense",
 				f"top_3_seed__{seed_strategy}__hop_1__topology_neighbors",
 				f"top_3_seed__{seed_strategy}__hop_1__anchor_neighbors",
@@ -3653,6 +3668,19 @@ def _build_algorithm(search_structure: SearchStructure) -> _PathfindingSelector:
 			mode=SelectionMode.HYBRID_WITH_PPR, beam_width=4, allow_revisit=False
 		)
 	raise ValueError(f"Unsupported search structure: {search_structure}")
+
+
+def _controller_runtime_hop_cap(spec: SelectorSpec) -> int | None:
+	if spec.edge_scorer != "link_context_llm_controller":
+		return spec.hop_budget
+	return _CONTROLLER_INTERNAL_SAFETY_HOPS if spec.hop_budget is None else spec.hop_budget
+
+
+def _controller_runtime_max_steps(spec: SelectorSpec) -> int:
+	hop_cap = _controller_runtime_hop_cap(spec)
+	if hop_cap is None:
+		raise ValueError("controller runtime requires a concrete hop cap")
+	return hop_cap + 1
 
 
 def _build_step_scorer_from_spec(

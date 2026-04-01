@@ -22,8 +22,8 @@ SELECTOR_SHORT_NAMES: dict[str, str] = {
 	"top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop": "Dense",
 	"top_1_seed__sentence_transformer__hop_2__mdr_light__budget_fill_relative_drop": "MDR-light",
 	"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop": "SPW-ST",
-	"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_llm_controller__lookahead_2": "SPW-LLM",
-	"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2": "CMP-LLM",
+	"top_1_seed__sentence_transformer__hop_adaptive__single_path_walk__link_context_llm_controller__lookahead_2": "SPW-LLM",
+	"top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2": "CMP-LLM",
 	"external_mdr": "MDR",
 	"gold_support_context": "Oracle",
 }
@@ -132,7 +132,7 @@ def generate_figure_csvs(run_dir: Path, out_dir: Path) -> None:
 	key_selectors = {
 		"top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
 		"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_sentence_transformer__lookahead_2__profile_st_future_heavy__budget_fill_relative_drop",
-		"top_1_seed__sentence_transformer__hop_2__constrained_multipath__link_context_llm_controller__lookahead_2",
+		"top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2",
 	}
 	fig3 = [r for r in enriched if r.get("selector", "") in key_selectors]
 	fig3_fields = [
