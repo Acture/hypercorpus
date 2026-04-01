@@ -242,6 +242,61 @@ class FakeRetrySequenceBackend:
 		)
 
 
+class FakeTypedResponsesRunner:
+	def __init__(
+		self,
+		items: list[dict[str, object] | Exception],
+		*,
+		prompt_tokens: int = 17,
+		completion_tokens: int = 9,
+		requests: int = 1,
+	):
+		self.items = items
+		self.prompt_tokens = prompt_tokens
+		self.completion_tokens = completion_tokens
+		self.requests = requests
+		self.call_count = 0
+		self.calls: list[dict[str, object]] = []
+
+	def __call__(
+		self,
+		*,
+		api_key: str,
+		base_url: str | None,
+		model: str,
+		system_prompt: str,
+		user_prompt: str,
+		temperature: float,
+		output_type,
+		schema_max_attempts: int,
+	):
+		self.calls.append(
+			{
+				"api_key": api_key,
+				"base_url": base_url,
+				"model": model,
+				"system_prompt": system_prompt,
+				"user_prompt": user_prompt,
+				"temperature": temperature,
+				"schema_max_attempts": schema_max_attempts,
+				"output_type": output_type,
+			}
+		)
+		item = self.items[min(self.call_count, len(self.items) - 1)]
+		self.call_count += 1
+		if isinstance(item, Exception):
+			raise item
+		output = output_type.model_validate(item)
+		return selector_llm_module.StructuredBackendCompletion(
+			output=output,
+			prompt_tokens=self.prompt_tokens,
+			completion_tokens=self.completion_tokens,
+			total_tokens=self.prompt_tokens + self.completion_tokens,
+			raw_response=json.dumps({"payload": item}, ensure_ascii=False),
+			requests=self.requests,
+		)
+
+
 class CountingScorer:
 	def __init__(self, base_score: float):
 		self.base_score = base_score
@@ -495,33 +550,48 @@ def test_anthropic_backend_adapter_uses_tool_output_schema():
 	}
 
 
-def test_openai_backend_adapter_responses_mode_parses_output_text():
-	response = SimpleNamespace(
-		output_text='{"scores": [{"edge_id": "0"}]}',
-		usage=SimpleNamespace(input_tokens=11, output_tokens=7, total_tokens=18),
-		output=[],
+def test_openai_backend_adapter_responses_mode_delegates_to_typed_runner(monkeypatch):
+	runner = FakeTypedResponsesRunner(
+		[
+			{
+				"scores": [
+					{
+						"edge_id": "0",
+						"direct_support": 0.8,
+						"bridge_potential": 0.7,
+						"novelty": 0.6,
+						"rationale": "Bridge looks relevant.",
+					}
+				]
+			}
+		],
+		prompt_tokens=11,
+		completion_tokens=7,
 	)
-	client = FakeOpenAIResponsesClient(response)
+	monkeypatch.setattr(selector_llm_module, "_run_openai_responses_typed", runner)
 	adapter = OpenAIBackendAdapter(
 		api_key="test-key",
+		base_url="https://example.cognitiveservices.azure.com",
 		api_mode="responses",
-		client_factory=lambda **_kwargs: client,
 	)
 
-	completion = adapter.complete_json(
+	completion = adapter.complete_typed(
 		model="gpt-5.3-codex",
 		system_prompt="score candidates",
 		user_prompt="bundle",
 		temperature=0.0,
+		output_type=selector_llm_module._score_output_model("single_hop"),
+		schema_max_attempts=3,
 	)
 
-	assert completion.text == '{"scores": [{"edge_id": "0"}]}'
+	assert completion.output.scores[0].edge_id == "0"
 	assert completion.prompt_tokens == 11
 	assert completion.completion_tokens == 7
 	assert completion.total_tokens == 18
-	assert client.responses.last_kwargs is not None
-	assert client.responses.last_kwargs["model"] == "gpt-5.3-codex"
-	assert client.responses.last_kwargs["text"] == {"format": {"type": "json_object"}}
+	assert runner.call_count == 1
+	assert runner.calls[0]["base_url"] == "https://example.cognitiveservices.azure.com"
+	assert runner.calls[0]["model"] == "gpt-5.3-codex"
+	assert runner.calls[0]["schema_max_attempts"] == 3
 
 
 def test_openai_backend_adapter_azure_foundry_chat_mode_posts_json():
@@ -644,6 +714,16 @@ def test_selector_llm_config_accepts_azure_foundry_chat_endpoint():
 		config.base_url
 		== "https://example.cognitiveservices.azure.com/models/chat/completions?api-version=2024-05-01-preview"
 	)
+
+
+def test_selector_llm_config_accepts_azure_responses_root():
+	config = SelectorLLMConfig(
+		provider="openai",
+		base_url="https://example.cognitiveservices.azure.com",
+		openai_api_mode="responses",
+	)
+
+	assert config.base_url == "https://example.cognitiveservices.azure.com"
 
 
 def test_selector_llm_config_accepts_github_models_chat_endpoint():
@@ -1302,6 +1382,203 @@ def test_llm_step_scorer_retries_provider_rate_limit_then_succeeds(
 	)
 
 	assert backend.call_count == 2
+	assert sleep_delays == [1.0]
+	assert cards[0].fallback_reason is None
+	assert cards[0].prompt_tokens == 17
+
+
+def test_controller_openai_responses_schema_error_falls_back(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	runner = FakeTypedResponsesRunner(
+		[selector_llm_module.SelectorLLMResponseError("schema_error", "missing_candidates_list")]
+	)
+	monkeypatch.setattr(selector_llm_module, "_run_openai_responses_typed", runner)
+	graph = _build_bridge_graph()
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-5.3-codex",
+			api_key_env="OPENAI_API_KEY",
+			base_url="https://example.cognitiveservices.azure.com",
+			openai_api_mode="responses",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: OpenAIBackendAdapter(
+			api_key="test-key",
+			base_url="https://example.cognitiveservices.azure.com",
+			api_mode="responses",
+		),
+	)
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
+		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+	)
+
+	assert runner.call_count == 1
+	assert decision.fallback_reason == "schema_error:missing_candidates_list"
+	assert decision.llm_attempts == 1
+
+
+def test_controller_openai_responses_retries_provider_rate_limit_then_succeeds(
+	monkeypatch,
+):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	sleep_delays: list[float] = []
+	monkeypatch.setattr(
+		selector_llm_module.time,
+		"sleep",
+		lambda delay_s: sleep_delays.append(delay_s),
+	)
+	runner = FakeTypedResponsesRunner(
+		[
+			RuntimeError("HTTP Error 429: Too Many Requests"),
+			RuntimeError("HTTP Error 429: Too Many Requests"),
+			{
+				"action": "choose_one",
+				"primary_edge_id": "0",
+				"secondary_edge_id": "",
+				"backup_edge_id": "",
+				**_primary_role_fields(
+					"answer_bearing_support",
+					rationale="The bridge answer edge is explicit support.",
+				),
+				"stop_score": 0.10,
+				"evidence_cluster_confidence": 0.86,
+				"candidates": [
+					{
+						"edge_id": "0",
+						"utility": 0.86,
+						"answer_bearing_link_bonus": 0.86,
+						"direct_support": 0.72,
+						"bridge_potential": 0.98,
+						"future_potential": 0.94,
+						"redundancy_risk": 0.08,
+						"rationale": "This finishes the bridge path.",
+					}
+				],
+			},
+		]
+	)
+	monkeypatch.setattr(selector_llm_module, "_run_openai_responses_typed", runner)
+	graph = _build_bridge_graph()
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-5.3-codex",
+			api_key_env="OPENAI_API_KEY",
+			base_url="https://example.cognitiveservices.azure.com",
+			openai_api_mode="responses",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: OpenAIBackendAdapter(
+			api_key="test-key",
+			base_url="https://example.cognitiveservices.azure.com",
+			api_mode="responses",
+		),
+	)
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
+		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+	)
+
+	assert runner.call_count == 3
+	assert sleep_delays == [1.0, 2.0]
+	assert decision.fallback_reason is None
+	assert decision.primary_edge_id == "0"
+	assert decision.llm_attempts == 3
+
+
+def test_llm_step_scorer_openai_responses_retries_provider_rate_limit_then_succeeds(
+	sample_graph, monkeypatch
+):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	sleep_delays: list[float] = []
+	monkeypatch.setattr(
+		selector_llm_module.time,
+		"sleep",
+		lambda delay_s: sleep_delays.append(delay_s),
+	)
+	runner = FakeTypedResponsesRunner(
+		[
+			RuntimeError("HTTP Error 429: Too Many Requests"),
+			{
+				"scores": [
+					{
+						"edge_id": "0",
+						"direct_support": 1.0,
+						"bridge_potential": 0.8,
+						"novelty": 0.6,
+						"rationale": "Cape directly supports the answer.",
+					},
+					{
+						"edge_id": "1",
+						"direct_support": 0.1,
+						"bridge_potential": 0.2,
+						"novelty": 0.5,
+						"rationale": "Director path is weak.",
+					},
+				]
+			},
+		]
+	)
+	monkeypatch.setattr(selector_llm_module, "_run_openai_responses_typed", runner)
+	scorer = selector_llm_module.LLMStepLinkScorer(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-5.3-codex",
+			api_key_env="OPENAI_API_KEY",
+			base_url="https://example.cognitiveservices.azure.com",
+			openai_api_mode="responses",
+		),
+		mode="single_hop",
+		backend_factory=lambda _config: OpenAIBackendAdapter(
+			api_key="test-key",
+			base_url="https://example.cognitiveservices.azure.com",
+			api_mode="responses",
+		),
+	)
+
+	cards = scorer.score_candidates(
+		query="Which city hosts the launch site?",
+		graph=sample_graph,
+		current_node_id="mission",
+		candidate_links=list(sample_graph.links_from("mission")),
+		visited_nodes={"mission"},
+		path_node_ids=["mission"],
+		remaining_steps=1,
+	)
+
+	assert runner.call_count == 2
 	assert sleep_delays == [1.0]
 	assert cards[0].fallback_reason is None
 	assert cards[0].prompt_tokens == 17
@@ -2021,17 +2298,37 @@ def test_generic_concept_title_matcher_and_policy_penalties():
 def test_controller_schema_requires_self_label_fields():
 	schema = _controller_response_schema("two_hop")
 	instructions = _controller_schema_instructions("two_hop")
+	output_type = selector_llm_module._controller_output_model("two_hop")
 
 	assert "primary_node_role" in schema["properties"]
 	assert "primary_node_role_confidence" in schema["properties"]
 	assert "primary_node_role_rationale" in schema["properties"]
 	assert "secondary_node_role" in schema["properties"]
-	assert any(
-		"primary_node_role" in clause.get("then", {}).get("required", [])
-		for clause in schema["allOf"]
-	)
 	assert "primary_node_role" in instructions
 	assert "secondary_node_role" in instructions
+	with pytest.raises(ValueError, match="primary node role diagnostics are required"):
+		output_type.model_validate(
+			{
+				"action": "choose_one",
+				"primary_edge_id": "0",
+				"secondary_edge_id": "",
+				"backup_edge_id": "",
+				"stop_score": 0.1,
+				"evidence_cluster_confidence": 0.8,
+				"candidates": [
+					{
+						"edge_id": "0",
+						"utility": 0.8,
+						"answer_bearing_link_bonus": 0.0,
+						"direct_support": 0.7,
+						"bridge_potential": 0.8,
+						"future_potential": 0.7,
+						"redundancy_risk": 0.1,
+						"rationale": "Take the support edge.",
+					}
+				],
+			}
+		)
 
 
 def test_controller_trace_records_self_label_diagnostics(monkeypatch):

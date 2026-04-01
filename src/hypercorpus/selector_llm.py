@@ -6,9 +6,15 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, cast
+from typing import Any, Callable, Generic, Literal, Mapping, Protocol, Sequence, TypeVar, cast
 import urllib.request
 from urllib.parse import urlparse
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from hypercorpus.controller_exposure import (
 	ControllerCandidateBundleEntry,
@@ -140,6 +146,8 @@ ControllerNodeRole = Literal[
 	"other",
 ]
 
+StructuredOutputT = TypeVar("StructuredOutputT", bound=BaseModel)
+
 
 @dataclass(slots=True)
 class ControllerCandidate:
@@ -210,6 +218,111 @@ class BackendAttemptResult:
 	error: Exception | None = None
 
 
+@dataclass(slots=True)
+class StructuredBackendCompletion(Generic[StructuredOutputT]):
+	output: StructuredOutputT
+	prompt_tokens: int | None
+	completion_tokens: int | None
+	total_tokens: int | None
+	raw_response: str | None
+	requests: int
+
+
+@dataclass(slots=True)
+class StructuredBackendAttemptResult(Generic[StructuredOutputT]):
+	response: StructuredBackendCompletion[StructuredOutputT] | None
+	attempts: int
+	error: Exception | None = None
+
+
+class _SelectorStructuredOutput(BaseModel):
+	model_config = ConfigDict(extra="forbid")
+
+
+class SingleHopScoreOutputEntry(_SelectorStructuredOutput):
+	edge_id: str
+	direct_support: float = Field(ge=0.0, le=1.0)
+	bridge_potential: float = Field(ge=0.0, le=1.0)
+	novelty: float = Field(ge=0.0, le=1.0)
+	rationale: str
+
+
+class TwoHopScoreOutputEntry(SingleHopScoreOutputEntry):
+	future_potential: float = Field(ge=0.0, le=1.0)
+	best_next_edge_id: str | None = None
+
+
+class SingleHopScoresOutput(_SelectorStructuredOutput):
+	scores: list[SingleHopScoreOutputEntry] = Field(min_length=1)
+
+
+class TwoHopScoresOutput(_SelectorStructuredOutput):
+	scores: list[TwoHopScoreOutputEntry] = Field(min_length=1)
+
+
+class ControllerCandidateOutputBase(_SelectorStructuredOutput):
+	edge_id: str
+	utility: float = Field(ge=0.0, le=1.0)
+	answer_bearing_link_bonus: float = Field(ge=0.0, le=1.0)
+	direct_support: float = Field(ge=0.0, le=1.0)
+	bridge_potential: float = Field(ge=0.0, le=1.0)
+	redundancy_risk: float = Field(ge=0.0, le=1.0)
+	rationale: str
+
+
+class SingleHopControllerCandidateOutput(ControllerCandidateOutputBase):
+	pass
+
+
+class TwoHopControllerCandidateOutput(ControllerCandidateOutputBase):
+	future_potential: float = Field(ge=0.0, le=1.0)
+
+
+class ControllerDecisionOutputBase(_SelectorStructuredOutput):
+	action: ControllerAction
+	primary_edge_id: str
+	secondary_edge_id: str = ""
+	backup_edge_id: str
+	primary_node_role: ControllerNodeRole | None = None
+	primary_node_role_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+	primary_node_role_rationale: str | None = None
+	secondary_node_role: ControllerNodeRole | None = None
+	secondary_node_role_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+	secondary_node_role_rationale: str | None = None
+	stop_score: float = Field(ge=0.0, le=1.0)
+	evidence_cluster_confidence: float = Field(ge=0.0, le=1.0)
+
+	@model_validator(mode="after")
+	def validate_required_roles(self) -> "ControllerDecisionOutputBase":
+		if self.action in {"choose_one", "choose_two"}:
+			if (
+				self.primary_node_role is None
+				or self.primary_node_role_confidence is None
+				or self.primary_node_role_rationale is None
+			):
+				raise ValueError(
+					"primary node role diagnostics are required when choosing an edge"
+				)
+		if self.action == "choose_two":
+			if (
+				self.secondary_node_role is None
+				or self.secondary_node_role_confidence is None
+				or self.secondary_node_role_rationale is None
+			):
+				raise ValueError(
+					"secondary node role diagnostics are required for choose_two"
+				)
+		return self
+
+
+class SingleHopControllerDecisionOutput(ControllerDecisionOutputBase):
+	candidates: list[SingleHopControllerCandidateOutput] = Field(min_length=1)
+
+
+class TwoHopControllerDecisionOutput(ControllerDecisionOutputBase):
+	candidates: list[TwoHopControllerCandidateOutput] = Field(min_length=1)
+
+
 class SelectorLLMResponseError(ValueError):
 	def __init__(self, kind: str, detail: str | None = None):
 		self.kind = kind
@@ -233,6 +346,19 @@ class BackendAdapter(Protocol):
 		temperature: float,
 		response_schema: dict[str, Any] | None = None,
 	) -> BackendCompletion: ...
+
+
+class TypedResponsesBackendAdapter(Protocol):
+	def complete_typed(
+		self,
+		*,
+		model: str,
+		system_prompt: str,
+		user_prompt: str,
+		temperature: float,
+		output_type: type[StructuredOutputT],
+		schema_max_attempts: int,
+	) -> StructuredBackendCompletion[StructuredOutputT]: ...
 
 
 class JsonlSelectorCache:
@@ -295,25 +421,9 @@ class OpenAIBackendAdapter:
 		response_schema: dict[str, Any] | None = None,
 	) -> BackendCompletion:
 		if self.api_mode == "responses":
-			client = self._get_client()
 			del response_schema
-			response = client.responses.create(
-				model=model,
-				temperature=temperature,
-				instructions=system_prompt,
-				input=user_prompt,
-				text={"format": {"type": "json_object"}},
-			)
-			prompt_tokens, completion_tokens, total_tokens = (
-				_openai_responses_usage_triplet(getattr(response, "usage", None))
-			)
-			return BackendCompletion(
-				text=_openai_response_output_text(response),
-				payload=None,
-				prompt_tokens=prompt_tokens,
-				completion_tokens=completion_tokens,
-				total_tokens=total_tokens,
-				raw_response=_raw_response_payload(response),
+			raise RuntimeError(
+				"OpenAI responses structured output must use complete_typed()."
 			)
 		if self.api_mode == "azure_foundry_chat_completions":
 			del response_schema
@@ -406,6 +516,31 @@ class OpenAIBackendAdapter:
 			completion_tokens=completion_tokens,
 			total_tokens=total_tokens,
 			raw_response=raw_response,
+		)
+
+	def complete_typed(
+		self,
+		*,
+		model: str,
+		system_prompt: str,
+		user_prompt: str,
+		temperature: float,
+		output_type: type[StructuredOutputT],
+		schema_max_attempts: int,
+	) -> StructuredBackendCompletion[StructuredOutputT]:
+		if self.api_mode != "responses":
+			raise RuntimeError(
+				"complete_typed() is only supported for the OpenAI responses API mode."
+			)
+		return _run_openai_responses_typed(
+			api_key=self.api_key,
+			base_url=self.base_url,
+			model=model,
+			system_prompt=system_prompt,
+			user_prompt=user_prompt,
+			temperature=temperature,
+			output_type=output_type,
+			schema_max_attempts=schema_max_attempts,
 		)
 
 	def _get_client(self) -> Any:
@@ -740,50 +875,118 @@ class LLMStepLinkScorer:
 
 		started_at = time.perf_counter()
 		self.validate_environment()
-		attempt_result = _complete_json_with_provider_retries(
-			backend=self._get_backend(),
-			model=self.config.model or "",
-			system_prompt=_system_prompt(self.mode),
-			user_prompt=_user_prompt(query=query, bundle=bundle_payload),
-			temperature=self.config.temperature,
-			response_schema=_response_schema(self.mode),
-			max_attempts=self.config.provider_max_attempts,
-			base_delay_s=self.config.provider_retry_base_delay_s,
-			max_delay_s=self.config.provider_retry_max_delay_s,
-		)
-		response = attempt_result.response
-		if attempt_result.error is not None:
-			latency_s = time.perf_counter() - started_at
-			return _cards_with_fallback(
-				fallback_cards,
-				provider=self.config.provider,
-				model=self.config.model,
-				fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
-				latency_s=latency_s,
-				text=response.text if response is not None else None,
-				raw_response=response.raw_response if response is not None else None,
-				prompt_tokens=response.prompt_tokens if response is not None else None,
-				completion_tokens=response.completion_tokens
-				if response is not None
-				else None,
-				total_tokens=response.total_tokens if response is not None else None,
+		backend = self._get_backend()
+		if (
+			self.config.provider == "openai"
+			and self.config.openai_api_mode == "responses"
+			and isinstance(backend, OpenAIBackendAdapter)
+		):
+			typed_attempt_result = _complete_typed_with_provider_retries(
+				backend=backend,
+				model=self.config.model or "",
+				system_prompt=_system_prompt(self.mode),
+				user_prompt=_user_prompt(query=query, bundle=bundle_payload),
+				temperature=self.config.temperature,
+				output_type=_score_output_model(self.mode),
+				schema_max_attempts=1,
+				max_attempts=self.config.provider_max_attempts,
+				base_delay_s=self.config.provider_retry_base_delay_s,
+				max_delay_s=self.config.provider_retry_max_delay_s,
 			)
+			typed_response = typed_attempt_result.response
+			if typed_attempt_result.error is not None:
+				latency_s = time.perf_counter() - started_at
+				fallback_reason = (
+					typed_attempt_result.error.fallback_reason
+					if isinstance(typed_attempt_result.error, SelectorLLMResponseError)
+					else f"provider_error:{_compact_error_detail(str(typed_attempt_result.error))}"
+				)
+				return _cards_with_fallback(
+					fallback_cards,
+					provider=self.config.provider,
+					model=self.config.model,
+					fallback_reason=fallback_reason,
+					latency_s=latency_s,
+					raw_response=typed_response.raw_response if typed_response is not None else None,
+					prompt_tokens=typed_response.prompt_tokens if typed_response is not None else None,
+					completion_tokens=typed_response.completion_tokens
+					if typed_response is not None
+					else None,
+					total_tokens=typed_response.total_tokens if typed_response is not None else None,
+				)
+			assert typed_response is not None
+			payload = typed_response.output.model_dump(mode="json", exclude_none=True)
+			response_text = json.dumps(payload, ensure_ascii=False)
+			raw_response = typed_response.raw_response
+			prompt_tokens = typed_response.prompt_tokens
+			completion_tokens = typed_response.completion_tokens
+			total_tokens = typed_response.total_tokens
+		else:
+			attempt_result = _complete_json_with_provider_retries(
+				backend=backend,
+				model=self.config.model or "",
+				system_prompt=_system_prompt(self.mode),
+				user_prompt=_user_prompt(query=query, bundle=bundle_payload),
+				temperature=self.config.temperature,
+				response_schema=_response_schema(self.mode),
+				max_attempts=self.config.provider_max_attempts,
+				base_delay_s=self.config.provider_retry_base_delay_s,
+				max_delay_s=self.config.provider_retry_max_delay_s,
+			)
+			response = attempt_result.response
+			if attempt_result.error is not None:
+				latency_s = time.perf_counter() - started_at
+				return _cards_with_fallback(
+					fallback_cards,
+					provider=self.config.provider,
+					model=self.config.model,
+					fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
+					latency_s=latency_s,
+					text=response.text if response is not None else None,
+					raw_response=response.raw_response if response is not None else None,
+					prompt_tokens=response.prompt_tokens if response is not None else None,
+					completion_tokens=response.completion_tokens
+					if response is not None
+					else None,
+					total_tokens=response.total_tokens if response is not None else None,
+				)
+
+			assert response is not None
+			try:
+				payload = (
+					response.payload
+					if response.payload is not None
+					else _parse_completion_payload(response.text)
+				)
+			except SelectorLLMResponseError as exc:
+				latency_s = time.perf_counter() - started_at
+				return _cards_with_fallback(
+					fallback_cards,
+					provider=self.config.provider,
+					model=self.config.model,
+					fallback_reason=exc.fallback_reason,
+					latency_s=latency_s,
+					text=response.text,
+					raw_response=response.raw_response,
+					prompt_tokens=response.prompt_tokens,
+					completion_tokens=response.completion_tokens,
+					total_tokens=response.total_tokens,
+				)
+			response_text = response.text
+			raw_response = response.raw_response
+			prompt_tokens = response.prompt_tokens
+			completion_tokens = response.completion_tokens
+			total_tokens = response.total_tokens
 
 		latency_s = time.perf_counter() - started_at
-		assert response is not None
 		try:
-			payload = (
-				response.payload
-				if response.payload is not None
-				else _parse_completion_payload(response.text)
-			)
 			cards = self._cards_from_payload(
 				payload=payload,
-				text=response.text,
-				raw_response=response.raw_response,
-				prompt_tokens=response.prompt_tokens,
-				completion_tokens=response.completion_tokens,
-				total_tokens=response.total_tokens,
+				text=response_text,
+				raw_response=raw_response,
+				prompt_tokens=prompt_tokens,
+				completion_tokens=completion_tokens,
+				total_tokens=total_tokens,
 				latency_s=latency_s,
 				cache_hit=False,
 				candidate_links=candidate_links,
@@ -796,11 +999,11 @@ class LLMStepLinkScorer:
 				model=self.config.model,
 				fallback_reason=exc.fallback_reason,
 				latency_s=latency_s,
-				text=response.text,
-				raw_response=response.raw_response,
-				prompt_tokens=response.prompt_tokens,
-				completion_tokens=response.completion_tokens,
-				total_tokens=response.total_tokens,
+				text=response_text,
+				raw_response=raw_response,
+				prompt_tokens=prompt_tokens,
+				completion_tokens=completion_tokens,
+				total_tokens=total_tokens,
 			)
 
 		if self._cache is not None:
@@ -811,10 +1014,10 @@ class LLMStepLinkScorer:
 					"model": self.config.model,
 					"response_payload": payload,
 					"response_text": json.dumps(payload, ensure_ascii=False),
-					"raw_response": response.raw_response,
-					"prompt_tokens": response.prompt_tokens,
-					"completion_tokens": response.completion_tokens,
-					"total_tokens": response.total_tokens,
+					"raw_response": raw_response,
+					"prompt_tokens": prompt_tokens,
+					"completion_tokens": completion_tokens,
+					"total_tokens": total_tokens,
 				},
 			)
 		return cards
@@ -1051,33 +1254,37 @@ class LLMController:
 
 		started_at = time.perf_counter()
 		self.validate_environment()
+		backend = self._get_backend()
 		system_prompt = _controller_system_prompt(self.mode)
 		user_prompt = _controller_user_prompt(
 			query=query, bundle=bundle_payload, mode=self.mode
 		)
-		response_schema = _controller_response_schema(self.mode)
-		response: BackendCompletion | None = None
-		last_parse_error: SelectorLLMResponseError | None = None
-		prompt_token_values: list[int] = []
-		completion_token_values: list[int] = []
-		total_token_values: list[int] = []
-		backend_attempts = 0
-		for attempt_index in range(self.config.controller_max_attempts):
-			attempt_result = _complete_json_with_provider_retries(
-				backend=self._get_backend(),
+		decision: ControllerDecision | None = None
+		if (
+			self.config.provider == "openai"
+			and self.config.openai_api_mode == "responses"
+			and isinstance(backend, OpenAIBackendAdapter)
+		):
+			typed_attempt_result = _complete_typed_with_provider_retries(
+				backend=backend,
 				model=self.config.model or "",
 				system_prompt=system_prompt,
 				user_prompt=user_prompt,
 				temperature=self.config.temperature,
-				response_schema=response_schema,
+				output_type=_controller_output_model(self.mode),
+				schema_max_attempts=self.config.controller_max_attempts,
 				max_attempts=self.config.provider_max_attempts,
 				base_delay_s=self.config.provider_retry_base_delay_s,
 				max_delay_s=self.config.provider_retry_max_delay_s,
 			)
-			backend_attempts += attempt_result.attempts
-			response = attempt_result.response
-			if attempt_result.error is not None:
+			typed_response = typed_attempt_result.response
+			if typed_attempt_result.error is not None:
 				latency_s = time.perf_counter() - started_at
+				fallback_reason = (
+					typed_attempt_result.error.fallback_reason
+					if isinstance(typed_attempt_result.error, SelectorLLMResponseError)
+					else f"provider_error:{_compact_error_detail(str(typed_attempt_result.error))}"
+				)
 				return self._fallback_decision(
 					fallback_cards=fallback_cards,
 					exposure_plan=exposure_plan,
@@ -1085,46 +1292,50 @@ class LLMController:
 					current_depth=current_depth,
 					forks_used=forks_used,
 					backtracks_used=backtracks_used,
-					fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
+					fallback_reason=fallback_reason,
 					latency_s=latency_s,
-					text=response.text if response is not None else None,
-					raw_response=response.raw_response if response is not None else None,
-					prompt_tokens=_aggregate_usage_total(prompt_token_values),
-					completion_tokens=_aggregate_usage_total(completion_token_values),
-					total_tokens=_aggregate_usage_total(total_token_values),
-					llm_attempts=backend_attempts,
+					raw_response=typed_response.raw_response if typed_response is not None else None,
+					prompt_tokens=typed_response.prompt_tokens if typed_response is not None else None,
+					completion_tokens=typed_response.completion_tokens
+					if typed_response is not None
+					else None,
+					total_tokens=typed_response.total_tokens if typed_response is not None else None,
+					llm_attempts=typed_attempt_result.attempts,
 				)
-			assert response is not None
-			if response.prompt_tokens is not None:
-				prompt_token_values.append(response.prompt_tokens)
-			if response.completion_tokens is not None:
-				completion_token_values.append(response.completion_tokens)
-			if response.total_tokens is not None:
-				total_token_values.append(response.total_tokens)
-			try:
-				payload = (
-					response.payload
-					if response.payload is not None
-					else _parse_completion_payload(response.text)
+			assert typed_response is not None
+			payload = typed_response.output.model_dump(mode="json", exclude_none=True)
+			response_text = json.dumps(payload, ensure_ascii=False)
+			raw_response = typed_response.raw_response
+			prompt_tokens = typed_response.prompt_tokens
+			completion_tokens = typed_response.completion_tokens
+			total_tokens = typed_response.total_tokens
+			llm_attempts = max(
+				typed_attempt_result.attempts,
+				typed_attempt_result.attempts + typed_response.requests - 1,
+			)
+		else:
+			response_schema = _controller_response_schema(self.mode)
+			response: BackendCompletion | None = None
+			last_parse_error: SelectorLLMResponseError | None = None
+			prompt_token_values: list[int] = []
+			completion_token_values: list[int] = []
+			total_token_values: list[int] = []
+			backend_attempts = 0
+			for attempt_index in range(self.config.controller_max_attempts):
+				attempt_result = _complete_json_with_provider_retries(
+					backend=backend,
+					model=self.config.model or "",
+					system_prompt=system_prompt,
+					user_prompt=user_prompt,
+					temperature=self.config.temperature,
+					response_schema=response_schema,
+					max_attempts=self.config.provider_max_attempts,
+					base_delay_s=self.config.provider_retry_base_delay_s,
+					max_delay_s=self.config.provider_retry_max_delay_s,
 				)
-				latency_s = time.perf_counter() - started_at
-				decision = self._decision_from_payload(
-					payload=payload,
-					text=response.text,
-					raw_response=response.raw_response,
-					prompt_tokens=_aggregate_usage_total(prompt_token_values),
-					completion_tokens=_aggregate_usage_total(completion_token_values),
-					total_tokens=_aggregate_usage_total(total_token_values),
-					latency_s=latency_s,
-					cache_hit=False,
-					exposure_plan=exposure_plan,
-					bundle=bundle,
-					llm_attempts=backend_attempts,
-				)
-				break
-			except SelectorLLMResponseError as exc:
-				last_parse_error = exc
-				if attempt_index + 1 >= self.config.controller_max_attempts:
+				backend_attempts += attempt_result.attempts
+				response = attempt_result.response
+				if attempt_result.error is not None:
 					latency_s = time.perf_counter() - started_at
 					return self._fallback_decision(
 						fallback_cards=fallback_cards,
@@ -1133,26 +1344,114 @@ class LLMController:
 						current_depth=current_depth,
 						forks_used=forks_used,
 						backtracks_used=backtracks_used,
-						fallback_reason=exc.fallback_reason,
+						fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
 						latency_s=latency_s,
-						text=response.text,
-						raw_response=response.raw_response,
+						text=response.text if response is not None else None,
+						raw_response=response.raw_response if response is not None else None,
 						prompt_tokens=_aggregate_usage_total(prompt_token_values),
 						completion_tokens=_aggregate_usage_total(completion_token_values),
 						total_tokens=_aggregate_usage_total(total_token_values),
 						llm_attempts=backend_attempts,
 					)
-				user_prompt = _controller_repair_user_prompt(
-					query=query,
-					bundle=bundle_payload,
-					mode=self.mode,
-					previous_response=response.text,
-					validation_error=exc.fallback_reason,
+				assert response is not None
+				if response.prompt_tokens is not None:
+					prompt_token_values.append(response.prompt_tokens)
+				if response.completion_tokens is not None:
+					completion_token_values.append(response.completion_tokens)
+				if response.total_tokens is not None:
+					total_token_values.append(response.total_tokens)
+				try:
+					payload = (
+						response.payload
+						if response.payload is not None
+						else _parse_completion_payload(response.text)
+					)
+					response_text = response.text
+					raw_response = response.raw_response
+					prompt_tokens = _aggregate_usage_total(prompt_token_values)
+					completion_tokens = _aggregate_usage_total(completion_token_values)
+					total_tokens = _aggregate_usage_total(total_token_values)
+					llm_attempts = backend_attempts
+					latency_s = time.perf_counter() - started_at
+					decision = self._decision_from_payload(
+						payload=payload,
+						text=response_text,
+						raw_response=raw_response,
+						prompt_tokens=prompt_tokens,
+						completion_tokens=completion_tokens,
+						total_tokens=total_tokens,
+						latency_s=latency_s,
+						cache_hit=False,
+						exposure_plan=exposure_plan,
+						bundle=bundle,
+						llm_attempts=llm_attempts,
+					)
+					break
+				except SelectorLLMResponseError as exc:
+					last_parse_error = exc
+					if attempt_index + 1 >= self.config.controller_max_attempts:
+						latency_s = time.perf_counter() - started_at
+						return self._fallback_decision(
+							fallback_cards=fallback_cards,
+							exposure_plan=exposure_plan,
+							bundle=bundle,
+							current_depth=current_depth,
+							forks_used=forks_used,
+							backtracks_used=backtracks_used,
+							fallback_reason=exc.fallback_reason,
+							latency_s=latency_s,
+							text=response.text,
+							raw_response=response.raw_response,
+							prompt_tokens=_aggregate_usage_total(prompt_token_values),
+							completion_tokens=_aggregate_usage_total(completion_token_values),
+							total_tokens=_aggregate_usage_total(total_token_values),
+							llm_attempts=backend_attempts,
+						)
+					user_prompt = _controller_repair_user_prompt(
+						query=query,
+						bundle=bundle_payload,
+						mode=self.mode,
+						previous_response=response.text,
+						validation_error=exc.fallback_reason,
+					)
+			else:  # pragma: no cover - loop always returns or breaks
+				raise AssertionError("controller retry loop exited unexpectedly")
+			if last_parse_error is not None:
+				del last_parse_error
+
+		if decision is None:
+			latency_s = time.perf_counter() - started_at
+			try:
+				decision = self._decision_from_payload(
+					payload=payload,
+					text=response_text,
+					raw_response=raw_response,
+					prompt_tokens=prompt_tokens,
+					completion_tokens=completion_tokens,
+					total_tokens=total_tokens,
+					latency_s=latency_s,
+					cache_hit=False,
+					exposure_plan=exposure_plan,
+					bundle=bundle,
+					llm_attempts=llm_attempts,
 				)
-		else:  # pragma: no cover - loop always returns or breaks
-			raise AssertionError("controller retry loop exited unexpectedly")
-		if last_parse_error is not None:
-			del last_parse_error
+			except SelectorLLMResponseError as exc:
+				return self._fallback_decision(
+					fallback_cards=fallback_cards,
+					exposure_plan=exposure_plan,
+					bundle=bundle,
+					current_depth=current_depth,
+					forks_used=forks_used,
+					backtracks_used=backtracks_used,
+					fallback_reason=exc.fallback_reason,
+					latency_s=latency_s,
+					text=response_text,
+					raw_response=raw_response,
+					prompt_tokens=prompt_tokens,
+					completion_tokens=completion_tokens,
+					total_tokens=total_tokens,
+					llm_attempts=llm_attempts,
+				)
 
 		if self._cache is not None:
 			self._cache.put(
@@ -1161,11 +1460,11 @@ class LLMController:
 					"provider": self.config.provider,
 					"model": self.config.model,
 					"response_payload": payload,
-					"response_text": json.dumps(payload, ensure_ascii=False),
-					"raw_response": response.raw_response,
-					"prompt_tokens": _aggregate_usage_total(prompt_token_values),
-					"completion_tokens": _aggregate_usage_total(completion_token_values),
-					"total_tokens": _aggregate_usage_total(total_token_values),
+					"response_text": response_text,
+					"raw_response": raw_response,
+					"prompt_tokens": prompt_tokens,
+					"completion_tokens": completion_tokens,
+					"total_tokens": total_tokens,
 				},
 			)
 		return decision
@@ -1617,153 +1916,34 @@ def _selector_cache_key(
 	return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _response_schema(mode: str) -> dict[str, Any]:
-	properties: dict[str, Any] = {
-		"edge_id": {"type": "string"},
-		"direct_support": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"bridge_potential": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"novelty": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"rationale": {"type": "string"},
-	}
-	required = ["edge_id", "direct_support", "bridge_potential", "novelty", "rationale"]
+def _score_output_model(
+	mode: Literal["single_hop", "two_hop"],
+) -> type[SingleHopScoresOutput] | type[TwoHopScoresOutput]:
 	if mode == "two_hop":
-		properties["future_potential"] = {
-			"type": "number",
-			"minimum": 0.0,
-			"maximum": 1.0,
-		}
-		properties["best_next_edge_id"] = {"type": "string"}
-		required.append("future_potential")
-	return {
-		"type": "object",
-		"additionalProperties": False,
-		"properties": {
-			"scores": {
-				"type": "array",
-				"items": {
-					"type": "object",
-					"additionalProperties": False,
-					"properties": properties,
-					"required": required,
-				},
-			}
-		},
-		"required": ["scores"],
-	}
+		return TwoHopScoresOutput
+	return SingleHopScoresOutput
+
+
+def _controller_output_model(
+	mode: Literal["single_hop", "two_hop"],
+) -> (
+	type[SingleHopControllerDecisionOutput] | type[TwoHopControllerDecisionOutput]
+):
+	if mode == "two_hop":
+		return TwoHopControllerDecisionOutput
+	return SingleHopControllerDecisionOutput
+
+
+def _response_schema(mode: str) -> dict[str, Any]:
+	output_model = _score_output_model(cast(Literal["single_hop", "two_hop"], mode))
+	return cast(dict[str, Any], output_model.model_json_schema())
 
 
 def _controller_response_schema(mode: str) -> dict[str, Any]:
-	node_role_enum = [
-		"answer_bearing_support",
-		"bridge_support",
-		"generic_concept",
-		"background_entity",
-		"other",
-	]
-	candidate_properties: dict[str, Any] = {
-		"edge_id": {"type": "string"},
-		"utility": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"answer_bearing_link_bonus": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"direct_support": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"bridge_potential": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"redundancy_risk": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"rationale": {"type": "string"},
-	}
-	required = [
-		"edge_id",
-		"utility",
-		"answer_bearing_link_bonus",
-		"direct_support",
-		"bridge_potential",
-		"redundancy_risk",
-		"rationale",
-	]
-	if mode == "two_hop":
-		candidate_properties["future_potential"] = {
-			"type": "number",
-			"minimum": 0.0,
-			"maximum": 1.0,
-		}
-		required.append("future_potential")
-	return {
-		"type": "object",
-		"additionalProperties": False,
-		"properties": {
-			"action": {"type": "string", "enum": ["stop", "choose_one", "choose_two"]},
-			"primary_edge_id": {"type": "string"},
-			"secondary_edge_id": {"type": "string"},
-			"backup_edge_id": {"type": "string"},
-			"primary_node_role": {"type": "string", "enum": node_role_enum},
-			"primary_node_role_confidence": {
-				"type": "number",
-				"minimum": 0.0,
-				"maximum": 1.0,
-			},
-			"primary_node_role_rationale": {"type": "string"},
-			"secondary_node_role": {"type": "string", "enum": node_role_enum},
-			"secondary_node_role_confidence": {
-				"type": "number",
-				"minimum": 0.0,
-				"maximum": 1.0,
-			},
-			"secondary_node_role_rationale": {"type": "string"},
-			"stop_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-			"evidence_cluster_confidence": {
-				"type": "number",
-				"minimum": 0.0,
-				"maximum": 1.0,
-			},
-			"candidates": {
-				"type": "array",
-				"items": {
-					"type": "object",
-					"additionalProperties": False,
-					"properties": candidate_properties,
-					"required": required,
-				},
-			},
-		},
-		"required": [
-			"action",
-			"primary_edge_id",
-			"backup_edge_id",
-			"stop_score",
-			"evidence_cluster_confidence",
-			"candidates",
-		],
-		"allOf": [
-			{
-				"if": {
-					"properties": {
-						"action": {"enum": ["choose_one", "choose_two"]},
-					},
-					"required": ["action"],
-				},
-				"then": {
-					"required": [
-						"primary_node_role",
-						"primary_node_role_confidence",
-						"primary_node_role_rationale",
-					]
-				},
-			},
-			{
-				"if": {
-					"properties": {
-						"action": {"enum": ["choose_two"]},
-					},
-					"required": ["action"],
-				},
-				"then": {
-					"required": [
-						"secondary_node_role",
-						"secondary_node_role_confidence",
-						"secondary_node_role_rationale",
-					]
-				},
-			},
-		],
-	}
+	output_model = _controller_output_model(
+		cast(Literal["single_hop", "two_hop"], mode)
+	)
+	return cast(dict[str, Any], output_model.model_json_schema())
 
 
 def _system_prompt(mode: str) -> str:
@@ -2168,6 +2348,62 @@ def _provider_retry_delay_s(
 	return min(base_delay_s * (2**retry_index), max_delay_s)
 
 
+def _run_openai_responses_typed(
+	*,
+	api_key: str,
+	base_url: str | None,
+	model: str,
+	system_prompt: str,
+	user_prompt: str,
+	temperature: float,
+	output_type: type[StructuredOutputT],
+	schema_max_attempts: int,
+) -> StructuredBackendCompletion[StructuredOutputT]:
+	from openai import AsyncAzureOpenAI
+
+	provider: OpenAIProvider
+	if base_url is not None and _is_azure_openai_endpoint(base_url):
+		azure_client = AsyncAzureOpenAI(
+			api_key=api_key,
+			azure_endpoint=base_url,
+			api_version="2025-04-01-preview",
+			max_retries=0,
+		)
+		provider = OpenAIProvider(openai_client=azure_client)
+	else:
+		provider = OpenAIProvider(base_url=base_url, api_key=api_key)
+	model_runner = OpenAIResponsesModel(model, provider=provider)
+	agent = Agent(
+		model_runner,
+		output_type=output_type,
+		system_prompt=system_prompt,
+		model_settings={"temperature": temperature},
+		retries=0,
+		output_retries=max(schema_max_attempts - 1, 0),
+		defer_model_check=True,
+	)
+	try:
+		result = agent.run_sync(user_prompt)
+	except UnexpectedModelBehavior as exc:
+		raise SelectorLLMResponseError("schema_error", str(exc)) from exc
+	usage = result.usage()
+	prompt_tokens = usage.input_tokens or None
+	completion_tokens = usage.output_tokens or None
+	total_tokens = (
+		prompt_tokens + completion_tokens
+		if prompt_tokens is not None and completion_tokens is not None
+		else None
+	)
+	return StructuredBackendCompletion(
+		output=result.output,
+		prompt_tokens=prompt_tokens,
+		completion_tokens=completion_tokens,
+		total_tokens=total_tokens,
+		raw_response=_raw_response_payload(result.response),
+		requests=usage.requests,
+	)
+
+
 def _complete_json_with_provider_retries(
 	*,
 	backend: BackendAdapter,
@@ -2210,6 +2446,56 @@ def _complete_json_with_provider_retries(
 				time.sleep(delay_s)
 	assert last_exc is not None
 	return BackendAttemptResult(response=None, attempts=max_attempts, error=last_exc)
+
+
+def _complete_typed_with_provider_retries(
+	*,
+	backend: TypedResponsesBackendAdapter,
+	model: str,
+	system_prompt: str,
+	user_prompt: str,
+	temperature: float,
+	output_type: type[StructuredOutputT],
+	schema_max_attempts: int,
+	max_attempts: int,
+	base_delay_s: float,
+	max_delay_s: float,
+) -> StructuredBackendAttemptResult[StructuredOutputT]:
+	last_exc: Exception | None = None
+	for attempt_index in range(max_attempts):
+		try:
+			return StructuredBackendAttemptResult(
+				response=backend.complete_typed(
+					model=model,
+					system_prompt=system_prompt,
+					user_prompt=user_prompt,
+					temperature=temperature,
+					output_type=output_type,
+					schema_max_attempts=schema_max_attempts,
+				),
+				attempts=attempt_index + 1,
+			)
+		except Exception as exc:
+			last_exc = exc
+			if attempt_index + 1 >= max_attempts or not _is_retryable_provider_error(exc):
+				return StructuredBackendAttemptResult(
+					response=None,
+					attempts=attempt_index + 1,
+					error=exc,
+				)
+			delay_s = _provider_retry_delay_s(
+				retry_index=attempt_index,
+				base_delay_s=base_delay_s,
+				max_delay_s=max_delay_s,
+			)
+			if delay_s > 0:
+				time.sleep(delay_s)
+	assert last_exc is not None
+	return StructuredBackendAttemptResult(
+		response=None,
+		attempts=max_attempts,
+		error=last_exc,
+	)
 
 
 def _openai_usage_triplet(usage: Any) -> tuple[int | None, int | None, int | None]:
@@ -2345,6 +2631,13 @@ def _maybe_text(value: Any) -> str | None:
 	return text or None
 
 
+def _is_azure_openai_endpoint(base_url: str) -> bool:
+	host = urlparse(base_url).netloc.lower()
+	return host.endswith(".cognitiveservices.azure.com") or host.endswith(
+		".openai.azure.com"
+	)
+
+
 def _normalize_openai_base_url(base_url: str) -> str:
 	return _normalize_openai_transport_url(
 		base_url, api_mode="chat_completions"
@@ -2381,6 +2674,20 @@ def _normalize_openai_transport_url(
 			"selector_base_url must be a base URL, not a raw endpoint with query parameters."
 		)
 	path = parsed.path.rstrip("/")
+	if api_mode == "responses":
+		if path.endswith("/responses") or path.endswith("/chat/completions") or path.endswith(
+			"/completions"
+		):
+			raise ValueError(
+				"selector_base_url must be an OpenAI-compatible API root, not a raw responses endpoint."
+			)
+		if _is_azure_openai_endpoint(text):
+			if path in {"", "/openai/v1"}:
+				return f"{parsed.scheme}://{parsed.netloc}"
+			raise ValueError(
+				"Azure responses selector_base_url must be the Azure endpoint root, for example https://<resource>.cognitiveservices.azure.com."
+			)
+		return text.rstrip("/")
 	if path.endswith("/responses") or path.endswith("/chat/completions") or path.endswith(
 		"/completions"
 	):
