@@ -12,11 +12,17 @@ from typing import Any, Callable, Literal, Sequence, cast
 
 from hypercorpus.answering import (
 	Answerer,
+	AnswererProvider,
 	LLMAnswerer,
 	LLMAnswererConfig,
 	SupportsAnswer,
 )
-from hypercorpus.datasets.common import DatasetAdapter, coerce_question_type, load_json_records
+from hypercorpus.copilot import normalize_copilot_base_url
+from hypercorpus.datasets.common import (
+	DatasetAdapter,
+	coerce_question_type,
+	load_json_records,
+)
 from hypercorpus.datasets.docs import DocumentationAdapter
 from hypercorpus.datasets.hotpotqa import (
 	HotpotQAAdapter,
@@ -66,6 +72,7 @@ from hypercorpus.reports import (
 	export_subset_comparison_report,
 	export_summary_report,
 )
+from hypercorpus.selector_llm import SelectorLLMConfig
 from hypercorpus.selector import (
 	BudgetFillSelector,
 	CanonicalConstrainedMultipathSelector,
@@ -171,6 +178,10 @@ _SELECTOR_MODEL_ENV = "HYPERCORPUS_SELECTOR_MODEL"
 _SELECTOR_API_KEY_ENV = "HYPERCORPUS_SELECTOR_API_KEY_ENV"
 _SELECTOR_BASE_URL_ENV = "HYPERCORPUS_SELECTOR_BASE_URL"
 _SELECTOR_OPENAI_API_MODE_ENV = "HYPERCORPUS_SELECTOR_OPENAI_API_MODE"
+_ANSWER_PROVIDER_ENV = "HYPERCORPUS_ANSWER_PROVIDER"
+_ANSWER_MODEL_ENV = "HYPERCORPUS_ANSWER_MODEL"
+_ANSWER_API_KEY_ENV = "HYPERCORPUS_ANSWER_API_KEY_ENV"
+_ANSWER_BASE_URL_ENV = "HYPERCORPUS_ANSWER_BASE_URL"
 _SENTENCE_TRANSFORMER_MODEL_ENV = "HYPERCORPUS_SENTENCE_TRANSFORMER_MODEL"
 _SENTENCE_TRANSFORMER_DEVICE_ENV = "HYPERCORPUS_SENTENCE_TRANSFORMER_DEVICE"
 
@@ -182,6 +193,10 @@ class _ExperimentRuntimeDefaults:
 	selector_api_key_env: str | None = None
 	selector_base_url: str | None = None
 	selector_openai_api_mode: str | None = None
+	answer_provider: str | None = None
+	answer_model: str | None = None
+	answer_api_key_env: str | None = None
+	answer_base_url: str | None = None
 	sentence_transformer_model: str | None = None
 	sentence_transformer_device: str | None = None
 
@@ -278,9 +293,7 @@ def _read_optional_string(
 	if value is None:
 		return None
 	if not isinstance(value, str):
-		raise ValueError(
-			f"{path}: [{section}].{key} must be a string when provided."
-		)
+		raise ValueError(f"{path}: [{section}].{key} must be a string when provided.")
 	text = value.strip()
 	return text or None
 
@@ -289,9 +302,12 @@ def _load_experiment_defaults_file(path: Path) -> _ExperimentRuntimeDefaults:
 	with path.open("rb") as handle:
 		payload = tomllib.load(handle)
 	selector = payload.get("selector", {})
+	answerer = payload.get("answerer", {})
 	sentence_transformer = payload.get("sentence_transformer", {})
 	if not isinstance(selector, dict):
 		raise ValueError(f"{path}: [selector] must be a table.")
+	if not isinstance(answerer, dict):
+		raise ValueError(f"{path}: [answerer] must be a table.")
 	if not isinstance(sentence_transformer, dict):
 		raise ValueError(f"{path}: [sentence_transformer] must be a table.")
 	return _ExperimentRuntimeDefaults(
@@ -309,6 +325,18 @@ def _load_experiment_defaults_file(path: Path) -> _ExperimentRuntimeDefaults:
 		),
 		selector_openai_api_mode=_read_optional_string(
 			selector, "openai_api_mode", path=path, section="selector"
+		),
+		answer_provider=_read_optional_string(
+			answerer, "provider", path=path, section="answerer"
+		),
+		answer_model=_read_optional_string(
+			answerer, "model", path=path, section="answerer"
+		),
+		answer_api_key_env=_read_optional_string(
+			answerer, "api_key_env", path=path, section="answerer"
+		),
+		answer_base_url=_read_optional_string(
+			answerer, "base_url", path=path, section="answerer"
 		),
 		sentence_transformer_model=_read_optional_string(
 			sentence_transformer,
@@ -331,8 +359,11 @@ def _load_environment_runtime_defaults() -> _ExperimentRuntimeDefaults:
 		selector_model=os.environ.get(_SELECTOR_MODEL_ENV) or None,
 		selector_api_key_env=os.environ.get(_SELECTOR_API_KEY_ENV) or None,
 		selector_base_url=os.environ.get(_SELECTOR_BASE_URL_ENV) or None,
-		selector_openai_api_mode=os.environ.get(_SELECTOR_OPENAI_API_MODE_ENV)
-		or None,
+		selector_openai_api_mode=os.environ.get(_SELECTOR_OPENAI_API_MODE_ENV) or None,
+		answer_provider=os.environ.get(_ANSWER_PROVIDER_ENV) or None,
+		answer_model=os.environ.get(_ANSWER_MODEL_ENV) or None,
+		answer_api_key_env=os.environ.get(_ANSWER_API_KEY_ENV) or None,
+		answer_base_url=os.environ.get(_ANSWER_BASE_URL_ENV) or None,
 		sentence_transformer_model=os.environ.get(_SENTENCE_TRANSFORMER_MODEL_ENV)
 		or None,
 		sentence_transformer_device=os.environ.get(_SENTENCE_TRANSFORMER_DEVICE_ENV)
@@ -355,12 +386,71 @@ def _merge_runtime_defaults(
 			or merged.selector_base_url,
 			selector_openai_api_mode=defaults_item.selector_openai_api_mode
 			or merged.selector_openai_api_mode,
+			answer_provider=defaults_item.answer_provider or merged.answer_provider,
+			answer_model=defaults_item.answer_model or merged.answer_model,
+			answer_api_key_env=defaults_item.answer_api_key_env
+			or merged.answer_api_key_env,
+			answer_base_url=defaults_item.answer_base_url or merged.answer_base_url,
 			sentence_transformer_model=defaults_item.sentence_transformer_model
 			or merged.sentence_transformer_model,
 			sentence_transformer_device=defaults_item.sentence_transformer_device
 			or merged.sentence_transformer_device,
 		)
 	return merged
+
+
+def _provider_matches_default_source(
+	*, resolved_provider: str, source_provider: str | None
+) -> bool:
+	return source_provider is None or source_provider == resolved_provider
+
+
+def _selector_value_is_compatible(
+	*, field_name: str, provider: str, value: str
+) -> bool:
+	if field_name == "selector_base_url" and provider == "copilot":
+		try:
+			normalize_copilot_base_url(value)
+		except ValueError:
+			return False
+	if field_name == "selector_openai_api_mode" and provider == "copilot":
+		return value in {"chat_completions", "github_models_chat_completions"}
+	return True
+
+
+def _answer_value_is_compatible(*, provider: str, value: str) -> bool:
+	if provider != "copilot":
+		return True
+	try:
+		normalize_copilot_base_url(value)
+	except ValueError:
+		return False
+	return True
+
+
+def _resolve_provider_bound_default(
+	*,
+	explicit_value: str | None,
+	field_name: str,
+	provider: str,
+	defaults_sources: Sequence[tuple[str | None, _ExperimentRuntimeDefaults]],
+	validator: Callable[[str], bool] | None = None,
+) -> str | None:
+	if explicit_value is not None:
+		return explicit_value
+	for source_provider, source_defaults in defaults_sources:
+		if not _provider_matches_default_source(
+			resolved_provider=provider,
+			source_provider=source_provider,
+		):
+			continue
+		value = cast(str | None, getattr(source_defaults, field_name))
+		if value is None:
+			continue
+		if validator is not None and not validator(value):
+			continue
+		return value
+	return None
 
 
 def _resolve_runtime_defaults(
@@ -370,6 +460,10 @@ def _resolve_runtime_defaults(
 	selector_api_key_env: str | None,
 	selector_base_url: str | None,
 	selector_openai_api_mode: str | None,
+	answer_provider: str | None,
+	answer_model: str | None,
+	answer_api_key_env: str | None,
+	answer_base_url: str | None,
 	sentence_transformer_model: str | None,
 	sentence_transformer_device: str | None,
 ) -> _ExperimentRuntimeDefaults:
@@ -379,22 +473,132 @@ def _resolve_runtime_defaults(
 		file_defaults = _load_experiment_defaults_file(defaults_path)
 	env_defaults = _load_environment_runtime_defaults()
 	resolved_defaults = _merge_runtime_defaults(file_defaults, env_defaults)
-	return _ExperimentRuntimeDefaults(
-		selector_provider=selector_provider
+	selector_defaults_sources = (
+		(env_defaults.selector_provider, env_defaults),
+		(file_defaults.selector_provider, file_defaults),
+	)
+	answer_defaults_sources = (
+		(env_defaults.answer_provider, env_defaults),
+		(file_defaults.answer_provider, file_defaults),
+	)
+	resolved_selector_provider = (
+		selector_provider
 		or resolved_defaults.selector_provider
-		or "openai",
-		selector_model=selector_model or resolved_defaults.selector_model,
-		selector_api_key_env=selector_api_key_env
-		or resolved_defaults.selector_api_key_env,
-		selector_base_url=selector_base_url or resolved_defaults.selector_base_url,
-		selector_openai_api_mode=selector_openai_api_mode
-		or resolved_defaults.selector_openai_api_mode
-		or "chat_completions",
+		or _infer_default_selector_provider(
+			selector_api_key_env=selector_api_key_env
+			or resolved_defaults.selector_api_key_env,
+			selector_base_url=selector_base_url or resolved_defaults.selector_base_url,
+			selector_openai_api_mode=selector_openai_api_mode
+			or resolved_defaults.selector_openai_api_mode,
+		)
+	)
+	resolved_selector_config = SelectorLLMConfig(
+		provider=cast(Any, resolved_selector_provider),
+		model=_resolve_provider_bound_default(
+			explicit_value=selector_model,
+			field_name="selector_model",
+			provider=resolved_selector_provider,
+			defaults_sources=selector_defaults_sources,
+		),
+		api_key_env=_resolve_provider_bound_default(
+			explicit_value=selector_api_key_env,
+			field_name="selector_api_key_env",
+			provider=resolved_selector_provider,
+			defaults_sources=selector_defaults_sources,
+		),
+		base_url=_resolve_provider_bound_default(
+			explicit_value=selector_base_url,
+			field_name="selector_base_url",
+			provider=resolved_selector_provider,
+			defaults_sources=selector_defaults_sources,
+			validator=lambda value: _selector_value_is_compatible(
+				field_name="selector_base_url",
+				provider=resolved_selector_provider,
+				value=value,
+			),
+		),
+		openai_api_mode=cast(
+			Any,
+			_resolve_provider_bound_default(
+				explicit_value=selector_openai_api_mode,
+				field_name="selector_openai_api_mode",
+				provider=resolved_selector_provider,
+				defaults_sources=selector_defaults_sources,
+				validator=lambda value: _selector_value_is_compatible(
+					field_name="selector_openai_api_mode",
+					provider=resolved_selector_provider,
+					value=value,
+				),
+			)
+			or (
+				"github_models_chat_completions"
+				if resolved_selector_provider == "copilot"
+				else "chat_completions"
+			),
+		),
+	)
+	resolved_selector_openai_api_mode = resolved_selector_config.openai_api_mode
+	resolved_answer_provider = cast(
+		AnswererProvider,
+		answer_provider or resolved_defaults.answer_provider or "copilot",
+	)
+	resolved_answer_config = LLMAnswererConfig(
+		provider=resolved_answer_provider,
+		model=_resolve_provider_bound_default(
+			explicit_value=answer_model,
+			field_name="answer_model",
+			provider=resolved_answer_provider,
+			defaults_sources=answer_defaults_sources,
+		),
+		api_key_env=_resolve_provider_bound_default(
+			explicit_value=answer_api_key_env,
+			field_name="answer_api_key_env",
+			provider=resolved_answer_provider,
+			defaults_sources=answer_defaults_sources,
+		),
+		base_url=_resolve_provider_bound_default(
+			explicit_value=answer_base_url,
+			field_name="answer_base_url",
+			provider=resolved_answer_provider,
+			defaults_sources=answer_defaults_sources,
+			validator=lambda value: _answer_value_is_compatible(
+				provider=resolved_answer_provider,
+				value=value,
+			),
+		),
+	)
+	return _ExperimentRuntimeDefaults(
+		selector_provider=resolved_selector_config.provider,
+		selector_model=resolved_selector_config.model,
+		selector_api_key_env=resolved_selector_config.api_key_env,
+		selector_base_url=resolved_selector_config.base_url,
+		selector_openai_api_mode=resolved_selector_openai_api_mode,
+		answer_provider=resolved_answer_config.provider,
+		answer_model=resolved_answer_config.model,
+		answer_api_key_env=resolved_answer_config.api_key_env,
+		answer_base_url=resolved_answer_config.base_url,
 		sentence_transformer_model=sentence_transformer_model
 		or resolved_defaults.sentence_transformer_model,
 		sentence_transformer_device=sentence_transformer_device
 		or resolved_defaults.sentence_transformer_device,
 	)
+
+
+def _infer_default_selector_provider(
+	*,
+	selector_api_key_env: str | None,
+	selector_base_url: str | None,
+	selector_openai_api_mode: str | None,
+) -> str:
+	if selector_openai_api_mode in {"responses", "azure_foundry_chat_completions"}:
+		return "openai"
+	if selector_base_url is not None:
+		text = selector_base_url.strip()
+		if text and "models.github.ai" not in text:
+			return "openai"
+	if selector_api_key_env is not None and selector_api_key_env != "GITHUB_TOKEN":
+		return "openai"
+	return "copilot"
 
 
 def run_dataset_experiment(
@@ -421,8 +625,9 @@ def run_dataset_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -453,6 +658,10 @@ def run_dataset_experiment(
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
 		selector_openai_api_mode=selector_openai_api_mode,
+		answer_provider=answer_provider,
+		answer_model=answer_model,
+		answer_api_key_env=answer_api_key_env,
+		answer_base_url=answer_base_url,
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_device=sentence_transformer_device,
 	)
@@ -461,6 +670,12 @@ def run_dataset_experiment(
 	selector_api_key_env = runtime_defaults.selector_api_key_env
 	selector_base_url = runtime_defaults.selector_base_url
 	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
+	assert selector_provider is not None
+	assert selector_openai_api_mode is not None
+	answer_provider = runtime_defaults.answer_provider
+	answer_model = runtime_defaults.answer_model
+	answer_api_key_env = runtime_defaults.answer_api_key_env
+	answer_base_url = runtime_defaults.answer_base_url
 	sentence_transformer_model = runtime_defaults.sentence_transformer_model
 	sentence_transformer_device = runtime_defaults.sentence_transformer_device
 	resolved = _resolve_experiment_config(
@@ -525,6 +740,7 @@ def run_dataset_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -574,8 +790,9 @@ def run_2wiki_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -606,6 +823,7 @@ def run_2wiki_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -640,8 +858,9 @@ def run_iirc_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -672,6 +891,7 @@ def run_iirc_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -707,8 +927,9 @@ def run_hotpotqa_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -744,6 +965,7 @@ def run_hotpotqa_experiment(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer_mode,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -782,6 +1004,32 @@ def run_hotpotqa_experiment(
 		)
 		paired_by_id = {case.case_id: (record, case) for record, case in paired_cases}
 		paired_cases = [paired_by_id[case.case_id] for case in selected_cases]
+	runtime_defaults = _resolve_runtime_defaults(
+		selector_provider=selector_provider,
+		selector_model=selector_model,
+		selector_api_key_env=selector_api_key_env,
+		selector_base_url=selector_base_url,
+		selector_openai_api_mode=selector_openai_api_mode,
+		answer_provider=answer_provider,
+		answer_model=answer_model,
+		answer_api_key_env=answer_api_key_env,
+		answer_base_url=answer_base_url,
+		sentence_transformer_model=sentence_transformer_model,
+		sentence_transformer_device=sentence_transformer_device,
+	)
+	selector_provider = runtime_defaults.selector_provider
+	selector_model = runtime_defaults.selector_model
+	selector_api_key_env = runtime_defaults.selector_api_key_env
+	selector_base_url = runtime_defaults.selector_base_url
+	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
+	assert selector_provider is not None
+	assert selector_openai_api_mode is not None
+	answer_provider = runtime_defaults.answer_provider
+	answer_model = runtime_defaults.answer_model
+	answer_api_key_env = runtime_defaults.answer_api_key_env
+	answer_base_url = runtime_defaults.answer_base_url
+	sentence_transformer_model = runtime_defaults.sentence_transformer_model
+	sentence_transformer_device = runtime_defaults.sentence_transformer_device
 	resolved = _resolve_experiment_config(
 		selector_names=selector_names,
 		selector_preset=selector_preset,
@@ -847,6 +1095,7 @@ def run_hotpotqa_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -891,8 +1140,9 @@ def run_musique_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -923,6 +1173,7 @@ def run_musique_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -958,8 +1209,9 @@ def run_docs_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -990,6 +1242,7 @@ def run_docs_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -1033,8 +1286,9 @@ def run_store_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -1074,6 +1328,10 @@ def run_store_experiment(
 		selector_api_key_env=selector_api_key_env,
 		selector_base_url=selector_base_url,
 		selector_openai_api_mode=selector_openai_api_mode,
+		answer_provider=answer_provider,
+		answer_model=answer_model,
+		answer_api_key_env=answer_api_key_env,
+		answer_base_url=answer_base_url,
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_device=sentence_transformer_device,
 	)
@@ -1082,6 +1340,12 @@ def run_store_experiment(
 	selector_api_key_env = runtime_defaults.selector_api_key_env
 	selector_base_url = runtime_defaults.selector_base_url
 	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
+	assert selector_provider is not None
+	assert selector_openai_api_mode is not None
+	answer_provider = runtime_defaults.answer_provider
+	answer_model = runtime_defaults.answer_model
+	answer_api_key_env = runtime_defaults.answer_api_key_env
+	answer_base_url = runtime_defaults.answer_base_url
 	sentence_transformer_model = runtime_defaults.sentence_transformer_model
 	sentence_transformer_device = runtime_defaults.sentence_transformer_device
 	resolved = _resolve_experiment_config(
@@ -1153,6 +1417,7 @@ def run_store_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -1214,8 +1479,9 @@ def run_2wiki_store_experiment(
 	sentence_transformer_device: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
-	answer_model: str = "gpt-4.1-mini",
-	answer_api_key_env: str = "OPENAI_API_KEY",
+	answer_provider: str | None = None,
+	answer_model: str | None = None,
+	answer_api_key_env: str | None = None,
 	answer_base_url: str | None = None,
 	answer_cache_path: str | Path | None = None,
 	export_graphrag_inputs: bool = True,
@@ -1254,6 +1520,7 @@ def run_2wiki_store_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -1855,7 +2122,9 @@ def _selection_result_from_record(
 			],
 		),
 		metrics=SelectionMetrics(
-			budget_mode=cast(Literal["tokens", "ratio"], str(metrics_payload["budget_mode"])),
+			budget_mode=cast(
+				Literal["tokens", "ratio"], str(metrics_payload["budget_mode"])
+			),
 			budget_value=metrics_payload["budget_value"],
 			budget_label=str(metrics_payload["budget_label"]),
 			token_budget_ratio=(
@@ -2124,7 +2393,9 @@ def _build_runtime_config_payload(
 	sentence_transformer_device: str | None,
 	with_e2e: bool,
 	answerer_mode: str,
-	answer_model: str,
+	answer_provider: str | None,
+	answer_model: str | None,
+	answer_api_key_env: str | None,
 	answer_base_url: str | None,
 	export_graphrag_inputs: bool,
 ) -> dict[str, Any]:
@@ -2152,7 +2423,13 @@ def _build_runtime_config_payload(
 		"sentence_transformer_device": sentence_transformer_device,
 		"with_e2e": with_e2e,
 		"answerer_mode": answerer_mode,
+		"answer_provider": answer_provider
+		if with_e2e and answerer_mode == "llm_fixed"
+		else None,
 		"answer_model": answer_model
+		if with_e2e and answerer_mode == "llm_fixed"
+		else None,
+		"answer_api_key_env": answer_api_key_env
 		if with_e2e and answerer_mode == "llm_fixed"
 		else None,
 		"answer_base_url": answer_base_url
@@ -2193,7 +2470,9 @@ def _validate_resume_configuration(
 		"sentence_transformer_device",
 		"with_e2e",
 		"answerer_mode",
+		"answer_provider",
 		"answer_model",
+		"answer_api_key_env",
 		"answer_base_url",
 		"export_graphrag_inputs",
 		"planned_case_ids",
@@ -2528,8 +2807,9 @@ def _run_loaded_experiment(
 	sentence_transformer_device: str | None,
 	with_e2e: bool,
 	answerer_mode: str,
-	answer_model: str,
-	answer_api_key_env: str,
+	answer_provider: str | None,
+	answer_model: str | None,
+	answer_api_key_env: str | None,
 	answer_base_url: str | None,
 	answer_cache_path: str | Path | None,
 	export_graphrag_inputs: bool,
@@ -2547,6 +2827,7 @@ def _run_loaded_experiment(
 	answerer = _build_answerer(
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -2575,7 +2856,9 @@ def _run_loaded_experiment(
 		sentence_transformer_device=sentence_transformer_device,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
+		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
 		export_graphrag_inputs=export_graphrag_inputs,
 	)
@@ -2609,7 +2892,13 @@ def _run_loaded_experiment(
 		"sentence_transformer_device": sentence_transformer_device,
 		"with_e2e": with_e2e,
 		"answerer_mode": answerer_mode,
+		"answer_provider": answer_provider
+		if with_e2e and answerer_mode == "llm_fixed"
+		else None,
 		"answer_model": answer_model
+		if with_e2e and answerer_mode == "llm_fixed"
+		else None,
+		"answer_api_key_env": answer_api_key_env
 		if with_e2e and answerer_mode == "llm_fixed"
 		else None,
 		"answer_base_url": answer_base_url
@@ -2732,6 +3021,9 @@ def _run_loaded_experiment(
 				"selector_base_url": selector_base_url,
 				"with_e2e": with_e2e,
 				"answerer_mode": answerer_mode,
+				"answer_provider": answer_provider
+				if with_e2e and answerer_mode == "llm_fixed"
+				else None,
 				"answer_model": answer_model
 				if with_e2e and answerer_mode == "llm_fixed"
 				else None,
@@ -3118,14 +3410,16 @@ def _build_evaluators(
 	budgets: Sequence[EvaluationBudget],
 	with_e2e: bool,
 	answerer_mode: str,
-	answer_model: str,
-	answer_api_key_env: str,
+	answer_provider: str | None,
+	answer_model: str | None,
+	answer_api_key_env: str | None,
 	answer_base_url: str | None,
 	answer_cache_path: str | Path | None,
 ) -> list[Evaluator]:
 	answerer = _build_answerer(
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
+		answer_provider=answer_provider,
 		answer_model=answer_model,
 		answer_api_key_env=answer_api_key_env,
 		answer_base_url=answer_base_url,
@@ -3178,8 +3472,9 @@ def _build_answerer(
 	*,
 	with_e2e: bool,
 	answerer_mode: str,
-	answer_model: str,
-	answer_api_key_env: str,
+	answer_provider: str | None,
+	answer_model: str | None,
+	answer_api_key_env: str | None,
 	answer_base_url: str | None,
 	answer_cache_path: str | Path | None,
 ) -> SupportsAnswer | None:
@@ -3189,20 +3484,19 @@ def _build_answerer(
 		return Answerer()
 	if answerer_mode != "llm_fixed":
 		raise ValueError(f"Unknown answerer_mode: {answerer_mode}")
-	if not os.environ.get(answer_api_key_env):
-		raise ValueError(
-			f"Missing API key in environment variable {answer_api_key_env}"
-		)
-	return LLMAnswerer(
-		config=LLMAnswererConfig(
-			model=answer_model,
-			api_key_env=answer_api_key_env,
-			base_url=answer_base_url,
-			cache_path=Path(answer_cache_path)
-			if answer_cache_path is not None
-			else None,
-		)
+	resolved_provider = cast(AnswererProvider, answer_provider or "copilot")
+	config = LLMAnswererConfig(
+		provider=resolved_provider,
+		model=answer_model,
+		api_key_env=answer_api_key_env,
+		base_url=answer_base_url,
+		cache_path=Path(answer_cache_path) if answer_cache_path is not None else None,
 	)
+	if not os.environ.get(cast(str, config.api_key_env)):
+		raise ValueError(
+			f"Missing API key in environment variable {config.api_key_env}"
+		)
+	return LLMAnswerer(config=config)
 
 
 def _evaluate_cases(

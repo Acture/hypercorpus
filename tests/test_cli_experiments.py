@@ -287,7 +287,8 @@ def test_run_2wiki_cli_help_mentions_new_presets():
 	assert "baseline_retest_local" in result.stdout
 	assert "--study-preset" in result.stdout
 	assert "--case-ids-file" in result.stdout
-	assert "requires --selector-model" in result.stdout
+	assert "--answer-provider" in result.stdout
+	assert "configured LLM backend defaults" in result.stdout
 	assert "avoids LLM selector" in result.stdout
 
 
@@ -297,7 +298,7 @@ def test_run_2wiki_cli_rejects_paper_recommended_without_llm_config(
 	questions_path, graph_path = two_wiki_files
 	output_dir = tmp_path / "cli-paper-recommended"
 	runner = CliRunner()
-	monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 	monkeypatch.chdir(tmp_path)
 
 	result = runner.invoke(
@@ -323,8 +324,7 @@ def test_run_2wiki_cli_rejects_paper_recommended_without_llm_config(
 	assert result.exit_code != 0
 	assert isinstance(result.exception, ValueError)
 	assert (
-		str(result.exception)
-		== "Missing API key in environment variable OPENAI_API_KEY"
+		str(result.exception) == "Missing API key in environment variable GITHUB_TOKEN"
 	)
 
 
@@ -361,6 +361,8 @@ def test_run_2wiki_cli_passes_explicit_selectors_alongside_selector_preset(
 			CANONICAL_DENSE,
 			"--selector-preset",
 			"paper_recommended",
+			"--answer-provider",
+			"openai",
 			"--token-budgets",
 			"128",
 			"--no-e2e",
@@ -371,6 +373,7 @@ def test_run_2wiki_cli_passes_explicit_selectors_alongside_selector_preset(
 	assert result.exit_code == 0, result.stdout
 	assert captured["selector_names"] == [CANONICAL_DENSE]
 	assert captured["selector_preset"] == "paper_recommended"
+	assert captured["answer_provider"] == "openai"
 
 
 def test_run_2wiki_cli_rejects_legacy_selector_ids(two_wiki_files, tmp_path):

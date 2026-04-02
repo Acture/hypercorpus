@@ -6,7 +6,17 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Literal, Mapping, Protocol, Sequence, TypeVar, cast
+from typing import (
+	Any,
+	Callable,
+	Generic,
+	Literal,
+	Mapping,
+	Protocol,
+	Sequence,
+	TypeVar,
+	cast,
+)
 import urllib.request
 from urllib.parse import urlparse
 
@@ -15,6 +25,13 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
+
+from hypercorpus.copilot import (
+	DEFAULT_COPILOT_API_KEY_ENV,
+	DEFAULT_COPILOT_MODEL,
+	copilot_default_headers,
+	normalize_copilot_base_url,
+)
 
 from hypercorpus.controller_exposure import (
 	ControllerCandidateBundleEntry,
@@ -41,7 +58,7 @@ from hypercorpus.walker import (
 	_clamp_score,
 )
 
-SelectorProvider = Literal["openai", "anthropic", "gemini"]
+SelectorProvider = Literal["copilot", "openai", "anthropic", "gemini"]
 OpenAIApiMode = Literal[
 	"chat_completions",
 	"responses",
@@ -50,12 +67,14 @@ OpenAIApiMode = Literal[
 ]
 
 DEFAULT_SELECTOR_API_KEY_ENVS: dict[SelectorProvider, str] = {
+	"copilot": DEFAULT_COPILOT_API_KEY_ENV,
 	"openai": "OPENAI_API_KEY",
 	"anthropic": "ANTHROPIC_API_KEY",
 	"gemini": "GEMINI_API_KEY",
 }
 
 DEFAULT_SELECTOR_MODELS: dict[SelectorProvider, str] = {
+	"copilot": DEFAULT_COPILOT_MODEL,
 	"openai": "gpt-4.1-mini",
 	"anthropic": "claude-3-5-haiku-latest",
 	"gemini": "gemini-2.0-flash",
@@ -64,7 +83,7 @@ DEFAULT_SELECTOR_MODELS: dict[SelectorProvider, str] = {
 
 @dataclass(slots=True)
 class SelectorLLMConfig:
-	provider: SelectorProvider = "openai"
+	provider: SelectorProvider = "copilot"
 	model: str | None = None
 	api_key_env: str | None = None
 	base_url: str | None = None
@@ -77,7 +96,7 @@ class SelectorLLMConfig:
 	prompt_version: str = "v1"
 	candidate_prefilter_top_n: int = 8
 	two_hop_prefilter_top_n: int = 4
-	controller_prompt_version: str = "controller_v6"
+	controller_prompt_version: str = "controller_v7"
 	controller_prefilter_top_n: int = 16
 	controller_small_page_bypass_n: int = 16
 	controller_lexical_top_n: int = 8
@@ -93,7 +112,16 @@ class SelectorLLMConfig:
 	max_backtracks_per_case: int = 1
 
 	def __post_init__(self) -> None:
-		if self.provider != "openai" and self.openai_api_mode != "chat_completions":
+		if self.provider == "copilot":
+			if self.openai_api_mode not in {
+				"chat_completions",
+				"github_models_chat_completions",
+			}:
+				raise ValueError(
+					"copilot only supports the github_models_chat_completions transport."
+				)
+			self.openai_api_mode = "github_models_chat_completions"
+		elif self.provider != "openai" and self.openai_api_mode != "chat_completions":
 			raise ValueError(
 				"openai_api_mode is only supported when provider is 'openai'."
 			)
@@ -101,7 +129,9 @@ class SelectorLLMConfig:
 			self.model = DEFAULT_SELECTOR_MODELS[self.provider]
 		if self.api_key_env is None:
 			self.api_key_env = DEFAULT_SELECTOR_API_KEY_ENVS[self.provider]
-		if self.provider == "openai" and self.base_url is not None:
+		if self.provider == "copilot":
+			self.base_url = normalize_copilot_base_url(self.base_url)
+		elif self.provider == "openai" and self.base_url is not None:
 			self.base_url = _normalize_openai_transport_url(
 				self.base_url, api_mode=self.openai_api_mode
 			)
@@ -401,7 +431,9 @@ class OpenAIBackendAdapter:
 		base_url: str | None = None,
 		api_mode: OpenAIApiMode = "chat_completions",
 		client_factory: Callable[..., Any] | None = None,
-		http_post: Callable[[str, dict[str, Any], str, dict[str, str] | None], dict[str, Any]]
+		http_post: Callable[
+			[str, dict[str, Any], str, dict[str, str] | None], dict[str, Any]
+		]
 		| None = None,
 	):
 		self.api_key = api_key
@@ -443,42 +475,6 @@ class OpenAIBackendAdapter:
 					],
 				},
 				self.api_key,
-			)
-			prompt_tokens, completion_tokens, total_tokens = _openai_usage_triplet(
-				payload.get("usage")
-			)
-			return BackendCompletion(
-				text=_openai_message_content(
-					_openai_chat_message_from_payload(payload)
-				),
-				payload=None,
-				prompt_tokens=prompt_tokens,
-				completion_tokens=completion_tokens,
-				total_tokens=total_tokens,
-				raw_response=json.dumps(payload, ensure_ascii=False),
-			)
-		if self.api_mode == "github_models_chat_completions":
-			del response_schema
-			if self.base_url is None:
-				raise ValueError(
-					"selector_base_url is required for github_models_chat_completions."
-				)
-			payload = self._http_post(
-				self.base_url,
-				{
-					"model": model,
-					"temperature": temperature,
-					"response_format": {"type": "json_object"},
-					"messages": [
-						{"role": "system", "content": system_prompt},
-						{"role": "user", "content": user_prompt},
-					],
-				},
-				self.api_key,
-				{
-					"Accept": "application/vnd.github+json",
-					"X-GitHub-Api-Version": "2026-03-10",
-				},
 			)
 			prompt_tokens, completion_tokens, total_tokens = _openai_usage_triplet(
 				payload.get("usage")
@@ -548,7 +544,13 @@ class OpenAIBackendAdapter:
 			return self._client
 		if self._client_factory is not None:
 			self._client = self._client_factory(
-				api_key=self.api_key, base_url=self.base_url
+				api_key=self.api_key,
+				base_url=self.base_url,
+				default_headers=(
+					copilot_default_headers()
+					if self.api_mode == "github_models_chat_completions"
+					else None
+				),
 			)
 			return self._client
 		try:
@@ -560,6 +562,8 @@ class OpenAIBackendAdapter:
 		kwargs: dict[str, Any] = {"api_key": self.api_key}
 		if self.base_url:
 			kwargs["base_url"] = self.base_url
+		if self.api_mode == "github_models_chat_completions":
+			kwargs["default_headers"] = copilot_default_headers()
 		self._client = OpenAI(**kwargs)
 		return self._client
 
@@ -852,13 +856,13 @@ class LLMStepLinkScorer:
 					text=cached_text,
 					raw_response=str(cached.get("raw_response", "")) or None,
 					prompt_tokens=_maybe_int(cached.get("prompt_tokens")),
-						completion_tokens=_maybe_int(cached.get("completion_tokens")),
-						total_tokens=_maybe_int(cached.get("total_tokens")),
-						latency_s=0.0,
-						cache_hit=True,
-						candidate_links=candidate_links,
-						exposure_plan=exposure_plan,
-					)
+					completion_tokens=_maybe_int(cached.get("completion_tokens")),
+					total_tokens=_maybe_int(cached.get("total_tokens")),
+					latency_s=0.0,
+					cache_hit=True,
+					candidate_links=candidate_links,
+					exposure_plan=exposure_plan,
+				)
 			except Exception as exc:  # pragma: no cover - cache corruption path
 				return _cards_with_fallback(
 					fallback_cards,
@@ -907,12 +911,18 @@ class LLMStepLinkScorer:
 					model=self.config.model,
 					fallback_reason=fallback_reason,
 					latency_s=latency_s,
-					raw_response=typed_response.raw_response if typed_response is not None else None,
-					prompt_tokens=typed_response.prompt_tokens if typed_response is not None else None,
+					raw_response=typed_response.raw_response
+					if typed_response is not None
+					else None,
+					prompt_tokens=typed_response.prompt_tokens
+					if typed_response is not None
+					else None,
 					completion_tokens=typed_response.completion_tokens
 					if typed_response is not None
 					else None,
-					total_tokens=typed_response.total_tokens if typed_response is not None else None,
+					total_tokens=typed_response.total_tokens
+					if typed_response is not None
+					else None,
 				)
 			assert typed_response is not None
 			payload = typed_response.output.model_dump(mode="json", exclude_none=True)
@@ -943,12 +953,18 @@ class LLMStepLinkScorer:
 					fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
 					latency_s=latency_s,
 					text=response.text if response is not None else None,
-					raw_response=response.raw_response if response is not None else None,
-					prompt_tokens=response.prompt_tokens if response is not None else None,
+					raw_response=response.raw_response
+					if response is not None
+					else None,
+					prompt_tokens=response.prompt_tokens
+					if response is not None
+					else None,
 					completion_tokens=response.completion_tokens
 					if response is not None
 					else None,
-					total_tokens=response.total_tokens if response is not None else None,
+					total_tokens=response.total_tokens
+					if response is not None
+					else None,
 				)
 
 			assert response is not None
@@ -1294,12 +1310,18 @@ class LLMController:
 					backtracks_used=backtracks_used,
 					fallback_reason=fallback_reason,
 					latency_s=latency_s,
-					raw_response=typed_response.raw_response if typed_response is not None else None,
-					prompt_tokens=typed_response.prompt_tokens if typed_response is not None else None,
+					raw_response=typed_response.raw_response
+					if typed_response is not None
+					else None,
+					prompt_tokens=typed_response.prompt_tokens
+					if typed_response is not None
+					else None,
 					completion_tokens=typed_response.completion_tokens
 					if typed_response is not None
 					else None,
-					total_tokens=typed_response.total_tokens if typed_response is not None else None,
+					total_tokens=typed_response.total_tokens
+					if typed_response is not None
+					else None,
 					llm_attempts=typed_attempt_result.attempts,
 				)
 			assert typed_response is not None
@@ -1347,9 +1369,13 @@ class LLMController:
 						fallback_reason=f"provider_error:{_compact_error_detail(str(attempt_result.error))}",
 						latency_s=latency_s,
 						text=response.text if response is not None else None,
-						raw_response=response.raw_response if response is not None else None,
+						raw_response=response.raw_response
+						if response is not None
+						else None,
 						prompt_tokens=_aggregate_usage_total(prompt_token_values),
-						completion_tokens=_aggregate_usage_total(completion_token_values),
+						completion_tokens=_aggregate_usage_total(
+							completion_token_values
+						),
 						total_tokens=_aggregate_usage_total(total_token_values),
 						llm_attempts=backend_attempts,
 					)
@@ -1403,7 +1429,9 @@ class LLMController:
 							text=response.text,
 							raw_response=response.raw_response,
 							prompt_tokens=_aggregate_usage_total(prompt_token_values),
-							completion_tokens=_aggregate_usage_total(completion_token_values),
+							completion_tokens=_aggregate_usage_total(
+								completion_token_values
+							),
 							total_tokens=_aggregate_usage_total(total_token_values),
 							llm_attempts=backend_attempts,
 						)
@@ -1504,12 +1532,12 @@ class LLMController:
 				continue
 			bundle_entry = bundle_entries.get(edge_id)
 			parsed_candidates.append(
-						ControllerCandidate(
-							edge_id=edge_id,
-							utility=_clamp_score(entry.get("utility")),
-							answer_bearing_link_bonus=_clamp_score(
-								entry.get("answer_bearing_link_bonus")
-							),
+				ControllerCandidate(
+					edge_id=edge_id,
+					utility=_clamp_score(entry.get("utility")),
+					answer_bearing_link_bonus=_clamp_score(
+						entry.get("answer_bearing_link_bonus")
+					),
 					direct_support=_clamp_score(entry.get("direct_support")),
 					bridge_potential=_clamp_score(entry.get("bridge_potential")),
 					future_potential=(
@@ -1517,15 +1545,19 @@ class LLMController:
 						if self.mode == "single_hop"
 						else _clamp_score(entry.get("future_potential"))
 					),
-							redundancy_risk=_clamp_score(entry.get("redundancy_risk")),
-							rationale=_maybe_text(entry.get("rationale")),
-							generic_concept_like=(
-								bundle_entry.generic_concept_like if bundle_entry is not None else False
-							),
-							generic_concept_penalty=(
-								bundle_entry.generic_concept_penalty if bundle_entry is not None else 0.0
-							),
-						)
+					redundancy_risk=_clamp_score(entry.get("redundancy_risk")),
+					rationale=_maybe_text(entry.get("rationale")),
+					generic_concept_like=(
+						bundle_entry.generic_concept_like
+						if bundle_entry is not None
+						else False
+					),
+					generic_concept_penalty=(
+						bundle_entry.generic_concept_penalty
+						if bundle_entry is not None
+						else 0.0
+					),
+				)
 			)
 		if not parsed_candidates:
 			raise SelectorLLMResponseError("schema_error", "no_prefiltered_candidates")
@@ -1689,7 +1721,6 @@ class LLMController:
 		)
 		decision.stop_score = _clamp_score(decision.stop_score)
 		return decision
-
 
 
 class LLMControllerStepScorer(ControllerRuntimeScorer):
@@ -1871,7 +1902,7 @@ def _default_backend_factory(config: SelectorLLMConfig) -> BackendAdapter:
 		raise ValueError(
 			f"Missing API key in environment variable {config.api_key_env}"
 		)
-	if config.provider == "openai":
+	if config.provider in {"copilot", "openai"}:
 		return OpenAIBackendAdapter(
 			api_key=api_key,
 			base_url=config.base_url,
@@ -1926,9 +1957,7 @@ def _score_output_model(
 
 def _controller_output_model(
 	mode: Literal["single_hop", "two_hop"],
-) -> (
-	type[SingleHopControllerDecisionOutput] | type[TwoHopControllerDecisionOutput]
-):
+) -> type[SingleHopControllerDecisionOutput] | type[TwoHopControllerDecisionOutput]:
 	if mode == "two_hop":
 		return TwoHopControllerDecisionOutput
 	return SingleHopControllerDecisionOutput
@@ -1996,15 +2025,13 @@ def _user_prompt(*, query: str, bundle: Mapping[str, Any]) -> str:
 	)
 
 
-def _controller_user_prompt(
-	*, query: str, bundle: Mapping[str, Any], mode: str
-) -> str:
+def _controller_user_prompt(*, query: str, bundle: Mapping[str, Any], mode: str) -> str:
 	policy = str(bundle.get("generic_page_policy", "prompt_only"))
 	policy_instruction = (
 		"Use the provided generic_concept_penalty field to lower utility for generic concept or degree pages "
-		"when they are not directly answer-bearing. "
+		"when they do not directly help answer the question. "
 		if policy == "light_generic_penalty"
-		else "Apply the provided generic_concept_penalty aggressively: generic concept or degree pages should usually not outrank named entities or locations once explicit support is already present. "
+		else "Apply the provided generic_concept_penalty aggressively: generic concept or degree pages that do not directly help answer the question should usually be weak follow-ups once the answer-bearing chain is already present. "
 		if policy == "strong_generic_penalty"
 		else ""
 	)
@@ -2015,11 +2042,12 @@ def _controller_user_prompt(
 		"Required JSON schema:\n"
 		f"{_controller_schema_instructions(mode)}\n\n"
 		"Choose the next retrieval action under a budget. "
-		"Use stop only if the currently retrieved nodes already make the key supporting entity or institution explicit and "
-		"no remaining candidate offers materially better explicit support coverage. "
-		"If the current retrieval state already contains a strong answer-bearing institution or location node, generic concept, program, or degree pages are usually weak follow-ups, and stopping is preferred unless a remaining named entity or place is clearly stronger. "
-		"Treat answer_bearing_link_bonus as a first-class utility component: if a candidate would add an explicit support-bearing node, "
-		"prefer that candidate over stop unless redundancy is very high. "
+		"Continue only when a candidate directly helps answer the question or clearly completes the minimal answer-bearing support chain. "
+		"If the currently selected nodes already support a reasonable answer, default to stop. "
+		"Unused budget is acceptable and should not be spent just because it remains available. "
+		"Lateral related entities are low utility when they do not add new answer-bearing support. "
+		"Named entities or places are not automatically good follow-ups. "
+		"Treat answer_bearing_link_bonus as a first-class utility component: only prefer a candidate over stop when it materially improves answer-bearing support rather than merely expanding to another related page. "
 		f"{policy_instruction}"
 		"When you choose a primary edge, also label its role using primary_node_role / primary_node_role_confidence / primary_node_role_rationale. "
 		"If you choose two edges, label the secondary edge too. "
@@ -2088,6 +2116,7 @@ def _controller_schema_instructions(mode: str) -> str:
 		"When action is choose_two, the secondary node role fields are also required. "
 		"The response must be exactly one JSON object."
 	)
+
 
 def _cards_with_fallback(
 	cards: Sequence[StepScoreCard],
@@ -2234,6 +2263,7 @@ def _parse_optional_controller_text(
 			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
 		return None
 	return text
+
 
 def _parse_completion_payload(text: str) -> dict[str, Any]:
 	stripped = text.strip()
@@ -2431,7 +2461,9 @@ def _complete_json_with_provider_retries(
 			)
 		except Exception as exc:
 			last_exc = exc
-			if attempt_index + 1 >= max_attempts or not _is_retryable_provider_error(exc):
+			if attempt_index + 1 >= max_attempts or not _is_retryable_provider_error(
+				exc
+			):
 				return BackendAttemptResult(
 					response=None,
 					attempts=attempt_index + 1,
@@ -2477,7 +2509,9 @@ def _complete_typed_with_provider_retries(
 			)
 		except Exception as exc:
 			last_exc = exc
-			if attempt_index + 1 >= max_attempts or not _is_retryable_provider_error(exc):
+			if attempt_index + 1 >= max_attempts or not _is_retryable_provider_error(
+				exc
+			):
 				return StructuredBackendAttemptResult(
 					response=None,
 					attempts=attempt_index + 1,
@@ -2527,7 +2561,11 @@ def _openai_responses_usage_triplet(
 		prompt_tokens = _maybe_int(getattr(usage, "input_tokens", None))
 		completion_tokens = _maybe_int(getattr(usage, "output_tokens", None))
 		total_tokens = _maybe_int(getattr(usage, "total_tokens", None))
-	if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+	if (
+		total_tokens is None
+		and prompt_tokens is not None
+		and completion_tokens is not None
+	):
 		total_tokens = prompt_tokens + completion_tokens
 	return prompt_tokens, completion_tokens, total_tokens
 
@@ -2639,9 +2677,7 @@ def _is_azure_openai_endpoint(base_url: str) -> bool:
 
 
 def _normalize_openai_base_url(base_url: str) -> str:
-	return _normalize_openai_transport_url(
-		base_url, api_mode="chat_completions"
-	)
+	return _normalize_openai_transport_url(base_url, api_mode="chat_completions")
 
 
 def _normalize_openai_transport_url(
@@ -2660,23 +2696,17 @@ def _normalize_openai_transport_url(
 			return text
 		return text.rstrip("/")
 	if api_mode == "github_models_chat_completions":
-		if "/inference/chat/completions" not in parsed.path:
-			raise ValueError(
-				"GitHub Models selector_base_url must be the full REST inference endpoint, for example https://models.github.ai/inference/chat/completions or https://models.github.ai/orgs/<org>/inference/chat/completions."
-			)
-		if parsed.query:
-			raise ValueError(
-				"GitHub Models selector_base_url must not include query parameters."
-			)
-		return text
+		return normalize_copilot_base_url(text)
 	if parsed.query:
 		raise ValueError(
 			"selector_base_url must be a base URL, not a raw endpoint with query parameters."
 		)
 	path = parsed.path.rstrip("/")
 	if api_mode == "responses":
-		if path.endswith("/responses") or path.endswith("/chat/completions") or path.endswith(
-			"/completions"
+		if (
+			path.endswith("/responses")
+			or path.endswith("/chat/completions")
+			or path.endswith("/completions")
 		):
 			raise ValueError(
 				"selector_base_url must be an OpenAI-compatible API root, not a raw responses endpoint."
@@ -2688,8 +2718,10 @@ def _normalize_openai_transport_url(
 				"Azure responses selector_base_url must be the Azure endpoint root, for example https://<resource>.cognitiveservices.azure.com."
 			)
 		return text.rstrip("/")
-	if path.endswith("/responses") or path.endswith("/chat/completions") or path.endswith(
-		"/completions"
+	if (
+		path.endswith("/responses")
+		or path.endswith("/chat/completions")
+		or path.endswith("/completions")
 	):
 		raise ValueError(
 			"selector_base_url must point at the OpenAI-compatible API root, for example https://<resource>.openai.azure.com/openai/v1/."

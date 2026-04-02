@@ -38,7 +38,7 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
 - Dense and lexical seed selection are both supported.
 - The current experiment runner supports named selector presets, including `paper_recommended`, `paper_recommended_local`, and `branchy_profiles`, plus extra diagnostic selectors outside the default study set.
 - The experiment runner also supports local-only study presets, including `single_path_edge_ablation_local`, `baseline_retest_local`, and `branchy_profiles_384_512`, plus the canonical selector-paper preset `iirc_selector_main`, which bundles shortlist selectors with ratio-controlled selector budgets.
-- `paper_recommended` is the full paper-facing preset and requires explicit selector LLM configuration. `paper_recommended_local` is the local-only variant that avoids `link_context_llm`.
+- `paper_recommended` is the full paper-facing preset and now defaults to the repo's configured Copilot/GitHub Models SDK path for selector LLM calls. `paper_recommended_local` is the local-only variant that avoids `link_context_llm`.
 - Each run now writes `run_manifest.json`, `evaluated_case_ids.txt`, and `study_comparison_rows.csv`, so broader phase samples can be replayed exactly without relying on `--limit`.
 - Each run also writes `subset_comparison_rows.csv`, so harder-case and path-aware slices can be compared against the dense control without reprocessing raw logs.
 - Selector-side LLM scoring is optional and records provider, model, token usage, runtime, cache state, and fallback behavior.

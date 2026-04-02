@@ -634,7 +634,10 @@ def test_openai_backend_adapter_azure_foundry_chat_mode_posts_json():
 	assert completion.prompt_tokens == 13
 	assert completion.completion_tokens == 5
 	assert completion.total_tokens == 18
-	assert captured["url"] == "https://example.cognitiveservices.azure.com/models/chat/completions?api-version=2024-05-01-preview"
+	assert (
+		captured["url"]
+		== "https://example.cognitiveservices.azure.com/models/chat/completions?api-version=2024-05-01-preview"
+	)
 	assert captured["api_key"] == "azure-test-key"
 	payload = cast(dict[str, object], captured["payload"])
 	assert payload["model"] == "DeepSeek-V3.2-Speciale"
@@ -646,33 +649,46 @@ def test_openai_backend_adapter_azure_foundry_chat_mode_posts_json():
 	assert captured["headers"] is None
 
 
-def test_openai_backend_adapter_github_models_chat_mode_posts_json():
+def test_openai_backend_adapter_github_models_chat_mode_uses_sdk_client():
 	captured: dict[str, object] = {}
 
-	def _fake_post(
-		url: str,
-		payload: dict[str, object],
-		api_key: str,
-		headers: dict[str, str] | None = None,
-	) -> dict[str, object]:
-		captured["url"] = url
-		captured["payload"] = payload
-		captured["api_key"] = api_key
-		captured["headers"] = headers
-		return {
-			"choices": [{"message": {"content": '{"scores": [{"edge_id": "0"}]}'}}],
-			"usage": {
-				"prompt_tokens": 19,
-				"completion_tokens": 6,
-				"total_tokens": 25,
-			},
-		}
+	class FakeUsage:
+		prompt_tokens = 19
+		completion_tokens = 6
+		total_tokens = 25
+
+	class FakeMessage:
+		content = '{"scores": [{"edge_id": "0"}]}'
+
+	class FakeChoice:
+		message = FakeMessage()
+
+	class FakeResponse:
+		choices = [FakeChoice()]
+		usage = FakeUsage()
+
+	class FakeCompletions:
+		def create(self, **kwargs: object) -> FakeResponse:
+			captured["request"] = kwargs
+			return FakeResponse()
+
+	class FakeChat:
+		def __init__(self) -> None:
+			self.completions = FakeCompletions()
+
+	class FakeClient:
+		def __init__(self) -> None:
+			self.chat = FakeChat()
+
+	def _fake_client_factory(**kwargs: object) -> FakeClient:
+		captured["client_kwargs"] = kwargs
+		return FakeClient()
 
 	adapter = OpenAIBackendAdapter(
 		api_key="gh-models-key",
-		base_url="https://models.github.ai/inference/chat/completions",
+		base_url="https://models.github.ai/inference",
 		api_mode="github_models_chat_completions",
-		http_post=_fake_post,
+		client_factory=_fake_client_factory,
 	)
 
 	completion = adapter.complete_json(
@@ -686,11 +702,19 @@ def test_openai_backend_adapter_github_models_chat_mode_posts_json():
 	assert completion.prompt_tokens == 19
 	assert completion.completion_tokens == 6
 	assert completion.total_tokens == 25
-	assert captured["url"] == "https://models.github.ai/inference/chat/completions"
-	assert captured["api_key"] == "gh-models-key"
-	assert captured["headers"] == {
-		"Accept": "application/vnd.github+json",
-		"X-GitHub-Api-Version": "2026-03-10",
+	assert captured["client_kwargs"] == {
+		"api_key": "gh-models-key",
+		"base_url": "https://models.github.ai/inference",
+		"default_headers": selector_llm_module.copilot_default_headers(),
+	}
+	assert captured["request"] == {
+		"model": "gpt-4.1-mini",
+		"temperature": 0.0,
+		"response_format": {"type": "json_object"},
+		"messages": [
+			{"role": "system", "content": "score candidates"},
+			{"role": "user", "content": "bundle"},
+		],
 	}
 
 
@@ -726,14 +750,23 @@ def test_selector_llm_config_accepts_azure_responses_root():
 	assert config.base_url == "https://example.cognitiveservices.azure.com"
 
 
-def test_selector_llm_config_accepts_github_models_chat_endpoint():
+def test_selector_llm_config_normalizes_copilot_chat_endpoint():
 	config = SelectorLLMConfig(
-		provider="openai",
+		provider="copilot",
 		base_url="https://models.github.ai/inference/chat/completions",
-		openai_api_mode="github_models_chat_completions",
 	)
 
-	assert config.base_url == "https://models.github.ai/inference/chat/completions"
+	assert config.base_url == "https://models.github.ai/inference"
+	assert config.openai_api_mode == "github_models_chat_completions"
+
+
+def test_selector_llm_config_defaults_to_copilot_sdk_settings():
+	config = SelectorLLMConfig(provider="copilot")
+
+	assert config.model == "openai/gpt-4.1-mini"
+	assert config.api_key_env == "GITHUB_TOKEN"
+	assert config.base_url == "https://models.github.ai/inference"
+	assert config.openai_api_mode == "github_models_chat_completions"
 
 
 def test_single_hop_selector_records_usage_and_logs(
@@ -1134,16 +1167,16 @@ def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
 		[
 			'{"action":": "}',
 			json.dumps(
-						{
-							"action": "choose_one",
-							"primary_edge_id": "0",
-							"secondary_edge_id": "",
-							"backup_edge_id": "",
-							**_primary_role_fields(
-								"answer_bearing_support",
-								rationale="The bridge answer edge is explicit support.",
-							),
-							"stop_score": 0.10,
+				{
+					"action": "choose_one",
+					"primary_edge_id": "0",
+					"secondary_edge_id": "",
+					"backup_edge_id": "",
+					**_primary_role_fields(
+						"answer_bearing_support",
+						rationale="The bridge answer edge is explicit support.",
+					),
+					"stop_score": 0.10,
 					"evidence_cluster_confidence": 0.86,
 					"candidates": [
 						{
@@ -1390,7 +1423,11 @@ def test_llm_step_scorer_retries_provider_rate_limit_then_succeeds(
 def test_controller_openai_responses_schema_error_falls_back(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	runner = FakeTypedResponsesRunner(
-		[selector_llm_module.SelectorLLMResponseError("schema_error", "missing_candidates_list")]
+		[
+			selector_llm_module.SelectorLLMResponseError(
+				"schema_error", "missing_candidates_list"
+			)
+		]
 	)
 	monkeypatch.setattr(selector_llm_module, "_run_openai_responses_typed", runner)
 	graph = _build_bridge_graph()
@@ -1895,7 +1932,9 @@ def test_controller_all_dangling_page_stops_without_backend_call(monkeypatch):
 		selector_api_key_env="OPENAI_API_KEY",
 		selector_backend_factory=_backend_factory,
 	)
-	case = EvaluationCase(case_id="q-all-dangling", query="Which target should we inspect next?")
+	case = EvaluationCase(
+		case_id="q-all-dangling", query="Which target should we inspect next?"
+	)
 	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
 	result = selector.select(_build_all_dangling_graph(), case, budget)
@@ -1922,8 +1961,14 @@ def test_controller_exposure_plan_keeps_answer_bearing_edge_and_filters_dangling
 					"Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
 				),
 			),
-			DocumentNode("wlad", "Wlad Godzich", ("Wlad Godzich is a literary theorist.",)),
-			DocumentNode("geneva", "University of Geneva", ("The University of Geneva is in Switzerland.",)),
+			DocumentNode(
+				"wlad", "Wlad Godzich", ("Wlad Godzich is a literary theorist.",)
+			),
+			DocumentNode(
+				"geneva",
+				"University of Geneva",
+				("The University of Geneva is in Switzerland.",),
+			),
 			DocumentNode("bait", "Orange Order", ("Orange Order is unrelated here.",)),
 		]
 	)
@@ -2082,7 +2127,9 @@ def test_controller_exposure_plan_bonus_rescue_prefers_higher_semantic_score():
 		documents=[
 			DocumentNode("root", "Root", ("Root mentions two candidate ports.",)),
 			DocumentNode("alpha", "Alpha Port", ("Alpha Port is a plausible answer.",)),
-			DocumentNode("beta", "Beta Port", ("Beta Port is another plausible answer.",)),
+			DocumentNode(
+				"beta", "Beta Port", ("Beta Port is another plausible answer.",)
+			),
 		]
 	)
 	candidate_links = [
@@ -2223,10 +2270,13 @@ def test_controller_prompt_mentions_answer_bearing_bonus():
 	)
 
 	assert "answer_bearing_link_bonus" in prompt
-	assert "prefer that candidate over stop" in prompt
-	assert "explicit support-bearing node" in prompt
+	assert "directly helps answer the question" in prompt
+	assert "Unused budget is acceptable" in prompt
+	assert "Named entities or places are not automatically good follow-ups" in prompt
+	assert "Lateral related entities are low utility" in prompt
+	assert "materially improves answer-bearing support" in prompt
 	assert "primary_node_role" in prompt
-	assert "generic concept, program, or degree pages" in prompt
+	assert "generic concept or degree pages" in prompt
 	assert "generic_concept_penalty" in prompt
 
 
@@ -2386,8 +2436,12 @@ def test_controller_trace_records_self_label_diagnostics(monkeypatch):
 	result = selector.select(_build_geneva_doctorate_graph(), case, budget)
 
 	assert result.selector_logs[0].controller is not None
-	assert result.selector_logs[0].controller.primary_node_role == "answer_bearing_support"
-	assert result.selector_logs[0].controller.primary_node_role_confidence == pytest.approx(0.93)
+	assert (
+		result.selector_logs[0].controller.primary_node_role == "answer_bearing_support"
+	)
+	assert result.selector_logs[
+		0
+	].controller.primary_node_role_confidence == pytest.approx(0.93)
 	assert "explicit answer-bearing support node" in (
 		result.selector_logs[0].controller.primary_node_role_rationale or ""
 	)

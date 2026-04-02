@@ -55,7 +55,7 @@ experiments_app = typer.Typer(
 
 _SELECTOR_PRESET_HELP = (
 	f"Selector preset override when --selectors is omitted. Choices: {selector_preset_choices_help()}; "
-	"paper_recommended requires --selector-model and --selector-api-key-env for its LLM selector; "
+	"paper_recommended uses the configured LLM backend defaults for its LLM selector; "
 	"paper_recommended_local avoids LLM selector config. --selectors takes precedence."
 )
 
@@ -147,6 +147,7 @@ class _ExperimentDashboardRenderable:
 
 	def __rich_console__(self, console, options):
 		from rich.console import RenderableType
+
 		renderables: list[RenderableType] = [
 			_build_dashboard_status_panel(self.state, self.progress_state),
 			_build_summary_renderable(
@@ -290,7 +291,7 @@ def run_2wiki(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -308,7 +309,7 @@ def run_2wiki(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -340,11 +341,16 @@ def run_2wiki(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -401,6 +407,7 @@ def run_2wiki(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -470,7 +477,7 @@ def run_iirc(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -488,7 +495,7 @@ def run_iirc(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -520,11 +527,16 @@ def run_iirc(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -581,6 +593,7 @@ def run_iirc(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -650,7 +663,7 @@ def run_musique(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -668,7 +681,7 @@ def run_musique(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -700,11 +713,16 @@ def run_musique(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -761,6 +779,7 @@ def run_musique(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -833,7 +852,7 @@ def run_hotpotqa(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -851,7 +870,7 @@ def run_hotpotqa(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -883,11 +902,16 @@ def run_hotpotqa(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -950,6 +974,7 @@ def run_hotpotqa(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -1021,7 +1046,7 @@ def run_docs(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -1039,7 +1064,7 @@ def run_docs(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1071,11 +1096,16 @@ def run_docs(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -1133,6 +1163,7 @@ def run_docs(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -1221,7 +1252,7 @@ def run_2wiki_store(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -1239,7 +1270,7 @@ def run_2wiki_store(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1271,11 +1302,16 @@ def run_2wiki_store(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -1338,6 +1374,7 @@ def run_2wiki_store(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -1464,7 +1501,7 @@ def run_iirc_store(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -1482,7 +1519,7 @@ def run_iirc_store(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1527,11 +1564,16 @@ def run_iirc_store(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -1601,6 +1643,7 @@ def run_iirc_store(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -1685,7 +1728,7 @@ def run_musique_store(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -1703,7 +1746,7 @@ def run_musique_store(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1748,11 +1791,16 @@ def run_musique_store(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -1822,6 +1870,7 @@ def run_musique_store(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,
@@ -1906,7 +1955,7 @@ def run_hotpotqa_store(
 	selector_provider: str | None = typer.Option(
 		None,
 		"--selector-provider",
-		help="Selector LLM provider: openai, anthropic, or gemini",
+		help="Selector LLM provider: copilot, openai, anthropic, or gemini",
 	),
 	selector_model: str | None = typer.Option(
 		None, "--selector-model", help="Selector LLM model name"
@@ -1924,7 +1973,7 @@ def run_hotpotqa_store(
 	selector_openai_api_mode: str | None = typer.Option(
 		None,
 		"--selector-openai-api-mode",
-		help="OpenAI selector transport: chat_completions, responses, or azure_foundry_chat_completions",
+		help="OpenAI selector transport: chat_completions, responses, azure_foundry_chat_completions, or github_models_chat_completions",
 	),
 	selector_cache_path: Path | None = typer.Option(
 		None,
@@ -1969,11 +2018,16 @@ def run_hotpotqa_store(
 	answerer: str = typer.Option(
 		"heuristic", "--answerer", help="Answerer mode: heuristic or llm_fixed"
 	),
-	answer_model: str = typer.Option(
-		"gpt-4.1-mini", "--answer-model", help="Fixed reader model name"
+	answer_provider: str | None = typer.Option(
+		None,
+		"--answer-provider",
+		help="Fixed reader provider: copilot or openai",
 	),
-	answer_api_key_env: str = typer.Option(
-		"OPENAI_API_KEY",
+	answer_model: str | None = typer.Option(
+		None, "--answer-model", help="Fixed reader model name"
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
 		"--answer-api-key-env",
 		help="Env var containing the reader API key",
 	),
@@ -2043,6 +2097,7 @@ def run_hotpotqa_store(
 			sentence_transformer_device=sentence_transformer_device,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
+			answer_provider=answer_provider,
 			answer_model=answer_model,
 			answer_api_key_env=answer_api_key_env,
 			answer_base_url=answer_base_url,

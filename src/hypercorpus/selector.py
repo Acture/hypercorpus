@@ -2877,6 +2877,7 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 	) -> float:
 		return card.total_score + 0.25 * (evidence_cluster_confidence or 0.0)
 
+
 class CanonicalSearchSelector(_SentenceTransformerSupport):
 	def __init__(
 		self,
@@ -3302,11 +3303,7 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 	seed_top_k = int(match.group("seed_top_k"))
 	seed_strategy = match.group("seed_strategy")
 	hop_token = match.group("hop_budget")
-	hop_budget = (
-		None
-		if hop_token == _CONTROLLER_ADAPTIVE_HOP_TOKEN
-		else int(hop_token)
-	)
+	hop_budget = None if hop_token == _CONTROLLER_ADAPTIVE_HOP_TOKEN else int(hop_token)
 	rest = match.group("rest")
 	parts = rest.split("__")
 	if len(parts) == 1:
@@ -3473,7 +3470,8 @@ def selector_names_for_preset(
 def build_selector(
 	name: str,
 	*,
-	selector_provider: Literal["openai", "anthropic", "gemini"] | str = "openai",
+	selector_provider: Literal["copilot", "openai", "anthropic", "gemini"]
+	| str = "copilot",
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
@@ -3610,7 +3608,8 @@ def select_selectors(
 	*,
 	preset: SelectorPresetName | str = "full",
 	include_diagnostics: bool = True,
-	selector_provider: Literal["openai", "anthropic", "gemini"] | str = "openai",
+	selector_provider: Literal["copilot", "openai", "anthropic", "gemini"]
+	| str = "copilot",
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
@@ -3673,7 +3672,9 @@ def _build_algorithm(search_structure: SearchStructure) -> _PathfindingSelector:
 def _controller_runtime_hop_cap(spec: SelectorSpec) -> int | None:
 	if spec.edge_scorer != "link_context_llm_controller":
 		return spec.hop_budget
-	return _CONTROLLER_INTERNAL_SAFETY_HOPS if spec.hop_budget is None else spec.hop_budget
+	return (
+		_CONTROLLER_INTERNAL_SAFETY_HOPS if spec.hop_budget is None else spec.hop_budget
+	)
 
 
 def _controller_runtime_max_steps(spec: SelectorSpec) -> int:
@@ -4590,7 +4591,9 @@ def _selector_usage_from_logs(
 		if log.controller is not None and log.controller.kind != "backtrack"
 	]
 	backtrack_logs = [
-		log for log in logs if log.controller is not None and log.controller.kind == "backtrack"
+		log
+		for log in logs
+		if log.controller is not None and log.controller.kind == "backtrack"
 	]
 	explicit_stop_logs = [
 		log for log in controller_logs if log.stop_reason == "controller_stop"
@@ -4603,9 +4606,7 @@ def _selector_usage_from_logs(
 		if runtime_override is not None
 		else sum(log.latency_s for log in logs),
 		llm_calls=sum(
-			log.llm_calls
-			if log.llm_calls is not None
-			else 1
+			log.llm_calls if log.llm_calls is not None else 1
 			for log in logs
 			if log.provider is not None
 			and (log.controller is None or log.controller.kind != "backtrack")
@@ -4628,13 +4629,16 @@ def _selector_usage_from_logs(
 		controller_fork_actions=sum(
 			1
 			for log in controller_logs
-			if log.controller is not None and log.controller.effective_action == "choose_two"
+			if log.controller is not None
+			and log.controller.effective_action == "choose_two"
 		),
 		controller_backtrack_actions=len(backtrack_logs),
 		controller_prefiltered_candidates=sum(
 			sum(
 				1
-				for candidate in (log.controller.candidates if log.controller is not None else [])
+				for candidate in (
+					log.controller.candidates if log.controller is not None else []
+				)
 				if candidate.exposure_status != "visible"
 			)
 			for log in controller_logs

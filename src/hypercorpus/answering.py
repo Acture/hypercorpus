@@ -7,7 +7,14 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
+
+from hypercorpus.copilot import (
+	DEFAULT_COPILOT_API_KEY_ENV,
+	DEFAULT_COPILOT_MODEL,
+	copilot_default_headers,
+	normalize_copilot_base_url,
+)
 
 from hypercorpus.subgraph import QuerySubgraph
 from hypercorpus.text import (
@@ -43,14 +50,36 @@ class SupportsAnswer(Protocol):
 	def answer(self, query: str, subgraph: QuerySubgraph) -> AnswerWithEvidence: ...
 
 
+AnswererProvider = Literal["copilot", "openai"]
+
+_DEFAULT_ANSWER_MODELS: dict[AnswererProvider, str] = {
+	"copilot": DEFAULT_COPILOT_MODEL,
+	"openai": "gpt-4.1-mini",
+}
+
+_DEFAULT_ANSWER_API_KEY_ENVS: dict[AnswererProvider, str] = {
+	"copilot": DEFAULT_COPILOT_API_KEY_ENV,
+	"openai": "OPENAI_API_KEY",
+}
+
+
 @dataclass(slots=True)
 class LLMAnswererConfig:
-	model: str = "gpt-4.1-mini"
-	api_key_env: str = "OPENAI_API_KEY"
+	provider: AnswererProvider = "copilot"
+	model: str | None = None
+	api_key_env: str | None = None
 	base_url: str | None = None
 	cache_path: Path | None = None
 	temperature: float = 0.0
 	prompt_version: str = "v1"
+
+	def __post_init__(self) -> None:
+		if self.model is None:
+			self.model = _DEFAULT_ANSWER_MODELS[self.provider]
+		if self.api_key_env is None:
+			self.api_key_env = _DEFAULT_ANSWER_API_KEY_ENVS[self.provider]
+		if self.provider == "copilot":
+			self.base_url = normalize_copilot_base_url(self.base_url)
 
 
 class JsonlAnswerCache:
@@ -218,8 +247,13 @@ class LLMAnswerer:
 
 	def answer(self, query: str, subgraph: QuerySubgraph) -> AnswerWithEvidence:
 		context = _render_subgraph(subgraph)
+		model = self.config.model
+		api_key_env = self.config.api_key_env
+		assert model is not None
+		assert api_key_env is not None
 		cache_key = _answer_cache_key(
-			model=self.config.model,
+			provider=self.config.provider,
+			model=model,
 			base_url=self.config.base_url,
 			query=query,
 			context=context,
@@ -229,16 +263,14 @@ class LLMAnswerer:
 		if cached is not None:
 			return _cached_answer(query=query, cached=cached)
 
-		api_key = os.environ.get(self.config.api_key_env)
+		api_key = os.environ.get(api_key_env)
 		if not api_key:
-			raise ValueError(
-				f"Missing API key in environment variable {self.config.api_key_env}"
-			)
+			raise ValueError(f"Missing API key in environment variable {api_key_env}")
 
 		client = self._get_client(api_key)
 		started_at = time.perf_counter()
 		response = client.chat.completions.create(
-			model=self.config.model,
+			model=model,
 			temperature=self.config.temperature,
 			response_format={"type": "json_object"},
 			messages=[
@@ -268,7 +300,7 @@ class LLMAnswerer:
 			confidence=1.0 if answer else 0.0,
 			evidence=_default_evidence(subgraph, max_evidence=self.max_evidence),
 			mode="llm_fixed",
-			model=self.config.model,
+			model=model,
 			runtime_s=runtime_s,
 			prompt_tokens=prompt_tokens,
 			completion_tokens=completion_tokens,
@@ -295,7 +327,13 @@ class LLMAnswerer:
 			return self._client
 		if self._client_factory is not None:
 			self._client = self._client_factory(
-				api_key=api_key, base_url=self.config.base_url
+				api_key=api_key,
+				base_url=self.config.base_url,
+				default_headers=(
+					copilot_default_headers()
+					if self.config.provider == "copilot"
+					else None
+				),
 			)
 			return self._client
 		try:
@@ -307,6 +345,8 @@ class LLMAnswerer:
 		kwargs: dict[str, Any] = {"api_key": api_key}
 		if self.config.base_url:
 			kwargs["base_url"] = self.config.base_url
+		if self.config.provider == "copilot":
+			kwargs["default_headers"] = copilot_default_headers()
 		self._client = OpenAI(**kwargs)
 		return self._client
 
@@ -342,6 +382,7 @@ def _default_evidence(
 
 def _answer_cache_key(
 	*,
+	provider: str,
 	model: str,
 	base_url: str | None,
 	query: str,
@@ -350,6 +391,7 @@ def _answer_cache_key(
 ) -> str:
 	payload = json.dumps(
 		{
+			"provider": provider,
 			"model": model,
 			"base_url": base_url,
 			"query": query,

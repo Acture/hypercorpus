@@ -64,9 +64,7 @@ def test_parse_token_budgets_handles_empty_values():
 	assert parse_token_budgets("128,256") == [128, 256]
 
 
-def test_resolve_runtime_defaults_prefers_cli_over_env_over_file(
-	tmp_path, monkeypatch
-):
+def test_resolve_runtime_defaults_prefers_cli_over_env_over_file(tmp_path, monkeypatch):
 	defaults_path = tmp_path / ".hypercorpus-experiments.toml"
 	defaults_path.write_text(
 		"""
@@ -77,6 +75,12 @@ api_key_env = "FILE_KEY"
 base_url = "https://file.example/openai/v1/"
 openai_api_mode = "responses"
 
+[answerer]
+provider = "openai"
+model = "file-answer-model"
+api_key_env = "FILE_ANSWER_KEY"
+base_url = "https://file-answer.example/openai/v1/"
+
 [sentence_transformer]
 model = "file-st"
 device = "cpu"
@@ -85,7 +89,13 @@ device = "cpu"
 	)
 	monkeypatch.chdir(tmp_path)
 	monkeypatch.setenv("HYPERCORPUS_SELECTOR_MODEL", "env-model")
-	monkeypatch.setenv("HYPERCORPUS_SELECTOR_BASE_URL", "https://env.example/openai/v1/")
+	monkeypatch.setenv(
+		"HYPERCORPUS_SELECTOR_BASE_URL", "https://env.example/openai/v1/"
+	)
+	monkeypatch.setenv("HYPERCORPUS_ANSWER_MODEL", "env-answer-model")
+	monkeypatch.setenv(
+		"HYPERCORPUS_ANSWER_BASE_URL", "https://env-answer.example/openai/v1/"
+	)
 	monkeypatch.setenv("HYPERCORPUS_SENTENCE_TRANSFORMER_DEVICE", "mps")
 
 	resolved = _resolve_runtime_defaults(
@@ -94,6 +104,10 @@ device = "cpu"
 		selector_api_key_env=None,
 		selector_base_url=None,
 		selector_openai_api_mode=None,
+		answer_provider=None,
+		answer_model="cli-answer-model",
+		answer_api_key_env=None,
+		answer_base_url=None,
 		sentence_transformer_model=None,
 		sentence_transformer_device=None,
 	)
@@ -101,10 +115,104 @@ device = "cpu"
 	assert resolved.selector_provider == "openai"
 	assert resolved.selector_model == "cli-model"
 	assert resolved.selector_api_key_env == "FILE_KEY"
-	assert resolved.selector_base_url == "https://env.example/openai/v1/"
+	assert resolved.selector_base_url == "https://env.example/openai/v1"
 	assert resolved.selector_openai_api_mode == "responses"
+	assert resolved.answer_provider == "openai"
+	assert resolved.answer_model == "cli-answer-model"
+	assert resolved.answer_api_key_env == "FILE_ANSWER_KEY"
+	assert resolved.answer_base_url == "https://env-answer.example/openai/v1/"
 	assert resolved.sentence_transformer_model == "file-st"
 	assert resolved.sentence_transformer_device == "mps"
+
+
+def test_resolve_runtime_defaults_falls_back_to_copilot_sdk_defaults(
+	tmp_path, monkeypatch
+):
+	monkeypatch.chdir(tmp_path)
+	for key in (
+		"HYPERCORPUS_SELECTOR_PROVIDER",
+		"HYPERCORPUS_SELECTOR_MODEL",
+		"HYPERCORPUS_SELECTOR_API_KEY_ENV",
+		"HYPERCORPUS_SELECTOR_BASE_URL",
+		"HYPERCORPUS_SELECTOR_OPENAI_API_MODE",
+		"HYPERCORPUS_ANSWER_PROVIDER",
+		"HYPERCORPUS_ANSWER_MODEL",
+		"HYPERCORPUS_ANSWER_API_KEY_ENV",
+		"HYPERCORPUS_ANSWER_BASE_URL",
+	):
+		monkeypatch.delenv(key, raising=False)
+
+	resolved = _resolve_runtime_defaults(
+		selector_provider=None,
+		selector_model=None,
+		selector_api_key_env=None,
+		selector_base_url=None,
+		selector_openai_api_mode=None,
+		answer_provider=None,
+		answer_model=None,
+		answer_api_key_env=None,
+		answer_base_url=None,
+		sentence_transformer_model=None,
+		sentence_transformer_device=None,
+	)
+
+	assert resolved.selector_provider == "copilot"
+	assert resolved.selector_model == "openai/gpt-4.1-mini"
+	assert resolved.selector_api_key_env == "GITHUB_TOKEN"
+	assert resolved.selector_base_url == "https://models.github.ai/inference"
+	assert resolved.selector_openai_api_mode == "github_models_chat_completions"
+	assert resolved.answer_provider == "copilot"
+	assert resolved.answer_model == "openai/gpt-4.1-mini"
+	assert resolved.answer_api_key_env == "GITHUB_TOKEN"
+	assert resolved.answer_base_url == "https://models.github.ai/inference"
+
+
+def test_resolve_runtime_defaults_drops_openai_transport_defaults_for_copilot(
+	tmp_path, monkeypatch
+):
+	defaults_path = tmp_path / ".hypercorpus-experiments.toml"
+	defaults_path.write_text(
+		"""
+[selector]
+provider = "openai"
+model = "gpt-5.3-codex"
+api_key_env = "AZURE_API_KEY"
+base_url = "https://sc-vs-mcbi748j-southcentralus.cognitiveservices.azure.com"
+openai_api_mode = "responses"
+
+[answerer]
+provider = "openai"
+model = "gpt-5.3-codex"
+api_key_env = "AZURE_API_KEY"
+base_url = "https://sc-vs-mcbi748j-southcentralus.cognitiveservices.azure.com"
+""".strip(),
+		encoding="utf-8",
+	)
+	monkeypatch.chdir(tmp_path)
+
+	resolved = _resolve_runtime_defaults(
+		selector_provider="copilot",
+		selector_model="openai/gpt-4.1-mini",
+		selector_api_key_env="GITHUB_TOKEN",
+		selector_base_url=None,
+		selector_openai_api_mode="github_models_chat_completions",
+		answer_provider="copilot",
+		answer_model=None,
+		answer_api_key_env=None,
+		answer_base_url=None,
+		sentence_transformer_model=None,
+		sentence_transformer_device=None,
+	)
+
+	assert resolved.selector_provider == "copilot"
+	assert resolved.selector_model == "openai/gpt-4.1-mini"
+	assert resolved.selector_api_key_env == "GITHUB_TOKEN"
+	assert resolved.selector_base_url == "https://models.github.ai/inference"
+	assert resolved.selector_openai_api_mode == "github_models_chat_completions"
+	assert resolved.answer_provider == "copilot"
+	assert resolved.answer_model == "openai/gpt-4.1-mini"
+	assert resolved.answer_api_key_env == "GITHUB_TOKEN"
+	assert resolved.answer_base_url == "https://models.github.ai/inference"
 
 
 def test_resolve_runtime_defaults_rejects_missing_explicit_defaults_file(
@@ -120,6 +228,10 @@ def test_resolve_runtime_defaults_rejects_missing_explicit_defaults_file(
 			selector_api_key_env=None,
 			selector_base_url=None,
 			selector_openai_api_mode=None,
+			answer_provider=None,
+			answer_model=None,
+			answer_api_key_env=None,
+			answer_base_url=None,
 			sentence_transformer_model=None,
 			sentence_transformer_device=None,
 		)
@@ -182,9 +294,9 @@ def test_run_2wiki_experiment_fails_fast_for_missing_llm_key(
 	two_wiki_files, tmp_path, monkeypatch
 ):
 	questions_path, graph_path = two_wiki_files
-	monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-	with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+	with pytest.raises(ValueError, match="GITHUB_TOKEN"):
 		run_2wiki_experiment(
 			questions_path=questions_path,
 			graph_records_path=graph_path,
@@ -335,7 +447,7 @@ device = "mps"
 		(output_dir / "run_manifest.json").read_text(encoding="utf-8")
 	)
 	assert manifest["selector_api_key_env"] == "AZURE_API_KEY"
-	assert manifest["selector_base_url"] == "https://example.test/openai/v1/"
+	assert manifest["selector_base_url"] == "https://example.test/openai/v1"
 	assert manifest["selector_openai_api_mode"] == "responses"
 	assert manifest["sentence_transformer_model"] == "multi-qa-MiniLM-L6-cos-v1"
 	assert manifest["sentence_transformer_device"] == "mps"
@@ -1209,6 +1321,7 @@ def test_run_2wiki_store_experiment_writes_chunk_outputs(
 	assert chunk_meta["selector_preset"] == "full"
 	assert chunk_meta["token_budgets"] == [128, 256]
 	assert chunk_meta["budget_ratios"] is None
+	assert chunk_meta["answer_provider"] is None
 
 
 def test_export_report_bundle_from_file_uses_manifest_study_context(

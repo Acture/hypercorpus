@@ -249,10 +249,10 @@ def test_select_selectors_accepts_paper_recommended_local_without_llm_config():
 
 
 def test_select_selectors_rejects_paper_recommended_without_llm_api_key(monkeypatch):
-	monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
 	with pytest.raises(
-		ValueError, match="Missing API key in environment variable OPENAI_API_KEY"
+		ValueError, match="Missing API key in environment variable GITHUB_TOKEN"
 	):
 		select_selectors(preset="paper_recommended")
 
