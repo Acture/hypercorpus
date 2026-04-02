@@ -76,7 +76,9 @@ class ControllerCandidateBundleEntry:
 	semantic_prefilter_score: float
 	generic_concept_like: bool
 	generic_concept_penalty: float
-	future_candidates: list[ControllerFutureCandidateBundle] = field(default_factory=list)
+	future_candidates: list[ControllerFutureCandidateBundle] = field(
+		default_factory=list
+	)
 
 
 @dataclass(slots=True)
@@ -367,7 +369,9 @@ def build_controller_candidate_bundle(
 						future_cards[future_index].subscores.get("anchor_overlap", 0.0)
 					),
 					query_sentence_overlap=_clamp_score(
-						future_cards[future_index].subscores.get("sentence_overlap", 0.0)
+						future_cards[future_index].subscores.get(
+							"sentence_overlap", 0.0
+						)
 					),
 					query_target_overlap=_clamp_score(
 						future_cards[future_index].subscores.get("target_overlap", 0.0)
@@ -484,7 +488,9 @@ def answer_bearing_link_bonus(
 	card: StepScoreCard,
 ) -> float:
 	target_title = node_title(graph, link.target)
-	title_coverage = title_coverage_in_sentence(title=target_title, sentence=link.sentence)
+	title_coverage = title_coverage_in_sentence(
+		title=target_title, sentence=link.sentence
+	)
 	sentence_overlap = _clamp_score(card.subscores.get("sentence_overlap", 0.0))
 	target_overlap = _clamp_score(card.subscores.get("target_overlap", 0.0))
 	anchor_overlap = _clamp_score(card.subscores.get("anchor_overlap", 0.0))

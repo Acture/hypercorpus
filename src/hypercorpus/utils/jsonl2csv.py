@@ -125,7 +125,11 @@ def jsonl_to_csv(
 						v0 = _get_in(obj, path, None)
 						v = tf(v0, obj)
 					else:
-						v = _get_in(obj, cast(Union[str, Sequence[Union[str, int]]], getter), None)
+						v = _get_in(
+							obj,
+							cast(Union[str, Sequence[Union[str, int]]], getter),
+							None,
+						)
 
 					if auto_join_str_lists:
 						v = _join_list_str(v, sep=join_sep)

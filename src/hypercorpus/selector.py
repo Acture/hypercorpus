@@ -2492,16 +2492,14 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 						execution=controller_execution,
 					)
 				)
-				evidence_cluster_confidence = (
-					controller_execution.trace.evidence_cluster_confidence
-				)
-				stop_score = controller_execution.trace.stop_score
+				decision_state = controller_execution.trace.state
+				decision_runner_up = controller_execution.trace.runner_up
 				decision_action = controller_execution.effective_action
 				if controller_execution.effective_action == "stop":
 					stop_reason = controller_execution.stop_reason or "dead_end"
 					selector_logs[-1].stop_reason = stop_reason
 					debug_trace.append(
-						f"{stop_reason}:{current}:{(stop_score or 0.0):.4f}"
+						f"{stop_reason}:{current}:{decision_state}:{decision_runner_up or 'none'}"
 					)
 					if stop_reason == "dead_end" and apply_controller_backtrack(
 						current_node_id=current,
@@ -2550,8 +2548,8 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 				assert primary_card is not None
 				assert primary_link is not None
 				secondary_index, secondary_card, secondary_link = (None, None, None)
-				evidence_cluster_confidence = None
-				stop_score = None
+				decision_state = "need_bridge"
+				decision_runner_up = None
 				decision_action = "choose_one"
 				selector_logs.append(
 					build_walk_step_log(
@@ -2610,12 +2608,7 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 					primary_index,
 				)
 				loser_card, loser_link = secondary_card, secondary_link
-				if self._branch_score(
-					secondary_card, evidence_cluster_confidence
-				) > self._branch_score(
-					primary_card,
-					evidence_cluster_confidence,
-				):
+				if self._branch_score(secondary_card) > self._branch_score(primary_card):
 					winner_card, winner_link, winner_index = (
 						secondary_card,
 						secondary_link,
@@ -2629,7 +2622,7 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 				)
 				forks_used += 1
 				debug_trace.append(
-					f"fork:{current}:keep={winner_link.target}:drop={loser_link.target}:conf={evidence_cluster_confidence or 0.0:.4f}"
+					f"fork:{current}:keep={winner_link.target}:drop={loser_link.target}:state={decision_state}"
 				)
 				loser_tokens = _node_token_cost(graph, loser_link.target)
 				if (
@@ -2681,7 +2674,9 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 				budget.budget_mode == "tokens"
 				and token_budget_limit > 0
 				and current_token_cost >= math.floor(token_budget_limit * 0.35)
-				and (evidence_cluster_confidence or 0.0) < 0.70
+				and (
+					decision_runner_up == "stop" or decision_state == "drift_recovery"
+				)
 				and len(steps) > 1
 			):
 				stop_reason = "budget_pacing_stop"
@@ -2872,10 +2867,8 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 			),
 		)
 
-	def _branch_score(
-		self, card: StepScoreCard, evidence_cluster_confidence: float | None
-	) -> float:
-		return card.total_score + 0.25 * (evidence_cluster_confidence or 0.0)
+	def _branch_score(self, card: StepScoreCard) -> float:
+		return card.total_score
 
 
 class CanonicalSearchSelector(_SentenceTransformerSupport):

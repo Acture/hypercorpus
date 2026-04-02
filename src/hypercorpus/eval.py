@@ -477,7 +477,9 @@ class Evaluator:
 	) -> CaseEvaluation:
 		selections: list[SelectionResult] = []
 		for selector in self.selectors:
-			raw_selection = selector.select(graph, case, cast(RuntimeBudget, self.budget))
+			raw_selection = selector.select(
+				graph, case, cast(RuntimeBudget, self.budget)
+			)
 			result = _selection_result_from_raw(
 				graph=graph, case=case, budget=self.budget, raw=raw_selection
 			)

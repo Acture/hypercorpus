@@ -397,9 +397,7 @@ def subset_comparison_rows(
 						None if control is None else control["avg_path_hit"],
 					),
 					"avg_stop_rate": aggregate["avg_stop_rate"],
-					"avg_explicit_stop_rate": aggregate[
-						"avg_explicit_stop_rate"
-					],
+					"avg_explicit_stop_rate": aggregate["avg_explicit_stop_rate"],
 					"avg_budget_pacing_stop_rate": aggregate[
 						"avg_budget_pacing_stop_rate"
 					],

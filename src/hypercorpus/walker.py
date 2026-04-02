@@ -42,6 +42,7 @@ class StepScorerMetadata:
 	two_hop_prefilter_top_n: int | None = None
 	controller_prompt_version: str | None = None
 	controller_prefilter_top_n: int | None = None
+	controller_visible_top_n: int | None = None
 	controller_future_top_n: int | None = None
 
 
@@ -208,7 +209,9 @@ def step_candidate_trace_from_dict(payload: dict[str, Any]) -> StepCandidateTrac
 	)
 
 
-def controller_candidate_trace_to_dict(trace: ControllerCandidateTrace) -> dict[str, Any]:
+def controller_candidate_trace_to_dict(
+	trace: ControllerCandidateTrace,
+) -> dict[str, Any]:
 	return {
 		"edge_id": trace.edge_id,
 		"source_node_id": trace.source_node_id,
@@ -232,7 +235,9 @@ def controller_candidate_trace_to_dict(trace: ControllerCandidateTrace) -> dict[
 	}
 
 
-def controller_candidate_trace_from_dict(payload: dict[str, Any]) -> ControllerCandidateTrace:
+def controller_candidate_trace_from_dict(
+	payload: dict[str, Any],
+) -> ControllerCandidateTrace:
 	return ControllerCandidateTrace(
 		edge_id=str(payload["edge_id"]),
 		source_node_id=str(payload["source_node_id"]),
@@ -282,19 +287,14 @@ def controller_candidate_trace_from_dict(payload: dict[str, Any]) -> ControllerC
 def controller_step_trace_to_dict(trace: ControllerStepTrace) -> dict[str, Any]:
 	return {
 		"kind": trace.kind,
-		"raw_action": trace.raw_action,
+		"decision": trace.decision,
+		"runner_up": trace.runner_up,
+		"state": trace.state,
+		"reason": trace.reason,
 		"effective_action": trace.effective_action,
 		"primary_edge_id": trace.primary_edge_id,
 		"secondary_edge_id": trace.secondary_edge_id,
 		"backup_edge_id": trace.backup_edge_id,
-		"primary_node_role": trace.primary_node_role,
-		"primary_node_role_confidence": trace.primary_node_role_confidence,
-		"primary_node_role_rationale": trace.primary_node_role_rationale,
-		"secondary_node_role": trace.secondary_node_role,
-		"secondary_node_role_confidence": trace.secondary_node_role_confidence,
-		"secondary_node_role_rationale": trace.secondary_node_role_rationale,
-		"stop_score": trace.stop_score,
-		"evidence_cluster_confidence": trace.evidence_cluster_confidence,
 		"llm_calls": trace.llm_calls,
 		"raw_candidate_count": trace.raw_candidate_count,
 		"valid_candidate_count": trace.valid_candidate_count,
@@ -314,9 +314,12 @@ def controller_step_trace_to_dict(trace: ControllerStepTrace) -> dict[str, Any]:
 def controller_step_trace_from_dict(payload: dict[str, Any]) -> ControllerStepTrace:
 	return ControllerStepTrace(
 		kind=str(payload["kind"]),
-		raw_action=None
-		if payload.get("raw_action") is None
-		else str(payload["raw_action"]),
+		decision=str(payload["decision"]),
+		runner_up=None
+		if payload.get("runner_up") is None
+		else str(payload["runner_up"]),
+		state=str(payload["state"]),
+		reason=None if payload.get("reason") is None else str(payload["reason"]),
 		effective_action=str(payload["effective_action"]),
 		primary_edge_id=None
 		if payload.get("primary_edge_id") is None
@@ -327,35 +330,15 @@ def controller_step_trace_from_dict(payload: dict[str, Any]) -> ControllerStepTr
 		backup_edge_id=None
 		if payload.get("backup_edge_id") is None
 		else str(payload["backup_edge_id"]),
-		primary_node_role=None
-		if payload.get("primary_node_role") is None
-		else str(payload["primary_node_role"]),
-		primary_node_role_confidence=None
-		if payload.get("primary_node_role_confidence") is None
-		else float(payload["primary_node_role_confidence"]),
-		primary_node_role_rationale=None
-		if payload.get("primary_node_role_rationale") is None
-		else str(payload["primary_node_role_rationale"]),
-		secondary_node_role=None
-		if payload.get("secondary_node_role") is None
-		else str(payload["secondary_node_role"]),
-		secondary_node_role_confidence=None
-		if payload.get("secondary_node_role_confidence") is None
-		else float(payload["secondary_node_role_confidence"]),
-		secondary_node_role_rationale=None
-		if payload.get("secondary_node_role_rationale") is None
-		else str(payload["secondary_node_role_rationale"]),
-		stop_score=None
-		if payload.get("stop_score") is None
-		else float(payload["stop_score"]),
-		evidence_cluster_confidence=None
-		if payload.get("evidence_cluster_confidence") is None
-		else float(payload["evidence_cluster_confidence"]),
-		llm_calls=None if payload.get("llm_calls") is None else int(payload["llm_calls"]),
+		llm_calls=None
+		if payload.get("llm_calls") is None
+		else int(payload["llm_calls"]),
 		raw_candidate_count=int(payload.get("raw_candidate_count", 0)),
 		valid_candidate_count=int(payload.get("valid_candidate_count", 0)),
 		small_page_bypass=bool(payload.get("small_page_bypass", False)),
-		dangling_edge_ids=[str(edge_id) for edge_id in payload.get("dangling_edge_ids", [])],
+		dangling_edge_ids=[
+			str(edge_id) for edge_id in payload.get("dangling_edge_ids", [])
+		],
 		lexical_prefilter_edge_ids=[
 			str(edge_id) for edge_id in payload.get("lexical_prefilter_edge_ids", [])
 		],
@@ -365,7 +348,9 @@ def controller_step_trace_from_dict(payload: dict[str, Any]) -> ControllerStepTr
 		bonus_rescued_edge_ids=[
 			str(edge_id) for edge_id in payload.get("bonus_rescued_edge_ids", [])
 		],
-		visible_edge_ids=[str(edge_id) for edge_id in payload.get("visible_edge_ids", [])],
+		visible_edge_ids=[
+			str(edge_id) for edge_id in payload.get("visible_edge_ids", [])
+		],
 		candidates=[
 			controller_candidate_trace_from_dict(candidate)
 			for candidate in payload.get("candidates", [])
@@ -434,7 +419,9 @@ def walk_step_log_from_dict(payload: dict[str, Any]) -> WalkStepLog:
 		fallback_reason=None
 		if payload.get("fallback_reason") is None
 		else str(payload["fallback_reason"]),
-		llm_calls=None if payload.get("llm_calls") is None else int(payload["llm_calls"]),
+		llm_calls=None
+		if payload.get("llm_calls") is None
+		else int(payload["llm_calls"]),
 		text=None if payload.get("text") is None else str(payload["text"]),
 		raw_response=None
 		if payload.get("raw_response") is None
@@ -894,19 +881,24 @@ class DynamicWalker:
 					)
 				)
 				if execution.effective_action == "stop":
-					if execution.stop_reason == "dead_end" and apply_controller_backtrack(
-						current_node_id=current,
-						visited_nodes=visited_nodes,
-						visited_set=visited_set,
-						steps=steps,
-						selector_logs=selector_logs,
-						backtracks_used=backtracks_used,
-						max_backtracks=1,
+					if (
+						execution.stop_reason == "dead_end"
+						and apply_controller_backtrack(
+							current_node_id=current,
+							visited_nodes=visited_nodes,
+							visited_set=visited_set,
+							steps=steps,
+							selector_logs=selector_logs,
+							backtracks_used=backtracks_used,
+							max_backtracks=1,
+						)
 					):
 						backtracks_used += 1
 						current = visited_nodes[-1]
 						continue
-					stop_reason = StopReason(execution.stop_reason or StopReason.DEAD_END)
+					stop_reason = StopReason(
+						execution.stop_reason or StopReason.DEAD_END
+					)
 					break
 				best_edge = execution.primary
 				assert best_edge is not None

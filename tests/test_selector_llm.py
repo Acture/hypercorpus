@@ -170,6 +170,21 @@ def _secondary_role_fields(
 	}
 
 
+def _controller_payload(
+	decision: str,
+	*,
+	runner_up: str | None = None,
+	state: str = "need_bridge",
+	reason: str = "Controller decision for the visible choice set.",
+) -> dict[str, object]:
+	return {
+		"decision": decision,
+		"runner_up": runner_up,
+		"state": state,
+		"reason": reason,
+	}
+
+
 class FakeSequenceBackend:
 	def __init__(
 		self,
@@ -403,7 +418,7 @@ def _prepare_controller_inputs(
 		lexical_top_n=controller.config.controller_lexical_top_n,
 		semantic_top_n=controller.config.controller_semantic_top_n,
 		bonus_keep_n=controller.config.controller_bonus_keep_n,
-		visible_cap=controller.config.controller_prefilter_top_n,
+		visible_cap=controller.config.controller_visible_top_n,
 	)
 	bundle = build_controller_candidate_bundle(
 		graph=graph,
@@ -986,61 +1001,18 @@ def test_controller_single_path_records_decision_and_backtrack(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeSequenceBackend(
 		[
-			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "1",
-				"backup_edge_id": "1",
-				**_primary_role_fields(
-					"background_entity",
-					rationale="The flashy edge is a background entity detour.",
-				),
-				"stop_score": 0.20,
-				"evidence_cluster_confidence": 0.42,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.91,
-						"direct_support": 0.80,
-						"bridge_potential": 0.15,
-						"future_potential": 0.10,
-						"redundancy_risk": 0.10,
-						"rationale": "Try the flashy edge first.",
-					},
-					{
-						"edge_id": "1",
-						"utility": 0.83,
-						"direct_support": 0.65,
-						"bridge_potential": 0.95,
-						"future_potential": 1.00,
-						"redundancy_risk": 0.15,
-						"rationale": "Keep the bridge as backup.",
-					},
-				],
-			},
-			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "",
-				**_primary_role_fields(
-					"answer_bearing_support",
-					rationale="The answer edge is explicit support.",
-				),
-				"stop_score": 0.10,
-				"evidence_cluster_confidence": 0.86,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.86,
-						"direct_support": 0.72,
-						"bridge_potential": 0.98,
-						"future_potential": 0.94,
-						"redundancy_risk": 0.08,
-						"rationale": "This finishes the bridge path.",
-					}
-				],
-			},
+			_controller_payload(
+				"edge_0",
+				runner_up="edge_1",
+				state="drift_recovery",
+				reason="Try the flashy edge first and keep the bridge as backup.",
+			),
+			_controller_payload(
+				"edge_0",
+				runner_up="stop",
+				state="need_answer_grounding",
+				reason="The answer edge is explicit support.",
+			),
 		]
 	)
 	selector = build_selector(
@@ -1076,65 +1048,18 @@ def test_controller_constrained_multipath_forks_once_and_keeps_bridge(monkeypatc
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeSequenceBackend(
 		[
-			{
-				"action": "choose_two",
-				"primary_edge_id": "1",
-				"secondary_edge_id": "0",
-				"backup_edge_id": "0",
-				**_primary_role_fields(
-					"bridge_support",
-					rationale="The bridge branch carries the best support path.",
-				),
-				**_secondary_role_fields(
-					"background_entity",
-					rationale="The flashy branch is weaker context.",
-				),
-				"stop_score": 0.18,
-				"evidence_cluster_confidence": 0.78,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.79,
-						"direct_support": 0.35,
-						"bridge_potential": 0.40,
-						"future_potential": 0.20,
-						"redundancy_risk": 0.85,
-						"rationale": "This is the weaker flashy branch.",
-					},
-					{
-						"edge_id": "1",
-						"utility": 0.84,
-						"direct_support": 0.60,
-						"bridge_potential": 0.96,
-						"future_potential": 1.00,
-						"redundancy_risk": 0.12,
-						"rationale": "This is the bridge branch to keep.",
-					},
-				],
-			},
-			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "",
-				**_primary_role_fields(
-					"answer_bearing_support",
-					rationale="The answer edge is explicit support.",
-				),
-				"stop_score": 0.12,
-				"evidence_cluster_confidence": 0.90,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.92,
-						"direct_support": 0.78,
-						"bridge_potential": 0.98,
-						"future_potential": 0.96,
-						"redundancy_risk": 0.05,
-						"rationale": "Take the answer edge.",
-					}
-				],
-			},
+			_controller_payload(
+				"edge_1",
+				runner_up="edge_0",
+				state="need_bridge",
+				reason="The bridge branch carries the best support path.",
+			),
+			_controller_payload(
+				"edge_0",
+				runner_up="stop",
+				state="need_answer_grounding",
+				reason="The answer edge is explicit support.",
+			),
 		]
 	)
 	selector = build_selector(
@@ -1165,31 +1090,14 @@ def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
 	graph = _build_bridge_graph()
 	backend = FakeTextSequenceBackend(
 		[
-			'{"action":": "}',
+			'{"decision":": "}',
 			json.dumps(
-				{
-					"action": "choose_one",
-					"primary_edge_id": "0",
-					"secondary_edge_id": "",
-					"backup_edge_id": "",
-					**_primary_role_fields(
-						"answer_bearing_support",
-						rationale="The bridge answer edge is explicit support.",
-					),
-					"stop_score": 0.10,
-					"evidence_cluster_confidence": 0.86,
-					"candidates": [
-						{
-							"edge_id": "0",
-							"utility": 0.86,
-							"direct_support": 0.72,
-							"bridge_potential": 0.98,
-							"future_potential": 0.94,
-							"redundancy_risk": 0.08,
-							"rationale": "This finishes the bridge path.",
-						}
-					],
-				},
+				_controller_payload(
+					"edge_0",
+					runner_up="stop",
+					state="need_answer_grounding",
+					reason="The bridge answer edge is explicit support.",
+				),
 				ensure_ascii=False,
 			),
 		],
@@ -1227,15 +1135,16 @@ def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
 	assert len(backend.user_prompts) == 2
 	assert "Required JSON schema:" in backend.user_prompts[0]
 	assert "Your previous response failed validation." in backend.user_prompts[1]
-	assert "schema_error:missing_candidates_list" in backend.user_prompts[1]
-	assert '{"action":": "}' in backend.user_prompts[1]
+	assert "schema_error:invalid_decision" in backend.user_prompts[1]
+	assert '{"decision":": "}' in backend.user_prompts[1]
 	assert decision.fallback_reason is None
 	assert decision.llm_attempts == 2
 	assert decision.total_tokens == 52
 	assert decision.prompt_tokens == 34
 	assert decision.completion_tokens == 18
 	assert decision.primary_edge_id == "0"
-	assert len(decision.candidates) == 1
+	assert [candidate.edge_id for candidate in decision.candidates] == ["0", "1"]
+	assert decision.visible_edge_ids == ["0", "1"]
 
 
 def test_controller_retries_three_times_then_falls_back(monkeypatch):
@@ -1243,8 +1152,8 @@ def test_controller_retries_three_times_then_falls_back(monkeypatch):
 	graph = _build_bridge_graph()
 	backend = FakeTextSequenceBackend(
 		[
-			'{"action":": "}',
-			'{"action":"choose_one"}',
+			'{"decision":": "}',
+			'{"decision":"edge_0"}',
 			'{"wrong":[]}',
 		]
 	)
@@ -1299,30 +1208,12 @@ def test_controller_retries_provider_rate_limit_then_succeeds(monkeypatch):
 		[
 			RuntimeError("HTTP Error 429: Too Many Requests"),
 			RuntimeError("HTTP Error 429: Too Many Requests"),
-			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "",
-				**_primary_role_fields(
-					"answer_bearing_support",
-					rationale="The bridge answer edge is explicit support.",
-				),
-				"stop_score": 0.10,
-				"evidence_cluster_confidence": 0.86,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.86,
-						"answer_bearing_link_bonus": 0.86,
-						"direct_support": 0.72,
-						"bridge_potential": 0.98,
-						"future_potential": 0.94,
-						"redundancy_risk": 0.08,
-						"rationale": "This finishes the bridge path.",
-					}
-				],
-			},
+			_controller_payload(
+				"edge_0",
+				runner_up="stop",
+				state="need_answer_grounding",
+				reason="The bridge answer edge is explicit support.",
+			),
 		]
 	)
 	controller = LLMController(
@@ -1485,30 +1376,12 @@ def test_controller_openai_responses_retries_provider_rate_limit_then_succeeds(
 		[
 			RuntimeError("HTTP Error 429: Too Many Requests"),
 			RuntimeError("HTTP Error 429: Too Many Requests"),
-			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "",
-				**_primary_role_fields(
-					"answer_bearing_support",
-					rationale="The bridge answer edge is explicit support.",
-				),
-				"stop_score": 0.10,
-				"evidence_cluster_confidence": 0.86,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.86,
-						"answer_bearing_link_bonus": 0.86,
-						"direct_support": 0.72,
-						"bridge_potential": 0.98,
-						"future_potential": 0.94,
-						"redundancy_risk": 0.08,
-						"rationale": "This finishes the bridge path.",
-					}
-				],
-			},
+			_controller_payload(
+				"edge_0",
+				runner_up="stop",
+				state="need_answer_grounding",
+				reason="The bridge answer edge is explicit support.",
+			),
 		]
 	)
 	monkeypatch.setattr(selector_llm_module, "_run_openai_responses_typed", runner)
@@ -1625,29 +1498,12 @@ def test_controller_step_scoring_happens_once_per_stage(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	graph = _build_bridge_graph()
 	backend = FakeBackend(
-		{
-			"action": "choose_one",
-			"primary_edge_id": "0",
-			"secondary_edge_id": "",
-			"backup_edge_id": "",
-			**_primary_role_fields(
-				"bridge_support",
-				rationale="The bridge edge should be followed.",
-			),
-			"stop_score": 0.05,
-			"evidence_cluster_confidence": 0.91,
-			"candidates": [
-				{
-					"edge_id": "0",
-					"utility": 0.91,
-					"direct_support": 0.70,
-					"bridge_potential": 0.96,
-					"future_potential": 0.90,
-					"redundancy_risk": 0.08,
-					"rationale": "Take the bridge edge.",
-				}
-			],
-		}
+		_controller_payload(
+			"edge_0",
+			runner_up="stop",
+			state="need_bridge",
+			reason="The bridge edge should be followed.",
+		)
 	)
 	fallback_scorer = CountingScorer(0.9)
 	prefilter_scorer = CountingScorer(0.8)
@@ -1702,63 +1558,24 @@ def test_controller_decide_requires_precomputed_exposure_inputs() -> None:
 	]
 
 
-def test_controller_preserves_raw_stop_action_in_nested_trace(
+def test_controller_stop_decision_is_preserved_in_nested_trace(
 	monkeypatch,
 ):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeSequenceBackend(
 		[
-			{
-				"action": "stop",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "1",
-				"stop_score": 0.95,
-				"evidence_cluster_confidence": 0.95,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.84,
-						"direct_support": 0.60,
-						"bridge_potential": 0.96,
-						"future_potential": 1.00,
-						"redundancy_risk": 0.10,
-						"rationale": "Continue through the bridge.",
-					},
-					{
-						"edge_id": "1",
-						"utility": 0.40,
-						"direct_support": 0.20,
-						"bridge_potential": 0.20,
-						"future_potential": 0.10,
-						"redundancy_risk": 0.90,
-						"rationale": "Weak alternative.",
-					},
-				],
-			},
-			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "",
-				**_primary_role_fields(
-					"answer_bearing_support",
-					rationale="The answer edge is explicit support.",
-				),
-				"stop_score": 0.10,
-				"evidence_cluster_confidence": 0.90,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.92,
-						"direct_support": 0.80,
-						"bridge_potential": 0.98,
-						"future_potential": 0.95,
-						"redundancy_risk": 0.05,
-						"rationale": "Take the answer edge.",
-					}
-				],
-			},
+			_controller_payload(
+				"stop",
+				runner_up="edge_1",
+				state="enough_evidence",
+				reason="The visible alternatives are not meaningful enough to justify another hop.",
+			),
+			_controller_payload(
+				"edge_0",
+				runner_up="stop",
+				state="need_answer_grounding",
+				reason="The answer edge is explicit support.",
+			),
 		]
 	)
 	selector = build_selector(
@@ -1776,7 +1593,8 @@ def test_controller_preserves_raw_stop_action_in_nested_trace(
 	assert backend.call_count == 1
 	assert result.selected_node_ids == ["root"]
 	assert result.selector_logs[0].controller is not None
-	assert result.selector_logs[0].controller.raw_action == "stop"
+	assert result.selector_logs[0].controller.decision == "stop"
+	assert result.selector_logs[0].controller.runner_up == "edge_1"
 	assert result.selector_logs[0].controller.effective_action == "stop"
 	assert result.selector_logs[0].stop_reason == "controller_stop"
 
@@ -1785,61 +1603,18 @@ def test_controller_ratio_budget_does_not_trigger_budget_pacing_stop(monkeypatch
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeSequenceBackend(
 		[
-			{
-				"action": "choose_one",
-				"primary_edge_id": "1",
-				"secondary_edge_id": "",
-				"backup_edge_id": "0",
-				**_primary_role_fields(
-					"bridge_support",
-					rationale="The bridge edge should be preferred first.",
-				),
-				"stop_score": 0.10,
-				"evidence_cluster_confidence": 0.20,
-				"candidates": [
-					{
-						"edge_id": "1",
-						"utility": 0.92,
-						"direct_support": 0.75,
-						"bridge_potential": 0.95,
-						"future_potential": 0.95,
-						"redundancy_risk": 0.05,
-						"rationale": "Take the bridge edge.",
-					},
-					{
-						"edge_id": "0",
-						"utility": 0.20,
-						"direct_support": 0.05,
-						"bridge_potential": 0.10,
-						"future_potential": 0.05,
-						"redundancy_risk": 0.95,
-						"rationale": "Weak bait edge.",
-					},
-				],
-			},
-			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "",
-				**_primary_role_fields(
-					"answer_bearing_support",
-					rationale="The answer edge is explicit support.",
-				),
-				"stop_score": 0.10,
-				"evidence_cluster_confidence": 0.95,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.98,
-						"direct_support": 0.90,
-						"bridge_potential": 0.98,
-						"future_potential": 0.98,
-						"redundancy_risk": 0.02,
-						"rationale": "Take the answer edge.",
-					}
-				],
-			},
+			_controller_payload(
+				"edge_1",
+				runner_up="stop",
+				state="need_bridge",
+				reason="The bridge edge should be preferred first.",
+			),
+			_controller_payload(
+				"edge_0",
+				runner_up="stop",
+				state="need_answer_grounding",
+				reason="The answer edge is explicit support.",
+			),
 		]
 	)
 	selector = build_selector(
@@ -1862,40 +1637,12 @@ def test_controller_ratio_budget_does_not_trigger_budget_pacing_stop(monkeypatch
 def test_lexical_controller_selector_does_not_require_embedder(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeBackend(
-		{
-			"action": "choose_one",
-			"primary_edge_id": "1",
-			"secondary_edge_id": "",
-			"backup_edge_id": "0",
-			**_primary_role_fields(
-				"bridge_support",
-				rationale="Follow the bridge page.",
-			),
-			"stop_score": 0.05,
-			"evidence_cluster_confidence": 0.92,
-			"candidates": [
-				{
-					"edge_id": "1",
-					"utility": 0.92,
-					"answer_bearing_link_bonus": 0.70,
-					"direct_support": 0.70,
-					"bridge_potential": 0.95,
-					"future_potential": 0.98,
-					"redundancy_risk": 0.05,
-					"rationale": "Follow the bridge page.",
-				},
-				{
-					"edge_id": "0",
-					"utility": 0.20,
-					"answer_bearing_link_bonus": 0.05,
-					"direct_support": 0.10,
-					"bridge_potential": 0.10,
-					"future_potential": 0.05,
-					"redundancy_risk": 0.90,
-					"rationale": "Weak bait edge.",
-				},
-			],
-		}
+		_controller_payload(
+			"edge_1",
+			runner_up="edge_0",
+			state="need_bridge",
+			reason="Follow the bridge page.",
+		)
 	)
 	selector = build_selector(
 		CONTROLLER_SINGLE_PATH,
@@ -2275,7 +2022,10 @@ def test_controller_prompt_mentions_answer_bearing_bonus():
 	assert "Named entities or places are not automatically good follow-ups" in prompt
 	assert "Lateral related entities are low utility" in prompt
 	assert "materially improves answer-bearing support" in prompt
-	assert "primary_node_role" in prompt
+	assert "STOP" in prompt
+	assert "runner_up" in prompt
+	assert "state" in prompt
+	assert "primary_node_role" not in prompt
 	assert "generic concept or degree pages" in prompt
 	assert "generic_concept_penalty" in prompt
 
@@ -2345,80 +2095,35 @@ def test_generic_concept_title_matcher_and_policy_penalties():
 	assert strong_penalty > light_penalty
 
 
-def test_controller_schema_requires_self_label_fields():
+def test_controller_schema_requires_single_stage_fields():
 	schema = _controller_response_schema("two_hop")
 	instructions = _controller_schema_instructions("two_hop")
 	output_type = selector_llm_module._controller_output_model("two_hop")
 
-	assert "primary_node_role" in schema["properties"]
-	assert "primary_node_role_confidence" in schema["properties"]
-	assert "primary_node_role_rationale" in schema["properties"]
-	assert "secondary_node_role" in schema["properties"]
-	assert "primary_node_role" in instructions
-	assert "secondary_node_role" in instructions
-	with pytest.raises(ValueError, match="primary node role diagnostics are required"):
+	assert set(schema["properties"]) == {"decision", "runner_up", "state", "reason"}
+	assert "runner_up" in instructions
+	assert "state" in instructions
+	assert "primary_node_role" not in instructions
+	with pytest.raises(ValueError, match="runner_up must differ from decision"):
 		output_type.model_validate(
 			{
-				"action": "choose_one",
-				"primary_edge_id": "0",
-				"secondary_edge_id": "",
-				"backup_edge_id": "",
-				"stop_score": 0.1,
-				"evidence_cluster_confidence": 0.8,
-				"candidates": [
-					{
-						"edge_id": "0",
-						"utility": 0.8,
-						"answer_bearing_link_bonus": 0.0,
-						"direct_support": 0.7,
-						"bridge_potential": 0.8,
-						"future_potential": 0.7,
-						"redundancy_risk": 0.1,
-						"rationale": "Take the support edge.",
-					}
-				],
+				"decision": "edge_0",
+				"runner_up": "edge_0",
+				"state": "need_bridge",
+				"reason": "Take the support edge.",
 			}
 		)
 
 
-def test_controller_trace_records_self_label_diagnostics(monkeypatch):
+def test_controller_trace_records_decision_summary(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeBackend(
-		{
-			"action": "choose_one",
-			"primary_edge_id": "1",
-			"secondary_edge_id": "",
-			"backup_edge_id": "0",
-			**_primary_role_fields(
-				"answer_bearing_support",
-				confidence=0.93,
-				rationale="University of Geneva is the explicit answer-bearing support node.",
-			),
-			"stop_score": 0.05,
-			"evidence_cluster_confidence": 0.92,
-			"candidates": [
-				{
-					"edge_id": "1",
-					"utility": 0.92,
-					"answer_bearing_link_bonus": 0.82,
-					"direct_support": 0.80,
-					"bridge_potential": 0.90,
-					"future_potential": 0.55,
-					"redundancy_risk": 0.05,
-					"rationale": "Take the explicit institution support node.",
-				},
-				{
-					"edge_id": "0",
-					"utility": 0.28,
-					"answer_bearing_link_bonus": 0.0,
-					"direct_support": 0.10,
-					"bridge_potential": 0.15,
-					"future_potential": 0.10,
-					"redundancy_risk": 0.85,
-					"rationale": "The degree concept is weak follow-up evidence.",
-				},
-			],
-		}
+		_controller_payload(
+			"edge_1",
+			runner_up="stop",
+			state="need_answer_grounding",
+			reason="University of Geneva is the explicit answer-bearing support node.",
+		)
 	)
 	selector = build_selector(
 		CONTROLLER_SINGLE_PATH,
@@ -2436,14 +2141,11 @@ def test_controller_trace_records_self_label_diagnostics(monkeypatch):
 	result = selector.select(_build_geneva_doctorate_graph(), case, budget)
 
 	assert result.selector_logs[0].controller is not None
-	assert (
-		result.selector_logs[0].controller.primary_node_role == "answer_bearing_support"
-	)
-	assert result.selector_logs[
-		0
-	].controller.primary_node_role_confidence == pytest.approx(0.93)
+	assert result.selector_logs[0].controller.decision == "edge_1"
+	assert result.selector_logs[0].controller.runner_up == "stop"
+	assert result.selector_logs[0].controller.state == "need_answer_grounding"
 	assert "explicit answer-bearing support node" in (
-		result.selector_logs[0].controller.primary_node_role_rationale or ""
+		result.selector_logs[0].controller.reason or ""
 	)
 	assert any(
 		candidate.generic_concept_like is True

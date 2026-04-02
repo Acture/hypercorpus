@@ -96,8 +96,9 @@ class SelectorLLMConfig:
 	prompt_version: str = "v1"
 	candidate_prefilter_top_n: int = 8
 	two_hop_prefilter_top_n: int = 4
-	controller_prompt_version: str = "controller_v7"
+	controller_prompt_version: str = "controller_v8"
 	controller_prefilter_top_n: int = 16
+	controller_visible_top_n: int = 5
 	controller_small_page_bypass_n: int = 16
 	controller_lexical_top_n: int = 8
 	controller_semantic_top_n: int = 8
@@ -149,6 +150,8 @@ class SelectorLLMConfig:
 			raise ValueError("two_hop_prefilter_top_n must be positive.")
 		if self.controller_prefilter_top_n <= 0:
 			raise ValueError("controller_prefilter_top_n must be positive.")
+		if self.controller_visible_top_n <= 0:
+			raise ValueError("controller_visible_top_n must be positive.")
 		if self.controller_small_page_bypass_n <= 0:
 			raise ValueError("controller_small_page_bypass_n must be positive.")
 		if self.controller_lexical_top_n <= 0:
@@ -168,12 +171,11 @@ class SelectorLLMConfig:
 
 
 ControllerAction = Literal["stop", "choose_one", "choose_two"]
-ControllerNodeRole = Literal[
-	"answer_bearing_support",
-	"bridge_support",
-	"generic_concept",
-	"background_entity",
-	"other",
+ControllerDecisionState = Literal[
+	"enough_evidence",
+	"need_bridge",
+	"need_answer_grounding",
+	"drift_recovery",
 ]
 
 StructuredOutputT = TypeVar("StructuredOutputT", bound=BaseModel)
@@ -195,22 +197,17 @@ class ControllerCandidate:
 
 @dataclass(slots=True)
 class ControllerDecision:
-	action: ControllerAction
+	decision: str
+	runner_up: str | None
+	state: ControllerDecisionState
+	reason: str | None
 	primary_edge_id: str | None
+	runner_up_edge_id: str | None = None
 	effective_action: ControllerAction | None = None
-	secondary_edge_id: str | None = None
 	backup_edge_id: str | None = None
-	primary_node_role: ControllerNodeRole | None = None
-	primary_node_role_confidence: float | None = None
-	primary_node_role_rationale: str | None = None
-	secondary_node_role: ControllerNodeRole | None = None
-	secondary_node_role_confidence: float | None = None
-	secondary_node_role_rationale: str | None = None
 	backend: str = "llm_controller"
 	provider: str | None = None
 	model: str | None = None
-	stop_score: float = 0.0
-	evidence_cluster_confidence: float = 0.0
 	candidates: list[ControllerCandidate] = field(default_factory=list)
 	text: str | None = None
 	raw_response: str | None = None
@@ -290,67 +287,17 @@ class TwoHopScoresOutput(_SelectorStructuredOutput):
 	scores: list[TwoHopScoreOutputEntry] = Field(min_length=1)
 
 
-class ControllerCandidateOutputBase(_SelectorStructuredOutput):
-	edge_id: str
-	utility: float = Field(ge=0.0, le=1.0)
-	answer_bearing_link_bonus: float = Field(ge=0.0, le=1.0)
-	direct_support: float = Field(ge=0.0, le=1.0)
-	bridge_potential: float = Field(ge=0.0, le=1.0)
-	redundancy_risk: float = Field(ge=0.0, le=1.0)
-	rationale: str
-
-
-class SingleHopControllerCandidateOutput(ControllerCandidateOutputBase):
-	pass
-
-
-class TwoHopControllerCandidateOutput(ControllerCandidateOutputBase):
-	future_potential: float = Field(ge=0.0, le=1.0)
-
-
-class ControllerDecisionOutputBase(_SelectorStructuredOutput):
-	action: ControllerAction
-	primary_edge_id: str
-	secondary_edge_id: str = ""
-	backup_edge_id: str
-	primary_node_role: ControllerNodeRole | None = None
-	primary_node_role_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-	primary_node_role_rationale: str | None = None
-	secondary_node_role: ControllerNodeRole | None = None
-	secondary_node_role_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-	secondary_node_role_rationale: str | None = None
-	stop_score: float = Field(ge=0.0, le=1.0)
-	evidence_cluster_confidence: float = Field(ge=0.0, le=1.0)
+class ControllerDecisionOutput(_SelectorStructuredOutput):
+	decision: str
+	runner_up: str | None = None
+	state: ControllerDecisionState
+	reason: str
 
 	@model_validator(mode="after")
-	def validate_required_roles(self) -> "ControllerDecisionOutputBase":
-		if self.action in {"choose_one", "choose_two"}:
-			if (
-				self.primary_node_role is None
-				or self.primary_node_role_confidence is None
-				or self.primary_node_role_rationale is None
-			):
-				raise ValueError(
-					"primary node role diagnostics are required when choosing an edge"
-				)
-		if self.action == "choose_two":
-			if (
-				self.secondary_node_role is None
-				or self.secondary_node_role_confidence is None
-				or self.secondary_node_role_rationale is None
-			):
-				raise ValueError(
-					"secondary node role diagnostics are required for choose_two"
-				)
+	def validate_distinct_choices(self) -> "ControllerDecisionOutput":
+		if self.runner_up is not None and self.decision == self.runner_up:
+			raise ValueError("runner_up must differ from decision")
 		return self
-
-
-class SingleHopControllerDecisionOutput(ControllerDecisionOutputBase):
-	candidates: list[SingleHopControllerCandidateOutput] = Field(min_length=1)
-
-
-class TwoHopControllerDecisionOutput(ControllerDecisionOutputBase):
-	candidates: list[TwoHopControllerCandidateOutput] = Field(min_length=1)
 
 
 class SelectorLLMResponseError(ValueError):
@@ -1246,6 +1193,7 @@ class LLMController:
 					total_tokens=_maybe_int(cached.get("total_tokens")),
 					latency_s=0.0,
 					cache_hit=True,
+					fallback_cards=fallback_cards,
 					exposure_plan=exposure_plan,
 					bundle=bundle,
 					llm_attempts=1,
@@ -1408,6 +1356,7 @@ class LLMController:
 						total_tokens=total_tokens,
 						latency_s=latency_s,
 						cache_hit=False,
+						fallback_cards=fallback_cards,
 						exposure_plan=exposure_plan,
 						bundle=bundle,
 						llm_attempts=llm_attempts,
@@ -1459,6 +1408,7 @@ class LLMController:
 					total_tokens=total_tokens,
 					latency_s=latency_s,
 					cache_hit=False,
+					fallback_cards=fallback_cards,
 					exposure_plan=exposure_plan,
 					bundle=bundle,
 					llm_attempts=llm_attempts,
@@ -1514,99 +1464,53 @@ class LLMController:
 		total_tokens: int | None,
 		latency_s: float,
 		cache_hit: bool,
+		fallback_cards: Sequence[StepScoreCard],
 		exposure_plan: ControllerExposurePlan,
 		bundle: ControllerCandidateBundle,
 		llm_attempts: int,
 	) -> ControllerDecision:
-		entries = payload.get("candidates")
-		if not isinstance(entries, list):
-			raise SelectorLLMResponseError("schema_error", "missing_candidates_list")
-		parsed_candidates: list[ControllerCandidate] = []
-		visible_set = {str(index) for index in exposure_plan.visible_indices}
-		bundle_entries = {entry.edge_id: entry for entry in bundle.candidates}
-		for entry in entries:
-			if not isinstance(entry, dict):
-				continue
-			edge_id = str(entry.get("edge_id", "")).strip()
-			if not edge_id or edge_id not in visible_set:
-				continue
-			bundle_entry = bundle_entries.get(edge_id)
-			parsed_candidates.append(
-				ControllerCandidate(
-					edge_id=edge_id,
-					utility=_clamp_score(entry.get("utility")),
-					answer_bearing_link_bonus=_clamp_score(
-						entry.get("answer_bearing_link_bonus")
-					),
-					direct_support=_clamp_score(entry.get("direct_support")),
-					bridge_potential=_clamp_score(entry.get("bridge_potential")),
-					future_potential=(
-						None
-						if self.mode == "single_hop"
-						else _clamp_score(entry.get("future_potential"))
-					),
-					redundancy_risk=_clamp_score(entry.get("redundancy_risk")),
-					rationale=_maybe_text(entry.get("rationale")),
-					generic_concept_like=(
-						bundle_entry.generic_concept_like
-						if bundle_entry is not None
-						else False
-					),
-					generic_concept_penalty=(
-						bundle_entry.generic_concept_penalty
-						if bundle_entry is not None
-						else 0.0
-					),
-				)
-			)
-		if not parsed_candidates:
+		visible_candidates = _visible_controller_candidates(
+			fallback_cards=fallback_cards,
+			exposure_plan=exposure_plan,
+			bundle=bundle,
+			two_hop=self.mode == "two_hop",
+		)
+		if not visible_candidates:
 			raise SelectorLLMResponseError("schema_error", "no_prefiltered_candidates")
-		action = str(payload.get("action", "")).strip()
-		if action not in {"stop", "choose_one", "choose_two"}:
-			raise SelectorLLMResponseError("schema_error", "invalid_action")
-		decision = ControllerDecision(
-			action=action,  # type: ignore[arg-type]
-			primary_edge_id=_maybe_text(payload.get("primary_edge_id")),
-			secondary_edge_id=_maybe_text(payload.get("secondary_edge_id")),
-			backup_edge_id=_maybe_text(payload.get("backup_edge_id")),
-			primary_node_role=_parse_controller_node_role(
-				payload.get("primary_node_role"),
-				required=action != "stop",
-				field_name="primary_node_role",
-			),
-			primary_node_role_confidence=_parse_optional_controller_score(
-				payload.get("primary_node_role_confidence"),
-				required=action != "stop",
-				field_name="primary_node_role_confidence",
-			),
-			primary_node_role_rationale=_parse_optional_controller_text(
-				payload.get("primary_node_role_rationale"),
-				required=action != "stop",
-				field_name="primary_node_role_rationale",
-			),
-			secondary_node_role=_parse_controller_node_role(
-				payload.get("secondary_node_role"),
-				required=action == "choose_two",
-				field_name="secondary_node_role",
-			),
-			secondary_node_role_confidence=_parse_optional_controller_score(
-				payload.get("secondary_node_role_confidence"),
-				required=action == "choose_two",
-				field_name="secondary_node_role_confidence",
-			),
-			secondary_node_role_rationale=_parse_optional_controller_text(
-				payload.get("secondary_node_role_rationale"),
-				required=action == "choose_two",
-				field_name="secondary_node_role_rationale",
-			),
+		visible_choices = {"stop", *(_controller_choice_for_edge(candidate.edge_id) for candidate in visible_candidates)}
+		decision_choice = _parse_controller_choice(
+			payload.get("decision"),
+			field_name="decision",
+			choices=visible_choices,
+			required=True,
+		)
+		runner_up_choice = _parse_controller_choice(
+			payload.get("runner_up"),
+			field_name="runner_up",
+			choices=visible_choices,
+			required=False,
+		)
+		if runner_up_choice is not None and runner_up_choice == decision_choice:
+			raise SelectorLLMResponseError("schema_error", "runner_up_matches_decision")
+		state = _parse_controller_state(payload.get("state"))
+		reason = _parse_optional_controller_text(
+			payload.get("reason"),
+			required=True,
+			field_name="reason",
+		)
+		runner_up_edge_id = _controller_choice_edge_id(runner_up_choice)
+		return ControllerDecision(
+			decision=decision_choice,
+			runner_up=runner_up_choice,
+			state=state,
+			reason=reason,
+			primary_edge_id=_controller_choice_edge_id(decision_choice),
+			runner_up_edge_id=runner_up_edge_id,
+			backup_edge_id=runner_up_edge_id,
 			backend="llm_controller",
 			provider=self.config.provider,
 			model=self.config.model,
-			stop_score=_clamp_score(payload.get("stop_score")),
-			evidence_cluster_confidence=_clamp_score(
-				payload.get("evidence_cluster_confidence")
-			),
-			candidates=parsed_candidates,
+			candidates=visible_candidates,
 			text=text,
 			raw_response=raw_response,
 			prompt_tokens=prompt_tokens,
@@ -1624,11 +1528,6 @@ class LLMController:
 			bonus_rescued_edge_ids=list(exposure_plan.bonus_rescued_edge_ids),
 			visible_edge_ids=[str(index) for index in exposure_plan.visible_indices],
 		)
-		decision.evidence_cluster_confidence = _clamp_score(
-			decision.evidence_cluster_confidence
-		)
-		decision.stop_score = _clamp_score(decision.stop_score)
-		return decision
 
 	def _fallback_decision(
 		self,
@@ -1649,54 +1548,49 @@ class LLMController:
 		cache_hit: bool | None = None,
 		llm_attempts: int = 1,
 	) -> ControllerDecision:
-		bundle_entries = {entry.edge_id: entry for entry in bundle.candidates}
-		candidates = [
-			_controller_candidate_from_card(
-				fallback_cards[index],
-				edge_id=str(index),
-				two_hop=self.mode == "two_hop",
-				bundle_entry=bundle_entries.get(str(index)),
-			)
-			for index in exposure_plan.visible_indices
-			if index < len(fallback_cards)
-		]
+		candidates = _visible_controller_candidates(
+			fallback_cards=fallback_cards,
+			exposure_plan=exposure_plan,
+			bundle=bundle,
+			two_hop=self.mode == "two_hop",
+		)
 		candidates.sort(key=lambda item: (item.utility, item.edge_id), reverse=True)
 		best = candidates[0] if candidates else None
 		second = candidates[1] if len(candidates) > 1 else None
-		action: ControllerAction = "choose_one"
-		stop_score = _clamp_score(1.0 - (best.utility if best is not None else 0.0))
+		decision_choice = "stop"
+		runner_up_choice: str | None = None
+		state = _fallback_controller_state(best=best, current_depth=current_depth)
 		if best is None:
-			action = "stop"
-			stop_score = 1.0
-		elif self.config.enable_stop and current_depth >= 2 and stop_score >= 0.80:
-			action = "stop"
-		elif _allow_choose_two(
-			config=self.config,
-			candidates=candidates,
-			primary=best,
-			secondary=second,
-			forks_used=forks_used,
-		):
-			action = "choose_two"
-		decision = ControllerDecision(
-			action=action,
-			effective_action=action,
-			primary_edge_id=best.edge_id if best is not None else None,
-			secondary_edge_id=second.edge_id
-			if action == "choose_two" and second is not None
-			else None,
-			backup_edge_id=(
-				second.edge_id
-				if self.config.enable_backtrack
-				and backtracks_used < self.config.max_backtracks_per_case
-				and second is not None
-				else None
-			),
+			reason = "No meaningful visible candidates remained after prefiltering."
+		elif self.config.enable_stop and current_depth >= 2 and best.utility <= 0.20:
+			runner_up_choice = _controller_choice_for_edge(best.edge_id)
+			reason = "Stopping because no visible candidate adds enough value to justify another hop."
+		else:
+			decision_choice = _controller_choice_for_edge(best.edge_id)
+			runner_up_choice = (
+				_controller_choice_for_edge(second.edge_id)
+				if second is not None
+				else "stop"
+			)
+			reason = "Following the highest-value visible edge."
+		runner_up_edge_id = _controller_choice_edge_id(runner_up_choice)
+		backup_edge_id = (
+			runner_up_edge_id
+			if self.config.enable_backtrack
+			and backtracks_used < self.config.max_backtracks_per_case
+			else None
+		)
+		return ControllerDecision(
+			decision=decision_choice,
+			runner_up=runner_up_choice,
+			state=state,
+			reason=reason,
+			primary_edge_id=_controller_choice_edge_id(decision_choice),
+			runner_up_edge_id=runner_up_edge_id,
+			backup_edge_id=backup_edge_id,
 			backend="llm_controller",
 			provider=self.config.provider,
 			model=self.config.model,
-			stop_score=stop_score,
-			evidence_cluster_confidence=best.utility if best is not None else 0.0,
 			candidates=candidates,
 			text=text,
 			raw_response=raw_response,
@@ -1716,11 +1610,6 @@ class LLMController:
 			bonus_rescued_edge_ids=list(exposure_plan.bonus_rescued_edge_ids),
 			visible_edge_ids=[str(index) for index in exposure_plan.visible_indices],
 		)
-		decision.evidence_cluster_confidence = _clamp_score(
-			decision.evidence_cluster_confidence
-		)
-		decision.stop_score = _clamp_score(decision.stop_score)
-		return decision
 
 
 class LLMControllerStepScorer(ControllerRuntimeScorer):
@@ -1750,6 +1639,7 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 			else None,
 			controller_prompt_version=self.config.controller_prompt_version,
 			controller_prefilter_top_n=self.config.controller_prefilter_top_n,
+			controller_visible_top_n=self.config.controller_visible_top_n,
 			controller_future_top_n=self.config.controller_future_top_n
 			if self.mode == "two_hop"
 			else None,
@@ -1833,7 +1723,7 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 			lexical_top_n=self.config.controller_lexical_top_n,
 			semantic_top_n=self.config.controller_semantic_top_n,
 			bonus_keep_n=self.config.controller_bonus_keep_n,
-			visible_cap=self.config.controller_prefilter_top_n,
+			visible_cap=self.config.controller_visible_top_n,
 		)
 		bundle = build_controller_candidate_bundle(
 			graph=graph,
@@ -1867,11 +1757,11 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 			),
 			None,
 		)
-		secondary_candidate = next(
+		runner_up_candidate = next(
 			(
 				candidate
 				for candidate in decision.candidates
-				if candidate.edge_id == decision.secondary_edge_id
+				if candidate.edge_id == decision.runner_up_edge_id
 			),
 			None,
 		)
@@ -1885,7 +1775,7 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 					config=self.config,
 					candidates=decision.candidates,
 					primary=primary_candidate,
-					secondary=secondary_candidate,
+					secondary=runner_up_candidate,
 					forks_used=forks_used,
 				),
 				allow_backtrack=(
@@ -1957,10 +1847,9 @@ def _score_output_model(
 
 def _controller_output_model(
 	mode: Literal["single_hop", "two_hop"],
-) -> type[SingleHopControllerDecisionOutput] | type[TwoHopControllerDecisionOutput]:
-	if mode == "two_hop":
-		return TwoHopControllerDecisionOutput
-	return SingleHopControllerDecisionOutput
+) -> type[ControllerDecisionOutput]:
+	del mode
+	return ControllerDecisionOutput
 
 
 def _response_schema(mode: str) -> dict[str, Any]:
@@ -1992,26 +1881,14 @@ def _system_prompt(mode: str) -> str:
 
 
 def _controller_system_prompt(mode: str) -> str:
-	if mode == "single_hop":
-		return (
-			"You are controlling a budgeted hyperlink retriever. "
-			"Pick the next retrieval action, not just per-edge scores. "
-			"Favor explicit support-node coverage, low redundancy, and avoiding precision collapse. "
-			"Even if the current page text already hints at the answer, prefer a high-value link that would "
-			"add an explicit answer-bearing or support-bearing node to the retrieved evidence set instead of stopping early. "
-			"Return exactly one JSON object with an action and candidate utilities. "
-			"Do not emit prose, markdown, code fences, or explanations outside the JSON object. "
-			"Only use choose_two when two options are genuinely tied."
-		)
+	del mode
 	return (
-		"You are controlling a budgeted hyperlink retriever with limited lookahead. "
-		"Pick the next retrieval action, not just per-edge scores. "
-		"Favor explicit support-node coverage, bridge discovery, and low redundancy under a token budget. "
-		"Even if the current page text already hints at the answer, prefer a high-value link that would "
-		"add an explicit answer-bearing or support-bearing node to the retrieved evidence set instead of stopping early. "
-		"Return exactly one JSON object with an action and candidate utilities. "
-		"Do not emit prose, markdown, code fences, or explanations outside the JSON object. "
-		"Only use choose_two for near-ties that justify a short scout branch."
+		"You are controlling a budgeted hyperlink retriever. "
+		"Choose exactly one option from the explicit choice set: STOP or one visible edge. "
+		"STOP is a first-class option and should stay favored unless another hop materially improves answer-bearing support. "
+		"Unused budget is acceptable. Do not keep exploring just because budget remains. "
+		"Prefer explicit support-node coverage, low redundancy, and low drift. "
+		"Return exactly one JSON object and nothing else."
 	)
 
 
@@ -2041,17 +1918,17 @@ def _controller_user_prompt(*, query: str, bundle: Mapping[str, Any], mode: str)
 		f"{json.dumps(bundle, ensure_ascii=False, indent=2)}\n\n"
 		"Required JSON schema:\n"
 		f"{_controller_schema_instructions(mode)}\n\n"
-		"Choose the next retrieval action under a budget. "
+		"Choose exactly one decision from the explicit options: STOP or one visible edge. "
+		"STOP is always the default when no visible edge is meaningfully better. "
 		"Continue only when a candidate directly helps answer the question or clearly completes the minimal answer-bearing support chain. "
-		"If the currently selected nodes already support a reasonable answer, default to stop. "
+		"If the currently selected nodes already support a reasonable answer, default to STOP. "
 		"Unused budget is acceptable and should not be spent just because it remains available. "
 		"Lateral related entities are low utility when they do not add new answer-bearing support. "
 		"Named entities or places are not automatically good follow-ups. "
-		"Treat answer_bearing_link_bonus as a first-class utility component: only prefer a candidate over stop when it materially improves answer-bearing support rather than merely expanding to another related page. "
+		"Treat answer_bearing_link_bonus as a first-class signal: only prefer a candidate over STOP when it materially improves answer-bearing support rather than merely expanding to another related page. "
 		f"{policy_instruction}"
-		"When you choose a primary edge, also label its role using primary_node_role / primary_node_role_confidence / primary_node_role_rationale. "
-		"If you choose two edges, label the secondary edge too. "
-		"Use choose_two only for a genuine near-tie. "
+		"Use runner_up to record the second-best option, including STOP when STOP nearly wins. "
+		"Use state to describe why you are stopping or what kind of progress the next hop would make. "
 		"Return JSON only."
 	)
 
@@ -2079,41 +1956,15 @@ def _controller_repair_user_prompt(
 
 
 def _controller_schema_instructions(mode: str) -> str:
-	candidate_fields = [
-		'"edge_id": "<one of the listed candidate edge ids>"',
-		'"utility": 0.0-1.0',
-		'"answer_bearing_link_bonus": 0.0-1.0',
-		'"direct_support": 0.0-1.0',
-		'"bridge_potential": 0.0-1.0',
-	]
-	if mode == "two_hop":
-		candidate_fields.append('"future_potential": 0.0-1.0')
-	candidate_fields.extend(
-		[
-			'"redundancy_risk": 0.0-1.0',
-			'"rationale": "<short rationale string>"',
-		]
-	)
-	candidate_schema = ", ".join(candidate_fields)
+	del mode
 	return (
-		'{"action":"stop|choose_one|choose_two",'
-		'"primary_edge_id":"<edge id or empty string>",'
-		'"secondary_edge_id":"<edge id or empty string>",'
-		'"backup_edge_id":"<edge id or empty string>",'
-		'"primary_node_role":"answer_bearing_support|bridge_support|generic_concept|background_entity|other",'
-		'"primary_node_role_confidence":0.0-1.0,'
-		'"primary_node_role_rationale":"<short rationale string>",'
-		'"secondary_node_role":"answer_bearing_support|bridge_support|generic_concept|background_entity|other",'
-		'"secondary_node_role_confidence":0.0-1.0,'
-		'"secondary_node_role_rationale":"<short rationale string>",'
-		'"stop_score":0.0-1.0,'
-		'"evidence_cluster_confidence":0.0-1.0,'
-		f'"candidates":[{{{candidate_schema}}}]}} '
-		"Rules: candidates must be a non-empty array, every edge_id must come from the provided candidate list, "
-		"action must be one of stop/choose_one/choose_two, and utility should explicitly account for answer_bearing_link_bonus "
-		"(adding an explicit support-bearing node beats an early stop when redundancy is not extreme). "
-		"Whenever action is choose_one or choose_two, the primary node role fields are required. "
-		"When action is choose_two, the secondary node role fields are also required. "
+		'{"decision":"stop|edge_<id>",'
+		'"runner_up":"stop|edge_<id>|null",'
+		'"state":"enough_evidence|need_bridge|need_answer_grounding|drift_recovery",'
+		'"reason":"<short rationale string>"} '
+		"Rules: decision must be STOP or one visible edge choice from the provided candidate list. "
+		"runner_up must be null or a different visible choice from the same list. "
+		"If no visible edge meaningfully improves the evidence set, choose STOP. "
 		"The response must be exactly one JSON object."
 	)
 
@@ -2197,6 +2048,87 @@ def _controller_candidate_from_card(
 	)
 
 
+def _visible_controller_candidates(
+	*,
+	fallback_cards: Sequence[StepScoreCard],
+	exposure_plan: ControllerExposurePlan,
+	bundle: ControllerCandidateBundle,
+	two_hop: bool,
+) -> list[ControllerCandidate]:
+	visible_indices = {
+		index
+		for index in exposure_plan.visible_indices
+		if 0 <= index < len(fallback_cards) and 0 <= index < len(bundle.candidates)
+	}
+	return [
+		_controller_candidate_from_card(
+			fallback_cards[index],
+			edge_id=str(index),
+			two_hop=two_hop,
+			bundle_entry=bundle.candidates[index],
+		)
+		for index in sorted(visible_indices)
+	]
+
+
+def _controller_choice_for_edge(edge_id: str) -> str:
+	return f"edge_{edge_id}"
+
+
+def _controller_choice_edge_id(choice: str | None) -> str | None:
+	if choice is None or choice == "stop":
+		return None
+	if not choice.startswith("edge_"):
+		raise SelectorLLMResponseError("schema_error", "invalid_choice_prefix")
+	return choice.removeprefix("edge_")
+
+
+def _parse_controller_choice(
+	value: Any,
+	*,
+	field_name: str,
+	choices: set[str],
+	required: bool,
+) -> str | None:
+	text = _maybe_text(value)
+	if text is None:
+		if required:
+			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
+		return None
+	text = text.lower()
+	if text not in choices:
+		raise SelectorLLMResponseError("schema_error", f"invalid_{field_name}")
+	return text
+
+
+def _parse_controller_state(value: Any) -> ControllerDecisionState:
+	text = _maybe_text(value)
+	if text is None:
+		raise SelectorLLMResponseError("schema_error", "missing_state")
+	if text not in {
+		"enough_evidence",
+		"need_bridge",
+		"need_answer_grounding",
+		"drift_recovery",
+	}:
+		raise SelectorLLMResponseError("schema_error", "invalid_state")
+	return cast(ControllerDecisionState, text)
+
+
+def _fallback_controller_state(
+	*, best: ControllerCandidate | None, current_depth: int
+) -> ControllerDecisionState:
+	if best is None:
+		return "enough_evidence"
+	if current_depth >= 2 and best.utility <= 0.20:
+		return "enough_evidence"
+	if best.answer_bearing_link_bonus >= 0.45:
+		return "need_answer_grounding"
+	if best.bridge_potential >= 0.45:
+		return "need_bridge"
+	return "drift_recovery"
+
+
 def _allow_choose_two(
 	*,
 	config: SelectorLLMConfig,
@@ -2205,50 +2137,18 @@ def _allow_choose_two(
 	secondary: ControllerCandidate | None,
 	forks_used: int,
 ) -> bool:
+	del candidates
 	if not config.enable_scout_fork or forks_used >= max(
 		config.max_scout_branches - 1, 1
 	):
 		return False
 	if primary is None or secondary is None:
 		return False
-	if primary.utility < 0.55 or secondary.utility < 0.55:
+	if secondary.redundancy_risk >= 0.5:
 		return False
-	return (primary.utility - secondary.utility) <= 0.07
-
-
-def _parse_controller_node_role(
-	value: Any,
-	*,
-	required: bool,
-	field_name: str,
-) -> ControllerNodeRole | None:
-	text = _maybe_text(value)
-	if text is None:
-		if required:
-			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
-		return None
-	if text not in {
-		"answer_bearing_support",
-		"bridge_support",
-		"generic_concept",
-		"background_entity",
-		"other",
-	}:
-		raise SelectorLLMResponseError("schema_error", f"invalid_{field_name}")
-	return cast(ControllerNodeRole, text)
-
-
-def _parse_optional_controller_score(
-	value: Any,
-	*,
-	required: bool,
-	field_name: str,
-) -> float | None:
-	if value is None or value == "":
-		if required:
-			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
-		return None
-	return _clamp_score(value)
+	if primary.generic_concept_like and secondary.generic_concept_like:
+		return False
+	return abs(primary.utility - secondary.utility) <= 0.07
 
 
 def _parse_optional_controller_text(

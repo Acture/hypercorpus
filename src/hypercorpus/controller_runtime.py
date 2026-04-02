@@ -30,22 +30,17 @@ class ControllerDecisionCandidate(Protocol):
 
 
 class ControllerDecisionPayload(Protocol):
-	action: str
+	decision: str
+	runner_up: str | None
+	state: str
+	reason: str | None
 	effective_action: str | None
 	primary_edge_id: str | None
-	secondary_edge_id: str | None
+	runner_up_edge_id: str | None
 	backup_edge_id: str | None
-	primary_node_role: str | None
-	primary_node_role_confidence: float | None
-	primary_node_role_rationale: str | None
-	secondary_node_role: str | None
-	secondary_node_role_confidence: float | None
-	secondary_node_role_rationale: str | None
 	backend: str
 	provider: str | None
 	model: str | None
-	stop_score: float
-	evidence_cluster_confidence: float
 	candidates: Sequence[ControllerDecisionCandidate]
 	text: str | None
 	raw_response: str | None
@@ -151,19 +146,14 @@ class ControllerCandidateTrace:
 @dataclass(slots=True)
 class ControllerStepTrace:
 	kind: str
-	raw_action: str | None
+	decision: str
+	runner_up: str | None
+	state: str
+	reason: str | None
 	effective_action: str
 	primary_edge_id: str | None
 	secondary_edge_id: str | None
 	backup_edge_id: str | None
-	primary_node_role: str | None
-	primary_node_role_confidence: float | None
-	primary_node_role_rationale: str | None
-	secondary_node_role: str | None
-	secondary_node_role_confidence: float | None
-	secondary_node_role_rationale: str | None
-	stop_score: float | None
-	evidence_cluster_confidence: float | None
 	llm_calls: int | None
 	raw_candidate_count: int
 	valid_candidate_count: int
@@ -238,8 +228,12 @@ def build_controller_execution_result(
 		(index, score_cards[index], candidate_links[index])
 		for index in range(min(len(score_cards), len(candidate_links)))
 	]
-	cards_by_edge_id = {card.edge_id: (index, card, link) for index, card, link in card_entries}
-	decision_candidates = {candidate.edge_id: candidate for candidate in decision.candidates}
+	cards_by_edge_id = {
+		card.edge_id: (index, card, link) for index, card, link in card_entries
+	}
+	decision_candidates = {
+		candidate.edge_id: candidate for candidate in decision.candidates
+	}
 	visible_ids = set(decision.visible_edge_ids)
 	dangling_ids = set(decision.dangling_edge_ids)
 
@@ -254,23 +248,21 @@ def build_controller_execution_result(
 		)
 		for _index, card, link in card_entries
 	]
-	candidate_traces.sort(key=lambda trace: (trace.total_score, trace.edge_id), reverse=True)
+	candidate_traces.sort(
+		key=lambda trace: (trace.total_score, trace.edge_id), reverse=True
+	)
 
 	trace = ControllerStepTrace(
 		kind="decision",
-		raw_action=decision.action,
-		effective_action=decision.action,
+		decision=decision.decision,
+		runner_up=decision.runner_up,
+		state=decision.state,
+		reason=decision.reason,
+		effective_action=decision.effective_action
+		or ("stop" if decision.decision == "stop" else "choose_one"),
 		primary_edge_id=decision.primary_edge_id,
-		secondary_edge_id=decision.secondary_edge_id,
+		secondary_edge_id=decision.runner_up_edge_id,
 		backup_edge_id=decision.backup_edge_id,
-		primary_node_role=decision.primary_node_role,
-		primary_node_role_confidence=decision.primary_node_role_confidence,
-		primary_node_role_rationale=decision.primary_node_role_rationale,
-		secondary_node_role=decision.secondary_node_role,
-		secondary_node_role_confidence=decision.secondary_node_role_confidence,
-		secondary_node_role_rationale=decision.secondary_node_role_rationale,
-		stop_score=decision.stop_score,
-		evidence_cluster_confidence=decision.evidence_cluster_confidence,
 		llm_calls=decision.llm_attempts,
 		raw_candidate_count=decision.raw_candidate_count,
 		valid_candidate_count=decision.valid_candidate_count,
@@ -311,23 +303,23 @@ def build_controller_execution_result(
 		cards_by_edge_id=cards_by_edge_id,
 		visible_ids=visible_ids,
 	)
-	secondary = _resolve_edge(
-		preferred_edge_id=trace.secondary_edge_id,
+	runner_up = _resolve_edge(
+		preferred_edge_id=decision.runner_up_edge_id,
 		cards_by_edge_id=cards_by_edge_id,
 		visible_ids=visible_ids,
 		exclude={primary.edge_id} if primary is not None else set(),
 	)
 
 	effective_action = _normalize_effective_action(
-		raw_action=decision.action,
-		requested_action=decision.effective_action,
+		decision=decision.decision,
 		primary=primary,
-		secondary=secondary,
+		runner_up=runner_up,
 		policy=policy,
 	)
 	trace.effective_action = effective_action
 	backup_exclude = {primary.edge_id} if primary is not None else set()
-	if effective_action == "choose_two" and secondary is not None:
+	secondary = runner_up if effective_action == "choose_two" else None
+	if secondary is not None:
 		backup_exclude.add(secondary.edge_id)
 	backup = _resolve_edge(
 		preferred_edge_id=trace.backup_edge_id,
@@ -340,16 +332,12 @@ def build_controller_execution_result(
 			preferred_edge_id=None,
 			cards_by_edge_id=cards_by_edge_id,
 			visible_ids=visible_ids,
-			exclude=backup_exclude,
-		)
+		exclude=backup_exclude,
+	)
 	if not policy.allow_backtrack:
 		backup = None
 	trace.primary_edge_id = primary.edge_id if primary is not None else None
-	trace.secondary_edge_id = (
-		secondary.edge_id
-		if secondary is not None and effective_action == "choose_two"
-		else None
-	)
+	trace.secondary_edge_id = secondary.edge_id if secondary is not None else None
 	trace.backup_edge_id = backup.edge_id if backup is not None else None
 	if effective_action == "stop":
 		trace.primary_edge_id = None
@@ -359,7 +347,11 @@ def build_controller_execution_result(
 			primary=None,
 			secondary=None,
 			backup=backup,
-			stop_reason="controller_stop" if policy.allow_stop else "dead_end",
+			stop_reason=(
+				"controller_stop"
+				if decision.decision == "stop" and policy.allow_stop
+				else "dead_end"
+			),
 			backend=decision.backend,
 			provider=decision.provider,
 			model=decision.model,
@@ -375,7 +367,7 @@ def build_controller_execution_result(
 	return ControllerExecutionResult(
 		trace=trace,
 		primary=primary,
-		secondary=secondary if effective_action == "choose_two" else None,
+		secondary=secondary,
 		backup=backup,
 		stop_reason=None,
 		backend=decision.backend,
@@ -401,19 +393,14 @@ def make_backtrack_trace(
 
 	return ControllerStepTrace(
 		kind="backtrack",
-		raw_action="backtrack",
+		decision=previous_trace.decision,
+		runner_up=previous_trace.runner_up,
+		state=previous_trace.state,
+		reason=previous_trace.reason,
 		effective_action="backtrack",
 		primary_edge_id=backup.edge_id,
 		secondary_edge_id=previous_trace.secondary_edge_id,
 		backup_edge_id=None,
-		primary_node_role=previous_trace.primary_node_role,
-		primary_node_role_confidence=previous_trace.primary_node_role_confidence,
-		primary_node_role_rationale=previous_trace.primary_node_role_rationale,
-		secondary_node_role=previous_trace.secondary_node_role,
-		secondary_node_role_confidence=previous_trace.secondary_node_role_confidence,
-		secondary_node_role_rationale=previous_trace.secondary_node_role_rationale,
-		stop_score=previous_trace.stop_score,
-		evidence_cluster_confidence=previous_trace.evidence_cluster_confidence,
 		llm_calls=0,
 		raw_candidate_count=previous_trace.raw_candidate_count,
 		valid_candidate_count=previous_trace.valid_candidate_count,
@@ -521,15 +508,25 @@ def _build_candidate_trace(
 			if decision_candidate is not None
 			else None
 		),
-		direct_support=(decision_candidate.direct_support if decision_candidate is not None else None),
+		direct_support=(
+			decision_candidate.direct_support
+			if decision_candidate is not None
+			else None
+		),
 		bridge_potential=(
-			decision_candidate.bridge_potential if decision_candidate is not None else None
+			decision_candidate.bridge_potential
+			if decision_candidate is not None
+			else None
 		),
 		future_potential=(
-			decision_candidate.future_potential if decision_candidate is not None else None
+			decision_candidate.future_potential
+			if decision_candidate is not None
+			else None
 		),
 		redundancy_risk=(
-			decision_candidate.redundancy_risk if decision_candidate is not None else None
+			decision_candidate.redundancy_risk
+			if decision_candidate is not None
+			else None
 		),
 		generic_concept_like=(
 			decision_candidate.generic_concept_like
@@ -617,21 +614,17 @@ def _resolve_edge(
 
 def _normalize_effective_action(
 	*,
-	raw_action: str,
-	requested_action: str | None,
+	decision: str,
 	primary: ControllerResolvedEdge | None,
-	secondary: ControllerResolvedEdge | None,
+	runner_up: ControllerResolvedEdge | None,
 	policy: ControllerExecutionPolicy,
 ) -> str:
-	action = requested_action or raw_action
-	if action == "stop":
+	if decision == "stop":
 		if policy.allow_stop or primary is None:
 			return "stop"
 		return "choose_one"
 	if primary is None:
 		return "stop"
-	if action == "choose_two":
-		if policy.allow_choose_two and secondary is not None:
-			return "choose_two"
-		return "choose_one"
+	if policy.allow_choose_two and runner_up is not None:
+		return "choose_two"
 	return "choose_one"
