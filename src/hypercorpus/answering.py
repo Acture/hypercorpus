@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from hypercorpus.copilot import (
-	DEFAULT_COPILOT_API_KEY_ENV,
+	CopilotSdkCompletion,
+	CopilotSdkRunner,
 	DEFAULT_COPILOT_MODEL,
-	copilot_default_headers,
-	normalize_copilot_base_url,
+	SupportsCopilotSdkRunner,
+	validate_copilot_model_name,
 )
 
 from hypercorpus.subgraph import QuerySubgraph
@@ -57,8 +58,8 @@ _DEFAULT_ANSWER_MODELS: dict[AnswererProvider, str] = {
 	"openai": "gpt-4.1-mini",
 }
 
-_DEFAULT_ANSWER_API_KEY_ENVS: dict[AnswererProvider, str] = {
-	"copilot": DEFAULT_COPILOT_API_KEY_ENV,
+_DEFAULT_ANSWER_API_KEY_ENVS: dict[AnswererProvider, str | None] = {
+	"copilot": None,
 	"openai": "OPENAI_API_KEY",
 }
 
@@ -76,10 +77,20 @@ class LLMAnswererConfig:
 	def __post_init__(self) -> None:
 		if self.model is None:
 			self.model = _DEFAULT_ANSWER_MODELS[self.provider]
-		if self.api_key_env is None:
-			self.api_key_env = _DEFAULT_ANSWER_API_KEY_ENVS[self.provider]
 		if self.provider == "copilot":
-			self.base_url = normalize_copilot_base_url(self.base_url)
+			self.model = validate_copilot_model_name(self.model)
+			if self.api_key_env is not None:
+				raise ValueError(
+					"copilot does not accept answer_api_key_env; use the SDK-native provider without an API key override."
+				)
+			if self.base_url is not None:
+				raise ValueError(
+					"copilot does not accept answer_base_url; use the SDK-native provider without a transport override."
+				)
+			self.api_key_env = None
+			self.base_url = None
+		elif self.api_key_env is None:
+			self.api_key_env = _DEFAULT_ANSWER_API_KEY_ENVS[self.provider]
 
 
 class JsonlAnswerCache:
@@ -234,11 +245,13 @@ class LLMAnswerer:
 		config: LLMAnswererConfig | None = None,
 		max_evidence: int = 3,
 		client_factory: Callable[..., Any] | None = None,
+		copilot_runner: SupportsCopilotSdkRunner | None = None,
 	):
 		self.config = config or LLMAnswererConfig()
 		self.max_evidence = max_evidence
 		self._client_factory = client_factory
 		self._client: Any | None = None
+		self._copilot_runner = copilot_runner
 		self._cache = (
 			JsonlAnswerCache(self.config.cache_path)
 			if self.config.cache_path is not None
@@ -248,9 +261,7 @@ class LLMAnswerer:
 	def answer(self, query: str, subgraph: QuerySubgraph) -> AnswerWithEvidence:
 		context = _render_subgraph(subgraph)
 		model = self.config.model
-		api_key_env = self.config.api_key_env
 		assert model is not None
-		assert api_key_env is not None
 		cache_key = _answer_cache_key(
 			provider=self.config.provider,
 			model=model,
@@ -262,13 +273,68 @@ class LLMAnswerer:
 		cached = self._cache.get(cache_key) if self._cache is not None else None
 		if cached is not None:
 			return _cached_answer(query=query, cached=cached)
+		started_at = time.perf_counter()
+		completion = self._complete(
+			model=model,
+			query=query,
+			context=context,
+		)
+		runtime_s = time.perf_counter() - started_at
+		payload = json.loads(completion.text)
+		answer = str(payload.get("answer", "")).strip()
+		result = AnswerWithEvidence(
+			query=query,
+			answer=answer,
+			confidence=1.0 if answer else 0.0,
+			evidence=_default_evidence(subgraph, max_evidence=self.max_evidence),
+			mode="llm_fixed",
+			model=model,
+			runtime_s=runtime_s,
+			prompt_tokens=completion.prompt_tokens,
+			completion_tokens=completion.completion_tokens,
+			total_tokens=completion.total_tokens,
+		)
+		if self._cache is not None:
+			self._cache.put(
+				cache_key,
+				{
+					"mode": result.mode,
+					"model": result.model,
+					"answer": result.answer,
+					"confidence": result.confidence,
+					"runtime_s": result.runtime_s,
+					"prompt_tokens": result.prompt_tokens,
+					"completion_tokens": result.completion_tokens,
+					"total_tokens": result.total_tokens,
+				},
+			)
+		return result
 
+	def _complete(
+		self,
+		*,
+		model: str,
+		query: str,
+		context: str,
+	) -> CopilotSdkCompletion:
+		if self.config.provider == "copilot":
+			runner = self._copilot_runner or CopilotSdkRunner()
+			self._copilot_runner = runner
+			return runner.complete(
+				model=model,
+				system_prompt=(
+					"Answer only from the supplied evidence context. "
+					'Return JSON with a single string field: {"answer": "..."}'
+				),
+				user_prompt=f"Question:\n{query}\n\nEvidence context:\n{context}",
+				temperature=self.config.temperature,
+			)
+		api_key_env = self.config.api_key_env
+		assert api_key_env is not None
 		api_key = os.environ.get(api_key_env)
 		if not api_key:
 			raise ValueError(f"Missing API key in environment variable {api_key_env}")
-
 		client = self._get_client(api_key)
-		started_at = time.perf_counter()
 		response = client.chat.completions.create(
 			model=model,
 			temperature=self.config.temperature,
@@ -287,40 +353,17 @@ class LLMAnswerer:
 				},
 			],
 		)
-		runtime_s = time.perf_counter() - started_at
-		message = response.choices[0].message
-		payload = json.loads(_message_content(message.content))
-		answer = str(payload.get("answer", "")).strip()
 		prompt_tokens, completion_tokens, total_tokens = _usage_triplet(
 			getattr(response, "usage", None)
 		)
-		result = AnswerWithEvidence(
-			query=query,
-			answer=answer,
-			confidence=1.0 if answer else 0.0,
-			evidence=_default_evidence(subgraph, max_evidence=self.max_evidence),
-			mode="llm_fixed",
-			model=model,
-			runtime_s=runtime_s,
+		return CopilotSdkCompletion(
+			text=_message_content(response.choices[0].message.content),
 			prompt_tokens=prompt_tokens,
 			completion_tokens=completion_tokens,
 			total_tokens=total_tokens,
+			raw_response=None,
+			model=model,
 		)
-		if self._cache is not None:
-			self._cache.put(
-				cache_key,
-				{
-					"mode": result.mode,
-					"model": result.model,
-					"answer": result.answer,
-					"confidence": result.confidence,
-					"runtime_s": result.runtime_s,
-					"prompt_tokens": result.prompt_tokens,
-					"completion_tokens": result.completion_tokens,
-					"total_tokens": result.total_tokens,
-				},
-			)
-		return result
 
 	def _get_client(self, api_key: str) -> Any:
 		if self._client is not None:
@@ -329,11 +372,7 @@ class LLMAnswerer:
 			self._client = self._client_factory(
 				api_key=api_key,
 				base_url=self.config.base_url,
-				default_headers=(
-					copilot_default_headers()
-					if self.config.provider == "copilot"
-					else None
-				),
+				default_headers=None,
 			)
 			return self._client
 		try:
@@ -345,8 +384,6 @@ class LLMAnswerer:
 		kwargs: dict[str, Any] = {"api_key": api_key}
 		if self.config.base_url:
 			kwargs["base_url"] = self.config.base_url
-		if self.config.provider == "copilot":
-			kwargs["default_headers"] = copilot_default_headers()
 		self._client = OpenAI(**kwargs)
 		return self._client
 

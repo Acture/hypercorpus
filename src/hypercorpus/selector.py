@@ -2608,7 +2608,9 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 					primary_index,
 				)
 				loser_card, loser_link = secondary_card, secondary_link
-				if self._branch_score(secondary_card) > self._branch_score(primary_card):
+				if self._branch_score(secondary_card) > self._branch_score(
+					primary_card
+				):
 					winner_card, winner_link, winner_index = (
 						secondary_card,
 						secondary_link,
@@ -2674,9 +2676,7 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 				budget.budget_mode == "tokens"
 				and token_budget_limit > 0
 				and current_token_cost >= math.floor(token_budget_limit * 0.35)
-				and (
-					decision_runner_up == "stop" or decision_state == "drift_recovery"
-				)
+				and (decision_runner_up == "stop" or decision_state == "drift_recovery")
 				and len(steps) > 1
 			):
 				stop_reason = "budget_pacing_stop"
@@ -3468,7 +3468,7 @@ def build_selector(
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
-	selector_openai_api_mode: OpenAIApiMode | str = "chat_completions",
+	selector_openai_api_mode: OpenAIApiMode | str | None = None,
 	selector_cache_path: str | None = None,
 	selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
 	sentence_transformer_model: str | None = None,
@@ -3502,7 +3502,7 @@ def build_selector(
 		model=selector_model,
 		api_key_env=selector_api_key_env,
 		base_url=selector_base_url,
-		openai_api_mode=cast(OpenAIApiMode, selector_openai_api_mode),
+		openai_api_mode=cast(OpenAIApiMode | None, selector_openai_api_mode),
 		cache_path=None if selector_cache_path is None else Path(selector_cache_path),
 	)
 	sentence_transformer_config = SentenceTransformerSelectorConfig(
@@ -3606,7 +3606,7 @@ def select_selectors(
 	selector_model: str | None = None,
 	selector_api_key_env: str | None = None,
 	selector_base_url: str | None = None,
-	selector_openai_api_mode: OpenAIApiMode | str = "chat_completions",
+	selector_openai_api_mode: OpenAIApiMode | str | None = None,
 	selector_cache_path: str | None = None,
 	selector_backend_factory: Callable[[SelectorLLMConfig], Any] | None = None,
 	sentence_transformer_model: str | None = None,
@@ -4013,10 +4013,12 @@ def _apply_budget_fill_metadata(
 
 
 def _validate_selector_llm_config(config: SelectorLLMConfig) -> None:
-	if not config.api_key_env:
-		raise ValueError("selector_api_key_env must be configured for LLM selectors.")
 	if not config.model:
 		raise ValueError("selector_model must be configured for LLM selectors.")
+	if config.provider == "copilot":
+		return
+	if not config.api_key_env:
+		raise ValueError("selector_api_key_env must be configured for LLM selectors.")
 	if not os.environ.get(config.api_key_env):
 		raise ValueError(
 			f"Missing API key in environment variable {config.api_key_env}"

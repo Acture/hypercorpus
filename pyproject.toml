@@ -11,6 +11,7 @@ dependencies = [
 	"anthropic>=0.72.0",
 	"datasets>=4.5.0",
 	"filelock>=3.19.1",
+	"github-copilot-sdk>=0.2.0",
 	"google-genai>=1.39.1",
 	"graphrag>=2.7.0",
 	"openai>=2.15.0",

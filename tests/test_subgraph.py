@@ -1,10 +1,6 @@
 from typing import cast
 
-from hypercorpus.copilot import (
-	DEFAULT_COPILOT_BASE_URL,
-	DEFAULT_COPILOT_MODEL,
-	copilot_default_headers,
-)
+from hypercorpus.copilot import CopilotSdkCompletion, DEFAULT_COPILOT_MODEL
 from hypercorpus.answering import Answerer, LLMAnswerer, LLMAnswererConfig
 from hypercorpus.subgraph import SubgraphExtractor
 
@@ -94,7 +90,7 @@ def test_llm_answerer_parses_json_and_uses_cache(sample_graph, tmp_path, monkeyp
 	assert fake_client.chat.completions.calls == 1
 
 
-def test_llm_answerer_defaults_to_copilot_sdk(sample_graph, monkeypatch):
+def test_llm_answerer_defaults_to_copilot_sdk(sample_graph):
 	subgraph = SubgraphExtractor().extract(
 		"Which city hosts the launch site?",
 		sample_graph,
@@ -102,68 +98,49 @@ def test_llm_answerer_defaults_to_copilot_sdk(sample_graph, monkeypatch):
 	)
 	captured: dict[str, object] = {}
 
-	class FakeUsage:
-		prompt_tokens = 11
-		completion_tokens = 7
-		total_tokens = 18
+	class FakeRunner:
+		def complete(
+			self,
+			*,
+			model: str,
+			system_prompt: str,
+			user_prompt: str,
+			temperature: float,
+			timeout_s: float = 120.0,
+		) -> CopilotSdkCompletion:
+			captured["request"] = {
+				"model": model,
+				"system_prompt": system_prompt,
+				"user_prompt": user_prompt,
+				"temperature": temperature,
+				"timeout_s": timeout_s,
+			}
+			return CopilotSdkCompletion(
+				text='{"answer": "Cape Canaveral"}',
+				model=model,
+				prompt_tokens=None,
+				completion_tokens=None,
+				total_tokens=None,
+				raw_response='{"answer": "Cape Canaveral"}',
+			)
 
-	class FakeMessage:
-		content = '{"answer": "Cape Canaveral"}'
-
-	class FakeChoice:
-		message = FakeMessage()
-
-	class FakeResponse:
-		choices = [FakeChoice()]
-		usage = FakeUsage()
-
-	class FakeCompletions:
-		def create(self, **kwargs: object) -> FakeResponse:
-			captured["request"] = kwargs
-			return FakeResponse()
-
-	class FakeChat:
-		def __init__(self) -> None:
-			self.completions = FakeCompletions()
-
-	class FakeClient:
-		def __init__(self) -> None:
-			self.chat = FakeChat()
-
-	def _client_factory(**kwargs: object) -> FakeClient:
-		captured["client_kwargs"] = kwargs
-		return FakeClient()
-
-	monkeypatch.setenv("GITHUB_TOKEN", "test-key")
 	answerer = LLMAnswerer(
 		config=LLMAnswererConfig(provider="copilot"),
-		client_factory=_client_factory,
+		copilot_runner=FakeRunner(),
 	)
 
 	result = answerer.answer("Which city hosts the launch site?", subgraph)
+	request = cast(dict[str, object], captured["request"])
 
 	assert result.answer == "Cape Canaveral"
 	assert result.model == DEFAULT_COPILOT_MODEL
-	assert captured["client_kwargs"] == {
-		"api_key": "test-key",
-		"base_url": DEFAULT_COPILOT_BASE_URL,
-		"default_headers": copilot_default_headers(),
-	}
-	request = cast(dict[str, object], captured["request"])
-	assert request == {
-		"model": DEFAULT_COPILOT_MODEL,
-		"temperature": 0.0,
-		"response_format": {"type": "json_object"},
-		"messages": request["messages"],
-	}
-	messages = cast(list[dict[str, str]], request["messages"])
-	assert messages[0] == {
-		"role": "system",
-		"content": (
-			"Answer only from the supplied evidence context. "
-			'Return JSON with a single string field: {"answer": "..."}'
-		),
-	}
-	assert messages[1]["role"] == "user"
-	assert "Question:\nWhich city hosts the launch site?" in messages[1]["content"]
-	assert "Evidence context:\n" in messages[1]["content"]
+	assert request["model"] == DEFAULT_COPILOT_MODEL
+	assert request["system_prompt"] == (
+		"Answer only from the supplied evidence context. "
+		'Return JSON with a single string field: {"answer": "..."}'
+	)
+	assert request["temperature"] == 0.0
+	assert request["timeout_s"] == 120.0
+	user_prompt = cast(str, request["user_prompt"])
+	assert "Question:\nWhich city hosts the launch site?" in user_prompt
+	assert "Evidence context:\n" in user_prompt

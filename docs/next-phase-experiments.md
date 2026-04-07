@@ -164,6 +164,15 @@ Immediate next actions:
 
 Execution order is fixed.
 
+### 0. IIRC Implementation Pre-Gate
+
+Before the paper-facing mainline begins, run a short implementation-validation gate on the current `copilot + ranked-choice` controller surface.
+
+- rerun the 1-case `run-iirc-store` keycheck on the two current `hop_adaptive` controller selectors
+- then rerun the 3-case smoke on that same pair
+- then run a 20-case pilot on a fixed `case_ids_file`, comparing `dense`, `mdr_light`, and the two `hop_adaptive` selectors on the same selector-budget-ratio frame
+- only if this gate is clean enough should the 100-case sample-defining run below become the next execution step
+
 ### 1. IIRC Sample-Defining Run
 
 - sample size: `100`

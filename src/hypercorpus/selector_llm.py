@@ -27,10 +27,12 @@ from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from hypercorpus.copilot import (
-	DEFAULT_COPILOT_API_KEY_ENV,
+	CopilotSdkRunner,
 	DEFAULT_COPILOT_MODEL,
-	copilot_default_headers,
-	normalize_copilot_base_url,
+	SupportsCopilotSdkRunner,
+	github_models_default_headers,
+	normalize_github_models_base_url,
+	validate_copilot_model_name,
 )
 
 from hypercorpus.controller_exposure import (
@@ -66,8 +68,8 @@ OpenAIApiMode = Literal[
 	"github_models_chat_completions",
 ]
 
-DEFAULT_SELECTOR_API_KEY_ENVS: dict[SelectorProvider, str] = {
-	"copilot": DEFAULT_COPILOT_API_KEY_ENV,
+DEFAULT_SELECTOR_API_KEY_ENVS: dict[SelectorProvider, str | None] = {
+	"copilot": None,
 	"openai": "OPENAI_API_KEY",
 	"anthropic": "ANTHROPIC_API_KEY",
 	"gemini": "GEMINI_API_KEY",
@@ -87,7 +89,7 @@ class SelectorLLMConfig:
 	model: str | None = None
 	api_key_env: str | None = None
 	base_url: str | None = None
-	openai_api_mode: OpenAIApiMode = "chat_completions"
+	openai_api_mode: OpenAIApiMode | None = None
 	cache_path: Path | None = None
 	temperature: float = 0.0
 	provider_max_attempts: int = 3
@@ -114,27 +116,37 @@ class SelectorLLMConfig:
 
 	def __post_init__(self) -> None:
 		if self.provider == "copilot":
-			if self.openai_api_mode not in {
-				"chat_completions",
-				"github_models_chat_completions",
-			}:
+			if self.api_key_env is not None:
 				raise ValueError(
-					"copilot only supports the github_models_chat_completions transport."
+					"copilot does not accept selector_api_key_env; use the SDK-native provider without an API key override."
 				)
-			self.openai_api_mode = "github_models_chat_completions"
-		elif self.provider != "openai" and self.openai_api_mode != "chat_completions":
+			if self.base_url is not None:
+				raise ValueError(
+					"copilot does not accept selector_base_url; use the SDK-native provider without a transport override."
+				)
+			if self.openai_api_mode is not None:
+				raise ValueError(
+					"copilot does not accept selector_openai_api_mode; use the SDK-native provider."
+				)
+		elif self.provider == "openai":
+			if self.openai_api_mode is None:
+				self.openai_api_mode = "chat_completions"
+		elif self.openai_api_mode is not None:
 			raise ValueError(
 				"openai_api_mode is only supported when provider is 'openai'."
 			)
 		if self.model is None:
 			self.model = DEFAULT_SELECTOR_MODELS[self.provider]
-		if self.api_key_env is None:
-			self.api_key_env = DEFAULT_SELECTOR_API_KEY_ENVS[self.provider]
 		if self.provider == "copilot":
-			self.base_url = normalize_copilot_base_url(self.base_url)
-		elif self.provider == "openai" and self.base_url is not None:
+			self.model = validate_copilot_model_name(self.model)
+			self.api_key_env = None
+			self.base_url = None
+			self.openai_api_mode = None
+		elif self.api_key_env is None:
+			self.api_key_env = DEFAULT_SELECTOR_API_KEY_ENVS[self.provider]
+		if self.provider == "openai" and self.base_url is not None:
 			self.base_url = _normalize_openai_transport_url(
-				self.base_url, api_mode=self.openai_api_mode
+				self.base_url, api_mode=cast(OpenAIApiMode, self.openai_api_mode)
 			)
 		if self.candidate_prefilter_top_n <= 0:
 			raise ValueError("candidate_prefilter_top_n must be positive.")
@@ -494,7 +506,7 @@ class OpenAIBackendAdapter:
 				api_key=self.api_key,
 				base_url=self.base_url,
 				default_headers=(
-					copilot_default_headers()
+					github_models_default_headers()
 					if self.api_mode == "github_models_chat_completions"
 					else None
 				),
@@ -510,9 +522,43 @@ class OpenAIBackendAdapter:
 		if self.base_url:
 			kwargs["base_url"] = self.base_url
 		if self.api_mode == "github_models_chat_completions":
-			kwargs["default_headers"] = copilot_default_headers()
+			kwargs["default_headers"] = github_models_default_headers()
 		self._client = OpenAI(**kwargs)
 		return self._client
+
+
+class CopilotBackendAdapter:
+	def __init__(
+		self,
+		*,
+		runner: SupportsCopilotSdkRunner | None = None,
+	):
+		self._runner = runner or CopilotSdkRunner()
+
+	def complete_json(
+		self,
+		*,
+		model: str,
+		system_prompt: str,
+		user_prompt: str,
+		temperature: float,
+		response_schema: dict[str, Any] | None = None,
+	) -> BackendCompletion:
+		del response_schema
+		completion = self._runner.complete(
+			model=model,
+			system_prompt=system_prompt,
+			user_prompt=user_prompt,
+			temperature=temperature,
+		)
+		return BackendCompletion(
+			text=completion.text,
+			payload=None,
+			prompt_tokens=completion.prompt_tokens,
+			completion_tokens=completion.completion_tokens,
+			total_tokens=completion.total_tokens,
+			raw_response=completion.raw_response,
+		)
 
 
 class AnthropicBackendAdapter:
@@ -706,6 +752,8 @@ class LLMStepLinkScorer:
 		)
 
 	def validate_environment(self) -> None:
+		if self.config.provider == "copilot":
+			return
 		api_key = os.environ.get(self.config.api_key_env or "")
 		if not api_key:
 			raise ValueError(
@@ -1131,6 +1179,8 @@ class LLMController:
 		self._backend: BackendAdapter | None = None
 
 	def validate_environment(self) -> None:
+		if self.config.provider == "copilot":
+			return
 		api_key = os.environ.get(self.config.api_key_env or "")
 		if not api_key:
 			raise ValueError(
@@ -1197,6 +1247,7 @@ class LLMController:
 					exposure_plan=exposure_plan,
 					bundle=bundle,
 					llm_attempts=1,
+					current_depth=current_depth,
 				)
 			except Exception as exc:  # pragma: no cover - cache corruption path
 				return self._fallback_decision(
@@ -1360,6 +1411,7 @@ class LLMController:
 						exposure_plan=exposure_plan,
 						bundle=bundle,
 						llm_attempts=llm_attempts,
+						current_depth=current_depth,
 					)
 					break
 				except SelectorLLMResponseError as exc:
@@ -1412,6 +1464,7 @@ class LLMController:
 					exposure_plan=exposure_plan,
 					bundle=bundle,
 					llm_attempts=llm_attempts,
+					current_depth=current_depth,
 				)
 			except SelectorLLMResponseError as exc:
 				return self._fallback_decision(
@@ -1468,6 +1521,7 @@ class LLMController:
 		exposure_plan: ControllerExposurePlan,
 		bundle: ControllerCandidateBundle,
 		llm_attempts: int,
+		current_depth: int,
 	) -> ControllerDecision:
 		visible_candidates = _visible_controller_candidates(
 			fallback_cards=fallback_cards,
@@ -1477,13 +1531,20 @@ class LLMController:
 		)
 		if not visible_candidates:
 			raise SelectorLLMResponseError("schema_error", "no_prefiltered_candidates")
-		visible_choices = {"stop", *(_controller_choice_for_edge(candidate.edge_id) for candidate in visible_candidates)}
+		visible_choices = {
+			"stop",
+			*(
+				_controller_choice_for_edge(candidate.edge_id)
+				for candidate in visible_candidates
+			),
+		}
 		decision_choice = _parse_controller_choice(
 			payload.get("decision"),
 			field_name="decision",
 			choices=visible_choices,
 			required=True,
 		)
+		assert decision_choice is not None
 		runner_up_choice = _parse_controller_choice(
 			payload.get("runner_up"),
 			field_name="runner_up",
@@ -1497,6 +1558,14 @@ class LLMController:
 			payload.get("reason"),
 			required=True,
 			field_name="reason",
+		)
+		decision_choice, runner_up_choice, state, reason = _coerce_root_stop_decision(
+			decision_choice=decision_choice,
+			runner_up_choice=runner_up_choice,
+			state=state,
+			reason=reason,
+			current_depth=current_depth,
+			candidates=visible_candidates,
 		)
 		runner_up_edge_id = _controller_choice_edge_id(runner_up_choice)
 		return ControllerDecision(
@@ -1787,16 +1856,18 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 
 
 def _default_backend_factory(config: SelectorLLMConfig) -> BackendAdapter:
+	if config.provider == "copilot":
+		return CopilotBackendAdapter()
 	api_key = os.environ.get(config.api_key_env or "")
 	if not api_key:
 		raise ValueError(
 			f"Missing API key in environment variable {config.api_key_env}"
 		)
-	if config.provider in {"copilot", "openai"}:
+	if config.provider == "openai":
 		return OpenAIBackendAdapter(
 			api_key=api_key,
 			base_url=config.base_url,
-			api_mode=config.openai_api_mode,
+			api_mode=cast(OpenAIApiMode, config.openai_api_mode),
 		)
 	if config.provider == "anthropic":
 		return AnthropicBackendAdapter(api_key=api_key)
@@ -1921,7 +1992,8 @@ def _controller_user_prompt(*, query: str, bundle: Mapping[str, Any], mode: str)
 		"Choose exactly one decision from the explicit options: STOP or one visible edge. "
 		"STOP is always the default when no visible edge is meaningfully better. "
 		"Continue only when a candidate directly helps answer the question or clearly completes the minimal answer-bearing support chain. "
-		"If the currently selected nodes already support a reasonable answer, default to STOP. "
+		"Do not choose STOP merely because the current nodes suggest a plausible answer. "
+		"Prefer STOP only when the visible options do not materially improve the minimal answer-bearing support chain. "
 		"Unused budget is acceptable and should not be spent just because it remains available. "
 		"Lateral related entities are low utility when they do not add new answer-bearing support. "
 		"Named entities or places are not automatically good follow-ups. "
@@ -2017,7 +2089,9 @@ def _controller_candidate_from_card(
 		edge_id=edge_id,
 		utility=_clamp_score(card.total_score),
 		answer_bearing_link_bonus=_clamp_score(
-			card.subscores.get(
+			bundle_entry.answer_bearing_link_bonus
+			if bundle_entry is not None
+			else card.subscores.get(
 				"answer_bearing_link_bonus",
 				card.total_score,
 			)
@@ -2055,19 +2129,16 @@ def _visible_controller_candidates(
 	bundle: ControllerCandidateBundle,
 	two_hop: bool,
 ) -> list[ControllerCandidate]:
-	visible_indices = {
-		index
-		for index in exposure_plan.visible_indices
-		if 0 <= index < len(fallback_cards) and 0 <= index < len(bundle.candidates)
-	}
+	bundle_entries_by_edge_id = {entry.edge_id: entry for entry in bundle.candidates}
 	return [
 		_controller_candidate_from_card(
 			fallback_cards[index],
 			edge_id=str(index),
 			two_hop=two_hop,
-			bundle_entry=bundle.candidates[index],
+			bundle_entry=bundle_entries_by_edge_id.get(str(index)),
 		)
-		for index in sorted(visible_indices)
+		for index in exposure_plan.visible_indices
+		if 0 <= index < len(fallback_cards)
 	]
 
 
@@ -2113,6 +2184,42 @@ def _parse_controller_state(value: Any) -> ControllerDecisionState:
 	}:
 		raise SelectorLLMResponseError("schema_error", "invalid_state")
 	return cast(ControllerDecisionState, text)
+
+
+def _coerce_root_stop_decision(
+	*,
+	decision_choice: str,
+	runner_up_choice: str | None,
+	state: ControllerDecisionState,
+	reason: str | None,
+	current_depth: int,
+	candidates: Sequence[ControllerCandidate],
+) -> tuple[str, str | None, ControllerDecisionState, str | None]:
+	if current_depth != 0 or decision_choice != "stop":
+		return decision_choice, runner_up_choice, state, reason
+	best = max(
+		(
+			candidate
+			for candidate in candidates
+			if candidate.answer_bearing_link_bonus >= 0.45
+		),
+		key=lambda candidate: (
+			candidate.answer_bearing_link_bonus,
+			candidate.utility,
+			candidate.direct_support,
+			candidate.bridge_potential,
+			candidate.edge_id,
+		),
+		default=None,
+	)
+	if best is None:
+		return decision_choice, runner_up_choice, state, reason
+	return (
+		_controller_choice_for_edge(best.edge_id),
+		"stop",
+		_fallback_controller_state(best=best, current_depth=current_depth),
+		"Continuing once because a strong answer-bearing visible edge is still available at the root.",
+	)
 
 
 def _fallback_controller_state(
@@ -2596,7 +2703,7 @@ def _normalize_openai_transport_url(
 			return text
 		return text.rstrip("/")
 	if api_mode == "github_models_chat_completions":
-		return normalize_copilot_base_url(text)
+		return normalize_github_models_base_url(text)
 	if parsed.query:
 		raise ValueError(
 			"selector_base_url must be a base URL, not a raw endpoint with query parameters."

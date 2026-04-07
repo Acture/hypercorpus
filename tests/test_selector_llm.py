@@ -6,10 +6,12 @@ from typing import cast
 import pytest
 
 import hypercorpus.selector_llm as selector_llm_module
+from hypercorpus.copilot import CopilotSdkCompletion
 from hypercorpus.eval import EvaluationBudget, EvaluationCase
 from hypercorpus.selector import RuntimeBudget, build_selector, select_selectors
 from hypercorpus.controller_exposure import (
 	ControllerCandidateBundle,
+	ControllerCandidateBundleEntry,
 	ControllerExposurePlan,
 	answer_bearing_link_bonus,
 	build_controller_candidate_bundle,
@@ -21,6 +23,7 @@ from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
 from hypercorpus.selector_llm import (
 	AnthropicBackendAdapter,
 	BackendCompletion,
+	CopilotBackendAdapter,
 	LLMController,
 	LLMControllerStepScorer,
 	OpenAIBackendAdapter,
@@ -720,7 +723,7 @@ def test_openai_backend_adapter_github_models_chat_mode_uses_sdk_client():
 	assert captured["client_kwargs"] == {
 		"api_key": "gh-models-key",
 		"base_url": "https://models.github.ai/inference",
-		"default_headers": selector_llm_module.copilot_default_headers(),
+		"default_headers": selector_llm_module.github_models_default_headers(),
 	}
 	assert captured["request"] == {
 		"model": "gpt-4.1-mini",
@@ -765,23 +768,90 @@ def test_selector_llm_config_accepts_azure_responses_root():
 	assert config.base_url == "https://example.cognitiveservices.azure.com"
 
 
-def test_selector_llm_config_normalizes_copilot_chat_endpoint():
-	config = SelectorLLMConfig(
-		provider="copilot",
-		base_url="https://models.github.ai/inference/chat/completions",
-	)
-
-	assert config.base_url == "https://models.github.ai/inference"
-	assert config.openai_api_mode == "github_models_chat_completions"
-
-
 def test_selector_llm_config_defaults_to_copilot_sdk_settings():
 	config = SelectorLLMConfig(provider="copilot")
 
-	assert config.model == "openai/gpt-4.1-mini"
-	assert config.api_key_env == "GITHUB_TOKEN"
-	assert config.base_url == "https://models.github.ai/inference"
-	assert config.openai_api_mode == "github_models_chat_completions"
+	assert config.model == "gpt-4.1"
+	assert config.api_key_env is None
+	assert config.base_url is None
+	assert config.openai_api_mode is None
+
+
+def test_selector_llm_config_rejects_copilot_transport_overrides():
+	with pytest.raises(ValueError, match="selector_api_key_env"):
+		SelectorLLMConfig(provider="copilot", api_key_env="GITHUB_TOKEN")
+	with pytest.raises(ValueError, match="selector_base_url"):
+		SelectorLLMConfig(
+			provider="copilot",
+			base_url="https://models.github.ai/inference",
+		)
+	with pytest.raises(ValueError, match="selector_openai_api_mode"):
+		SelectorLLMConfig(
+			provider="copilot",
+			openai_api_mode="github_models_chat_completions",
+		)
+
+
+def test_selector_llm_config_rejects_provider_prefixed_copilot_model_name():
+	with pytest.raises(ValueError, match="SDK-native ids"):
+		SelectorLLMConfig(provider="copilot", model="openai/gpt-5")
+
+
+def test_copilot_backend_adapter_uses_sdk_runner():
+	class FakeRunner:
+		def __init__(self) -> None:
+			self.calls: list[dict[str, object]] = []
+
+		def complete(
+			self,
+			*,
+			model: str,
+			system_prompt: str,
+			user_prompt: str,
+			temperature: float,
+			timeout_s: float = 120.0,
+		) -> CopilotSdkCompletion:
+			self.calls.append(
+				{
+					"model": model,
+					"system_prompt": system_prompt,
+					"user_prompt": user_prompt,
+					"temperature": temperature,
+					"timeout_s": timeout_s,
+				}
+			)
+			return CopilotSdkCompletion(
+				text='{"scores":[{"edge_id":"0"}]}',
+				model=model,
+				prompt_tokens=None,
+				completion_tokens=None,
+				total_tokens=None,
+				raw_response='{"scores":[{"edge_id":"0"}]}',
+			)
+
+	runner = FakeRunner()
+	adapter = CopilotBackendAdapter(runner=runner)
+
+	completion = adapter.complete_json(
+		model="gpt-5",
+		system_prompt="score candidates",
+		user_prompt="bundle",
+		temperature=0.0,
+	)
+
+	assert completion.text == '{"scores":[{"edge_id":"0"}]}'
+	assert completion.prompt_tokens is None
+	assert completion.completion_tokens is None
+	assert completion.total_tokens is None
+	assert runner.calls == [
+		{
+			"model": "gpt-5",
+			"system_prompt": "score candidates",
+			"user_prompt": "bundle",
+			"temperature": 0.0,
+			"timeout_s": 120.0,
+		}
+	]
 
 
 def test_single_hop_selector_records_usage_and_logs(
@@ -1599,6 +1669,111 @@ def test_controller_stop_decision_is_preserved_in_nested_trace(
 	assert result.selector_logs[0].stop_reason == "controller_stop"
 
 
+def test_controller_root_stop_is_coerced_to_answer_bearing_edge(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: FakeBackend({}),
+	)
+	graph = _build_geneva_doctorate_graph()
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="In what country did Bain attend doctoral seminars of Wlad Godzich?",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+
+	decision = controller._decision_from_payload(
+		payload=_controller_payload(
+			"stop",
+			runner_up="edge_1",
+			state="enough_evidence",
+			reason="The current page already suggests the answer.",
+		),
+		text='{"decision":"stop"}',
+		raw_response='{"decision":"stop"}',
+		prompt_tokens=10,
+		completion_tokens=5,
+		total_tokens=15,
+		latency_s=0.0,
+		cache_hit=False,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+		llm_attempts=1,
+		current_depth=0,
+	)
+
+	assert decision.fallback_reason is None
+	assert decision.decision == "edge_1"
+	assert decision.runner_up == "stop"
+	assert decision.primary_edge_id == "1"
+	assert decision.state == "need_answer_grounding"
+	assert "strong answer-bearing visible edge" in (decision.reason or "")
+
+
+def test_controller_nested_stop_is_not_coerced(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: FakeBackend({}),
+	)
+	graph = _build_geneva_doctorate_graph()
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="In what country did Bain attend doctoral seminars of Wlad Godzich?",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+
+	decision = controller._decision_from_payload(
+		payload=_controller_payload(
+			"stop",
+			runner_up="edge_1",
+			state="enough_evidence",
+			reason="The current page already suggests the answer.",
+		),
+		text='{"decision":"stop"}',
+		raw_response='{"decision":"stop"}',
+		prompt_tokens=10,
+		completion_tokens=5,
+		total_tokens=15,
+		latency_s=0.0,
+		cache_hit=False,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+		llm_attempts=1,
+		current_depth=1,
+	)
+
+	assert decision.decision == "stop"
+	assert decision.runner_up == "edge_1"
+	assert decision.primary_edge_id is None
+	assert decision.state == "enough_evidence"
+	assert decision.reason == "The current page already suggests the answer."
+
+
 def test_controller_ratio_budget_does_not_trigger_budget_pacing_stop(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeSequenceBackend(
@@ -1868,6 +2043,79 @@ def test_controller_exposure_plan_keeps_answer_bearing_edge_and_filters_dangling
 	assert 2 not in plan.visible_indices
 
 
+def test_controller_exposure_plan_pins_best_answer_bearing_edge_into_visible_cap():
+	query = "In what country did Bain attend doctoral seminars of Wlad Godzich?"
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode(
+				"root", "Thomas Bain (Orange)", ("Root mentions two candidates.",)
+			),
+			DocumentNode(
+				"geneva",
+				"University of Geneva",
+				("The University of Geneva is in Switzerland.",),
+			),
+			DocumentNode(
+				"bait", "Academic history", ("Academic history is broad context only.",)
+			),
+		]
+	)
+	candidate_links = [
+		LinkContext(
+			source="root",
+			target="bait",
+			anchor_text="academic history",
+			sentence="This broad academic-history page is highly lexical but not answer-bearing.",
+			sent_idx=0,
+		),
+		LinkContext(
+			source="root",
+			target="geneva",
+			anchor_text="University of Geneva",
+			sentence="Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
+			sent_idx=0,
+		),
+	]
+	cards = [
+		StepScoreCard(
+			edge_id="0",
+			total_score=0.97,
+			subscores={
+				"anchor_overlap": 0.92,
+				"sentence_overlap": 0.08,
+				"target_overlap": 0.0,
+				"novelty": 1.0,
+			},
+		),
+		StepScoreCard(
+			edge_id="1",
+			total_score=0.42,
+			subscores={
+				"anchor_overlap": 0.15,
+				"sentence_overlap": 0.74,
+				"target_overlap": 0.0,
+				"novelty": 1.0,
+			},
+		),
+	]
+
+	plan = build_controller_exposure_plan(
+		query=query,
+		graph=graph,
+		candidate_links=candidate_links,
+		lexical_cards=cards,
+		semantic_cards=None,
+		small_page_bypass_n=1,
+		lexical_top_n=1,
+		semantic_top_n=0,
+		bonus_keep_n=1,
+		visible_cap=1,
+	)
+
+	assert plan.visible_indices == [1]
+	assert plan.bonus_rescued_edge_ids == ["1"]
+
+
 def test_controller_exposure_plan_bonus_rescue_prefers_higher_semantic_score():
 	query = "Which port contains the answer?"
 	graph = LinkContextGraph(
@@ -1935,6 +2183,93 @@ def test_controller_exposure_plan_bonus_rescue_prefers_higher_semantic_score():
 
 	assert plan.bonus_rescued_edge_ids == ["0"]
 	assert plan.visible_indices == [0]
+
+
+def test_controller_payload_parsing_keeps_sparse_visible_edge_ids(monkeypatch):
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: FakeBackend({}),
+	)
+	fallback_cards = [
+		StepScoreCard(edge_id=str(index), total_score=0.01 * (index + 1), subscores={})
+		for index in range(31)
+	]
+	exposure_plan = ControllerExposurePlan(
+		raw_candidate_count=31,
+		valid_candidate_count=31,
+		small_page_bypass=False,
+		valid_indices=list(range(31)),
+		dangling_indices=[],
+		lexical_prefilter_edge_ids=["30"],
+		semantic_prefilter_edge_ids=[],
+		bonus_rescued_edge_ids=["30"],
+		visible_indices=[30],
+	)
+	bundle = ControllerCandidateBundle(
+		query="In what country did Bain attend doctoral seminars of Wlad Godzich?",
+		current_node_id="root",
+		path_titles=["Thomas Bain (Orange)"],
+		raw_candidate_count=31,
+		valid_candidate_count=31,
+		small_page_bypass=False,
+		dangling_edge_ids=[],
+		lexical_prefilter_edge_ids=["30"],
+		semantic_prefilter_edge_ids=[],
+		bonus_rescued_edge_ids=["30"],
+		visible_edge_ids=["30"],
+		generic_page_policy="prompt_only",
+		candidates=[
+			ControllerCandidateBundleEntry(
+				edge_id="30",
+				source_title="Thomas Bain (Orange)",
+				target_title="University of Geneva",
+				anchor_text="University of Geneva",
+				sentence="Thomas Bain attended the doctoral seminars of Wlad Godzich in the University of Geneva.",
+				prefilter_score=0.99,
+				query_anchor_overlap=0.25,
+				query_sentence_overlap=0.80,
+				query_target_overlap=0.0,
+				answer_bearing_link_bonus=0.90,
+				source_sentence_mentions_target_title=True,
+				semantic_prefilter_score=0.0,
+				generic_concept_like=False,
+				generic_concept_penalty=0.0,
+			)
+		],
+	)
+
+	decision = controller._decision_from_payload(
+		payload=_controller_payload(
+			"stop",
+			runner_up="edge_30",
+			state="enough_evidence",
+			reason="The visible edge is already recorded as the runner-up.",
+		),
+		text='{"decision":"stop","runner_up":"edge_30"}',
+		raw_response='{"decision":"stop","runner_up":"edge_30"}',
+		prompt_tokens=10,
+		completion_tokens=5,
+		total_tokens=15,
+		latency_s=0.0,
+		cache_hit=False,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+		llm_attempts=1,
+		current_depth=1,
+	)
+
+	assert decision.fallback_reason is None
+	assert decision.decision == "stop"
+	assert decision.runner_up == "edge_30"
+	assert decision.visible_edge_ids == ["30"]
+	assert [candidate.edge_id for candidate in decision.candidates] == ["30"]
 
 
 def test_controller_exposure_plan_bypasses_small_pages():

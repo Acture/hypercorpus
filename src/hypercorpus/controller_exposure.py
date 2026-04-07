@@ -207,16 +207,20 @@ def build_controller_exposure_plan(
 		semantic_ranked = rank_indices_by_score(valid_indices, semantic_cards)
 		semantic_indices = semantic_ranked[:semantic_top_n]
 
+	bonus_scores = {
+		index: answer_bearing_link_bonus(
+			query=query,
+			graph=graph,
+			link=candidate_links[index],
+			card=lexical_cards[index],
+		)
+		for index in valid_indices
+	}
 	selected: set[int] = set(lexical_indices) | set(semantic_indices)
 	bonus_ranked = sorted(
 		valid_indices,
 		key=lambda index: (
-			answer_bearing_link_bonus(
-				query=query,
-				graph=graph,
-				link=candidate_links[index],
-				card=lexical_cards[index],
-			),
+			bonus_scores[index],
 			lexical_cards[index].total_score,
 			semantic_cards[index].total_score if semantic_cards is not None else 0.0,
 			-index,
@@ -236,20 +240,26 @@ def build_controller_exposure_plan(
 		semantic_score = (
 			semantic_cards[index].total_score if semantic_cards is not None else 0.0
 		)
-		bonus = answer_bearing_link_bonus(
-			query=query,
-			graph=graph,
-			link=candidate_links[index],
-			card=lexical_cards[index],
-		)
 		return (
+			bonus_scores[index],
 			max(lexical_cards[index].total_score, semantic_score),
-			bonus,
 			lexical_cards[index].total_score + semantic_score,
 			-index,
 		)
 
+	pinned_answer_index = next(
+		(index for index in bonus_ranked if bonus_scores[index] > 0.0),
+		None,
+	)
 	visible_indices = sorted(selected, key=combined_order, reverse=True)[:visible_cap]
+	if pinned_answer_index is not None and pinned_answer_index not in visible_indices:
+		visible_indices = [
+			pinned_answer_index,
+			*[index for index in visible_indices if index != pinned_answer_index][
+				: max(visible_cap - 1, 0)
+			],
+		]
+		visible_indices = sorted(visible_indices, key=combined_order, reverse=True)
 	return ControllerExposurePlan(
 		raw_candidate_count=raw_candidate_count,
 		valid_candidate_count=valid_candidate_count,

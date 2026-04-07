@@ -248,13 +248,12 @@ def test_select_selectors_accepts_paper_recommended_local_without_llm_config():
 	)
 
 
-def test_select_selectors_rejects_paper_recommended_without_llm_api_key(monkeypatch):
-	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+def test_select_selectors_accepts_paper_recommended_without_llm_api_key():
+	selectors = select_selectors(preset="paper_recommended")
 
-	with pytest.raises(
-		ValueError, match="Missing API key in environment variable GITHUB_TOKEN"
-	):
-		select_selectors(preset="paper_recommended")
+	assert [selector.name for selector in selectors] == selector_names_for_preset(
+		"paper_recommended"
+	)
 
 
 def test_incremental_experiment_aggregator_matches_batch_summary():

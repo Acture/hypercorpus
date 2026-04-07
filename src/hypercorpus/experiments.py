@@ -17,7 +17,7 @@ from hypercorpus.answering import (
 	LLMAnswererConfig,
 	SupportsAnswer,
 )
-from hypercorpus.copilot import normalize_copilot_base_url
+from hypercorpus.copilot import is_copilot_model_name
 from hypercorpus.datasets.common import (
 	DatasetAdapter,
 	coerce_question_type,
@@ -408,22 +408,25 @@ def _provider_matches_default_source(
 def _selector_value_is_compatible(
 	*, field_name: str, provider: str, value: str
 ) -> bool:
-	if field_name == "selector_base_url" and provider == "copilot":
-		try:
-			normalize_copilot_base_url(value)
-		except ValueError:
-			return False
-	if field_name == "selector_openai_api_mode" and provider == "copilot":
-		return value in {"chat_completions", "github_models_chat_completions"}
+	if provider != "copilot":
+		return True
+	if field_name == "selector_model":
+		return is_copilot_model_name(value)
+	if field_name in {
+		"selector_api_key_env",
+		"selector_base_url",
+		"selector_openai_api_mode",
+	}:
+		return False
 	return True
 
 
-def _answer_value_is_compatible(*, provider: str, value: str) -> bool:
+def _answer_value_is_compatible(*, field_name: str, provider: str, value: str) -> bool:
 	if provider != "copilot":
 		return True
-	try:
-		normalize_copilot_base_url(value)
-	except ValueError:
+	if field_name == "answer_model":
+		return is_copilot_model_name(value)
+	if field_name in {"answer_api_key_env", "answer_base_url"}:
 		return False
 	return True
 
@@ -499,12 +502,22 @@ def _resolve_runtime_defaults(
 			field_name="selector_model",
 			provider=resolved_selector_provider,
 			defaults_sources=selector_defaults_sources,
+			validator=lambda value: _selector_value_is_compatible(
+				field_name="selector_model",
+				provider=resolved_selector_provider,
+				value=value,
+			),
 		),
 		api_key_env=_resolve_provider_bound_default(
 			explicit_value=selector_api_key_env,
 			field_name="selector_api_key_env",
 			provider=resolved_selector_provider,
 			defaults_sources=selector_defaults_sources,
+			validator=lambda value: _selector_value_is_compatible(
+				field_name="selector_api_key_env",
+				provider=resolved_selector_provider,
+				value=value,
+			),
 		),
 		base_url=_resolve_provider_bound_default(
 			explicit_value=selector_base_url,
@@ -531,9 +544,7 @@ def _resolve_runtime_defaults(
 				),
 			)
 			or (
-				"github_models_chat_completions"
-				if resolved_selector_provider == "copilot"
-				else "chat_completions"
+				None if resolved_selector_provider == "copilot" else "chat_completions"
 			),
 		),
 	)
@@ -549,12 +560,22 @@ def _resolve_runtime_defaults(
 			field_name="answer_model",
 			provider=resolved_answer_provider,
 			defaults_sources=answer_defaults_sources,
+			validator=lambda value: _answer_value_is_compatible(
+				field_name="answer_model",
+				provider=resolved_answer_provider,
+				value=value,
+			),
 		),
 		api_key_env=_resolve_provider_bound_default(
 			explicit_value=answer_api_key_env,
 			field_name="answer_api_key_env",
 			provider=resolved_answer_provider,
 			defaults_sources=answer_defaults_sources,
+			validator=lambda value: _answer_value_is_compatible(
+				field_name="answer_api_key_env",
+				provider=resolved_answer_provider,
+				value=value,
+			),
 		),
 		base_url=_resolve_provider_bound_default(
 			explicit_value=answer_base_url,
@@ -562,6 +583,7 @@ def _resolve_runtime_defaults(
 			provider=resolved_answer_provider,
 			defaults_sources=answer_defaults_sources,
 			validator=lambda value: _answer_value_is_compatible(
+				field_name="answer_base_url",
 				provider=resolved_answer_provider,
 				value=value,
 			),
@@ -590,13 +612,11 @@ def _infer_default_selector_provider(
 	selector_base_url: str | None,
 	selector_openai_api_mode: str | None,
 ) -> str:
-	if selector_openai_api_mode in {"responses", "azure_foundry_chat_completions"}:
+	if selector_openai_api_mode is not None:
 		return "openai"
 	if selector_base_url is not None:
-		text = selector_base_url.strip()
-		if text and "models.github.ai" not in text:
-			return "openai"
-	if selector_api_key_env is not None and selector_api_key_env != "GITHUB_TOKEN":
+		return "openai"
+	if selector_api_key_env is not None:
 		return "openai"
 	return "copilot"
 
@@ -671,7 +691,6 @@ def run_dataset_experiment(
 	selector_base_url = runtime_defaults.selector_base_url
 	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
 	assert selector_provider is not None
-	assert selector_openai_api_mode is not None
 	answer_provider = runtime_defaults.answer_provider
 	answer_model = runtime_defaults.answer_model
 	answer_api_key_env = runtime_defaults.answer_api_key_env
@@ -1023,7 +1042,6 @@ def run_hotpotqa_experiment(
 	selector_base_url = runtime_defaults.selector_base_url
 	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
 	assert selector_provider is not None
-	assert selector_openai_api_mode is not None
 	answer_provider = runtime_defaults.answer_provider
 	answer_model = runtime_defaults.answer_model
 	answer_api_key_env = runtime_defaults.answer_api_key_env
@@ -1341,7 +1359,6 @@ def run_store_experiment(
 	selector_base_url = runtime_defaults.selector_base_url
 	selector_openai_api_mode = runtime_defaults.selector_openai_api_mode
 	assert selector_provider is not None
-	assert selector_openai_api_mode is not None
 	answer_provider = runtime_defaults.answer_provider
 	answer_model = runtime_defaults.answer_model
 	answer_api_key_env = runtime_defaults.answer_api_key_env
@@ -2386,7 +2403,7 @@ def _build_runtime_config_payload(
 	selector_model: str | None,
 	selector_api_key_env: str | None,
 	selector_base_url: str | None,
-	selector_openai_api_mode: str,
+	selector_openai_api_mode: str | None,
 	mdr_home: str | Path | None,
 	mdr_artifact_manifest: str | Path | None,
 	sentence_transformer_model: str | None,
@@ -2800,7 +2817,7 @@ def _run_loaded_experiment(
 	selector_model: str | None,
 	selector_api_key_env: str | None,
 	selector_base_url: str | None,
-	selector_openai_api_mode: str,
+	selector_openai_api_mode: str | None,
 	mdr_home: str | Path | None,
 	mdr_artifact_manifest: str | Path | None,
 	sentence_transformer_model: str | None,
@@ -3492,7 +3509,9 @@ def _build_answerer(
 		base_url=answer_base_url,
 		cache_path=Path(answer_cache_path) if answer_cache_path is not None else None,
 	)
-	if not os.environ.get(cast(str, config.api_key_env)):
+	if config.provider != "copilot" and not os.environ.get(
+		cast(str, config.api_key_env)
+	):
 		raise ValueError(
 			f"Missing API key in environment variable {config.api_key_env}"
 		)

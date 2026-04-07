@@ -157,14 +157,14 @@ def test_resolve_runtime_defaults_falls_back_to_copilot_sdk_defaults(
 	)
 
 	assert resolved.selector_provider == "copilot"
-	assert resolved.selector_model == "openai/gpt-4.1-mini"
-	assert resolved.selector_api_key_env == "GITHUB_TOKEN"
-	assert resolved.selector_base_url == "https://models.github.ai/inference"
-	assert resolved.selector_openai_api_mode == "github_models_chat_completions"
+	assert resolved.selector_model == "gpt-4.1"
+	assert resolved.selector_api_key_env is None
+	assert resolved.selector_base_url is None
+	assert resolved.selector_openai_api_mode is None
 	assert resolved.answer_provider == "copilot"
-	assert resolved.answer_model == "openai/gpt-4.1-mini"
-	assert resolved.answer_api_key_env == "GITHUB_TOKEN"
-	assert resolved.answer_base_url == "https://models.github.ai/inference"
+	assert resolved.answer_model == "gpt-4.1"
+	assert resolved.answer_api_key_env is None
+	assert resolved.answer_base_url is None
 
 
 def test_resolve_runtime_defaults_drops_openai_transport_defaults_for_copilot(
@@ -192,10 +192,10 @@ base_url = "https://sc-vs-mcbi748j-southcentralus.cognitiveservices.azure.com"
 
 	resolved = _resolve_runtime_defaults(
 		selector_provider="copilot",
-		selector_model="openai/gpt-4.1-mini",
-		selector_api_key_env="GITHUB_TOKEN",
+		selector_model="gpt-4.1",
+		selector_api_key_env=None,
 		selector_base_url=None,
-		selector_openai_api_mode="github_models_chat_completions",
+		selector_openai_api_mode=None,
 		answer_provider="copilot",
 		answer_model=None,
 		answer_api_key_env=None,
@@ -205,14 +205,14 @@ base_url = "https://sc-vs-mcbi748j-southcentralus.cognitiveservices.azure.com"
 	)
 
 	assert resolved.selector_provider == "copilot"
-	assert resolved.selector_model == "openai/gpt-4.1-mini"
-	assert resolved.selector_api_key_env == "GITHUB_TOKEN"
-	assert resolved.selector_base_url == "https://models.github.ai/inference"
-	assert resolved.selector_openai_api_mode == "github_models_chat_completions"
+	assert resolved.selector_model == "gpt-4.1"
+	assert resolved.selector_api_key_env is None
+	assert resolved.selector_base_url is None
+	assert resolved.selector_openai_api_mode is None
 	assert resolved.answer_provider == "copilot"
-	assert resolved.answer_model == "openai/gpt-4.1-mini"
-	assert resolved.answer_api_key_env == "GITHUB_TOKEN"
-	assert resolved.answer_base_url == "https://models.github.ai/inference"
+	assert resolved.answer_model == "gpt-4.1"
+	assert resolved.answer_api_key_env is None
+	assert resolved.answer_base_url is None
 
 
 def test_resolve_runtime_defaults_rejects_missing_explicit_defaults_file(
@@ -290,13 +290,13 @@ def test_run_2wiki_experiment_rejects_conflicting_budget_inputs(
 		)
 
 
-def test_run_2wiki_experiment_fails_fast_for_missing_llm_key(
+def test_run_2wiki_experiment_fails_fast_for_missing_openai_llm_key(
 	two_wiki_files, tmp_path, monkeypatch
 ):
 	questions_path, graph_path = two_wiki_files
-	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+	monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-	with pytest.raises(ValueError, match="GITHUB_TOKEN"):
+	with pytest.raises(ValueError, match="OPENAI_API_KEY"):
 		run_2wiki_experiment(
 			questions_path=questions_path,
 			graph_records_path=graph_path,
@@ -306,6 +306,9 @@ def test_run_2wiki_experiment_fails_fast_for_missing_llm_key(
 			token_budgets=[128],
 			with_e2e=True,
 			answerer_mode="llm_fixed",
+			answer_provider="openai",
+			answer_model="gpt-4.1-mini",
+			answer_api_key_env="OPENAI_API_KEY",
 			export_graphrag_inputs=False,
 		)
 

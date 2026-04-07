@@ -292,14 +292,23 @@ def test_run_2wiki_cli_help_mentions_new_presets():
 	assert "avoids LLM selector" in result.stdout
 
 
-def test_run_2wiki_cli_rejects_paper_recommended_without_llm_config(
+def test_run_2wiki_cli_accepts_paper_recommended_without_llm_config(
 	two_wiki_files, tmp_path, monkeypatch
 ):
 	questions_path, graph_path = two_wiki_files
 	output_dir = tmp_path / "cli-paper-recommended"
 	runner = CliRunner()
-	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-	monkeypatch.chdir(tmp_path)
+	captured: dict[str, object] = {}
+
+	def _fake_run_2wiki_experiment(**kwargs):
+		captured.update(kwargs)
+		return [], ExperimentSummary(
+			dataset_name="2wikimultihop", total_cases=0, selector_budgets=[]
+		)
+
+	monkeypatch.setattr(
+		"hypercorpus_cli.experiments.run_2wiki_experiment", _fake_run_2wiki_experiment
+	)
 
 	result = runner.invoke(
 		app,
@@ -321,11 +330,8 @@ def test_run_2wiki_cli_rejects_paper_recommended_without_llm_config(
 		],
 	)
 
-	assert result.exit_code != 0
-	assert isinstance(result.exception, ValueError)
-	assert (
-		str(result.exception) == "Missing API key in environment variable GITHUB_TOKEN"
-	)
+	assert result.exit_code == 0, result.stdout
+	assert captured["selector_preset"] == "paper_recommended"
 
 
 def test_run_2wiki_cli_passes_explicit_selectors_alongside_selector_preset(

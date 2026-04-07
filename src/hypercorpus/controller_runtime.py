@@ -332,8 +332,8 @@ def build_controller_execution_result(
 			preferred_edge_id=None,
 			cards_by_edge_id=cards_by_edge_id,
 			visible_ids=visible_ids,
-		exclude=backup_exclude,
-	)
+			exclude=backup_exclude,
+		)
 	if not policy.allow_backtrack:
 		backup = None
 	trace.primary_edge_id = primary.edge_id if primary is not None else None
