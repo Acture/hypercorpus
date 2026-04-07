@@ -2601,6 +2601,7 @@ def _execute_selector_body(
 	checkpoint_store: CheckpointStore,
 	interrupt_controller: InterruptController,
 	resume_state: SelectionResumeState | None,
+	base_result_cache: dict[tuple[str, str], CorpusSelectionResult] | None = None,
 ) -> CorpusSelectionResult:
 	if isinstance(selector, BudgetFillSelector):
 		base_resume_payload = None
@@ -2619,6 +2620,7 @@ def _execute_selector_body(
 			fill_resume_payload = dict(resume_state.payload)
 
 		base_selector = selector.base_selector
+		base_cache_key = (item.case_id, base_selector.name)
 
 		def _base_checkpoint(payload: dict[str, Any]) -> None:
 			_save_selection_resume_state(
@@ -2635,6 +2637,8 @@ def _execute_selector_body(
 			base_result = corpus_selection_result_from_dict(
 				dict(fill_resume_payload["base_result"])
 			)
+		elif base_result_cache is not None and base_cache_key in base_result_cache:
+			base_result = base_result_cache[base_cache_key]
 		else:
 			base_result = _execute_selector_body_raw(
 				selector=base_selector,
@@ -2646,6 +2650,8 @@ def _execute_selector_body(
 				checkpoint_callback=_base_checkpoint,
 				stop_callback=interrupt_controller.checkpoint,
 			)
+			if base_result_cache is not None:
+				base_result_cache[base_cache_key] = base_result
 
 		def _budget_fill_checkpoint(payload: dict[str, Any]) -> None:
 			_save_selection_resume_state(
@@ -2665,6 +2671,12 @@ def _execute_selector_body(
 			stop_callback=interrupt_controller.checkpoint,
 		)
 
+	# Non-BudgetFill selectors (gold_support_context, full_corpus_upper_bound).
+	# These produce identical results regardless of budget — cache across budgets.
+	result_cache_key = (item.case_id, selector.name)
+	if base_result_cache is not None and result_cache_key in base_result_cache:
+		return base_result_cache[result_cache_key]
+
 	selection_body_resume = None
 	if resume_state is not None and resume_state.stage == SelectionStage.SELECTOR_BODY:
 		selection_body_resume = dict(resume_state.payload)
@@ -2677,7 +2689,7 @@ def _execute_selector_body(
 			payload=payload,
 		)
 
-	return _execute_selector_body_raw(
+	result = _execute_selector_body_raw(
 		selector=selector,
 		graph=graph,
 		case=case,
@@ -2687,6 +2699,9 @@ def _execute_selector_body(
 		checkpoint_callback=_checkpoint,
 		stop_callback=interrupt_controller.checkpoint,
 	)
+	if base_result_cache is not None:
+		base_result_cache[result_cache_key] = result
+	return result
 
 
 def _execute_selection(
@@ -2701,6 +2716,7 @@ def _execute_selection(
 	answerer: SupportsAnswer | None,
 	export_graphrag_inputs: bool,
 	output_dir: Path,
+	base_result_cache: dict[tuple[str, str], CorpusSelectionResult] | None = None,
 ) -> SelectionCheckpointBundle:
 	resume_state = checkpoint_store.load_resume_state(item.selection_key)
 
@@ -2723,6 +2739,7 @@ def _execute_selection(
 			checkpoint_store=checkpoint_store,
 			interrupt_controller=interrupt_controller,
 			resume_state=resume_state,
+			base_result_cache=base_result_cache,
 		)
 		selection = _selection_result_from_raw(
 			graph=graph, case=case, budget=budget, raw=raw_result
@@ -3111,9 +3128,14 @@ def _run_loaded_experiment(
 				summary=summary if summary.total_cases > 0 else None,
 			)
 
+			base_result_cache: dict[tuple[str, str], CorpusSelectionResult] = {}
+			current_cache_case_id: str | None = None
 			for item in plan_items:
 				if item.selection_key in completed_selection_keys:
 					continue
+				if item.case_id != current_cache_case_id:
+					base_result_cache.clear()
+					current_cache_case_id = item.case_id
 				case = case_by_id[item.case_id]
 				run_state.current_case_id = item.case_id
 				run_state.current_selection_key = item.selection_key
@@ -3159,6 +3181,7 @@ def _run_loaded_experiment(
 					answerer=answerer,
 					export_graphrag_inputs=export_graphrag_inputs,
 					output_dir=output_dir,
+					base_result_cache=base_result_cache,
 				)
 				completed_selection_keys.add(bundle.selection_key)
 				run_state.completed_selection_keys = _ordered_completed_selection_keys(
