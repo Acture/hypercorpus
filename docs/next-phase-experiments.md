@@ -4,7 +4,16 @@ Purpose: working sequencing note for active experiments.
 Canonical for: current sequencing, entry criteria, local recovery commands, and immediate next actions.
 Not for / See also: completed claim support lives in `phase-decisions.md`; implementation surface lives in `current-implementation.md`; stable framing lives in `paper-positioning.md`; live execution status and handoffs live in Linear; milestone-level conclusions live in Notion.
 
-Date: `2026-03-23`
+Date: `2026-04-07`
+
+### Codebase State
+
+Since the last update (2026-03-23), several implementation changes have landed:
+
+- Ranked-choice controller decisions (`b68148d`)
+- Copilot SDK as default provider (`6e91aab`, `e518a52`)
+- Adaptive hop surface for controller selectors (`cd63add`)
+- Pydantic-ai migration for OpenAI selector responses (`0346d05`)
 
 This document is the working experiment sequencing note. Keep completed, paper-facing decisions in `phase-decisions.md`. Do not use this file as a multi-worktree sync board. Keep run-level blocker state, owner changes, and handoff notes in Linear, not in repo-local status prose.
 
@@ -164,14 +173,37 @@ Immediate next actions:
 
 Execution order is fixed.
 
-### 0. IIRC Implementation Pre-Gate
+### 0. IIRC Implementation Pre-Gate — PASSED
 
-Before the paper-facing mainline begins, run a short implementation-validation gate on the current `copilot + ranked-choice` controller surface.
+~~Before the paper-facing mainline begins, run a short implementation-validation gate on the current `copilot + ranked-choice` controller surface.~~
 
-- rerun the 1-case `run-iirc-store` keycheck on the two current `hop_adaptive` controller selectors
-- then rerun the 3-case smoke on that same pair
-- then run a 20-case pilot on a fixed `case_ids_file`, comparing `dense`, `mdr_light`, and the two `hop_adaptive` selectors on the same selector-budget-ratio frame
-- only if this gate is clean enough should the 100-case sample-defining run below become the next execution step
+- ~~rerun the 1-case `run-iirc-store` keycheck on the two current `hop_adaptive` controller selectors~~ Done: `runs/iirc-hop-adaptive-keycheck-ranked-choice-v2`
+- ~~then rerun the 3-case smoke on that same pair~~ Done: `runs/iirc-controller-smoke-v5-light`
+- ~~then run a 20-case pilot on a fixed `case_ids_file`, comparing `dense`, `mdr_light`, and the two `hop_adaptive` selectors on the same selector-budget-ratio frame~~ Done: `runs/iirc-controller-pilot-v2` (openai/gpt-5.3-codex, ratio-controlled budgets, 20 cases)
+
+**Pre-gate conclusion:** the controller is operationally stable on the full-IIRC store with the openai/gpt-5.3-codex provider (0% fallback rate, 0% parse failure rate). The 100-case canonical surface is now the next execution step.
+
+### Current IIRC Controller Signal
+
+Source: `runs/iirc-controller-pilot-v2` vs `runs/iirc-dense-full-v1` chunk-00000 (same 20 cases, same case IDs from `runs/iirc-sample-s100-dense-v1`).
+
+| Selector | Budget | `support_f1_zero_on_empty` | `precision` | `recall` | `path_hit` | `EM` | `nodes` | `runtime` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `dense` (top-1, ST) | tokens-256 | 0.3867 | — | — | — | — | 1.1 | <1s |
+| `dense` (top-1, ST) | tokens-384 | 0.4033 | — | — | — | — | 1.5 | <1s |
+| `dense` (top-1, ST) | tokens-512 | 0.4076 | — | — | — | — | 1.8 | <1s |
+| `constrained_multipath + llm_controller` | ratio-0.01 | **0.4613** | 0.400 | 0.575 | 0.45 | 0.45 | 3.0 | 45s |
+| `constrained_multipath + llm_controller` | ratio-0.02 | **0.4756** | 0.417 | 0.588 | 0.45 | 0.45 | 3.0 | 43s |
+
+Caveats:
+
+- Only 20 cases — high variance expected
+- Different budget frames: ratio-controlled vs fixed-token (not directly apples-to-apples)
+- Controller uses ~26K LLM tokens/case and ~45s runtime
+- Budget utilization is <1% — controller stops early regardless of ratio, selecting exactly 3 nodes. This may indicate the controller is too conservative or that 3 nodes is genuinely sufficient for evidence recovery
+- `avg_start_hit = 0.5` — the seed retrieval misses the gold start node half the time, which limits the walk-based selector's ceiling
+
+Despite caveats, this is the first positive controller signal on full-IIRC and justifies proceeding to the 100-case canonical surface.
 
 ### 1. IIRC Sample-Defining Run
 
@@ -228,18 +260,13 @@ The first required questions on `IIRC` are:
 - does it save substantial selector-side time and selected-corpus mass relative to the `1.0` full-corpus reference
 - does precision collapse while recall rises
 
-## Conditional Branchy Lane On IIRC
+## Branchy Lane On IIRC — Promoted To Default
 
-Branchy search is no longer a default next step. It is conditional.
+The 20-case pilot signal promotes `constrained_multipath + llm_controller` from conditional to the default headline direction. The pilot shows F1 = 0.46 vs dense F1 = 0.41, a +0.05 absolute gain — larger than the 2Wiki calibration delta (+0.0175).
 
-Only add a branchy lane on `IIRC` if the controller-based `single_path` lane is still only slightly above the best repo-native baseline.
+The 100-case canonical surface (`iirc_selector_main`) will include the controller row alongside dense and mdr_light baselines on the same case IDs and ratio-controlled budgets.
 
-If triggered, run at most two candidates:
-
-- `constrained_multipath + llm_controller`
-- one diagnostic `beam` or `ucs` comparator only if needed
-
-This branchy lane is for method diagnosis, not the default headline path.
+If the 100-case surface does not replicate the pilot signal, fall back to the non-controller story (budget-aware selection framework + budget_fill contribution).
 
 ## HotpotQA Fullwiki Gate
 
@@ -319,3 +346,22 @@ The current adapters and normalized dataset format expect a graph plus per-case 
 - graph bundle ready
 - positive `IIRC` signal exists
 - otherwise `HotpotQA fullwiki` stays deferred
+
+## Immediate Next Step (as of 2026-04-07)
+
+1. **Run the 100-case canonical surface** using `iirc_selector_main` preset on `gcr-vm`. All shortlist selectors (dense, mdr_light, controller) on the same case IDs (`runs/iirc-sample-s100-dense-v1/chunks/chunk-00000/evaluated_case_ids.txt`) and ratio-controlled budgets (0.01, 0.02, 0.05, 0.10, 1.0).
+2. **MDR go/no-go decision due ~April 10.** If the 20-case pilot signal holds on 100 cases, the paper story is viable with `mdr_light` as the iterative retrieval baseline even without trained MDR. If MDR is dropped, update claims C5 and C11.
+3. **CIKM 2026 feasibility check ~April 15.** If the 100-case surface is not closed by then, CIKM 2026 (deadline 2026-05-25) becomes infeasible and the project falls to SIGIR 2027.
+
+## Execution Environment
+
+Available servers: `gcr-vm` (Azure VM, GPU), `devbox` (dev tunnel), `surface` (local).
+
+| Experiment | Where | Why |
+| --- | --- | --- |
+| 100-case controller surface (`iirc_selector_main`) | `gcr-vm` | Long-running (~45s/case, ~6 hours total), can run unattended |
+| Dense + mdr_light baselines (same 100-case surface) | `gcr-vm` or local | Fast (~seconds/case), CPU-only |
+| MDR training pipeline (if pursued) | `gcr-vm` | Needs GPU for training + indexing |
+| Doc updates, analysis, table generation | local Mac | Interactive work |
+
+Prerequisites for `gcr-vm`: rsync IIRC store + repo, set up `uv` env, export `OPENAI_API_KEY`.

@@ -5,8 +5,8 @@
 ### 1. Canonical full-IIRC selector table not yet landed (WS1/ACT-5)
 - Risk: the store is now landed under `dataset/iirc/store`, but the paper still has no canonical full-IIRC selector table until all shortlist selectors are rerun on that store under one ratio-controlled budget surface.
 - Impact: **blocks** Table 1 (main comparison), Table 2 (hard-subset), all IIRC analysis figures, and the main claim boundary decision.
-- Current state: partial store (5,184 articles) exists but is deprecated. The canonical full store is now `dataset/iirc/store` with 61,304 articles. Historical full-store fixed-token runs exist, but they are coarse-node diagnostics rather than the selector-budget main table.
-- Mitigation: WS1/ACT-5 should lock one ratio-controlled full-IIRC rerun surface and stop citing legacy `dataset/iirc_full/*` paths.
+- Current state (2026-04-07): a 20-case controller pilot (`runs/iirc-controller-pilot-v2`) has landed with positive signal — `constrained_multipath + llm_controller` (gpt-5.3-codex) at F1 = 0.46 vs dense F1 = 0.41 on the same 20 cases. The full 100-case canonical comparison surface remains the blocker. Historical full-store fixed-token runs exist but are coarse-node diagnostics only.
+- Mitigation: run the 100-case canonical surface (`iirc_selector_main`) with all shortlist selectors on ratio-controlled budgets. Target: `gcr-vm`.
 
 ### 2. Real MDR not yet runnable (WS1/ACT-5)
 - Risk: without a trained iterative retrieval baseline, the paper lacks a reviewer-acceptable external comparator. Claims C10 and C11 remain open.
@@ -15,16 +15,16 @@
 - Mitigation: CTRL gate 2 tracks completion. Do not freeze claim boundary until this is resolved.
 
 ### 3. Timing for submission windows
-- Risk: `SIGIR 2026` is already closed. `CIKM 2026` has abstract deadline 2026-05-18 and full paper deadline 2026-05-25. If full-IIRC + real MDR are not closed by ~2026-04-15, CIKM 2026 becomes infeasible, and the project falls to `SIGIR 2027` (likely ~2027-01).
-- Impact: 2-month delay reduces to ~3 weeks of writing time for CIKM 2026. Missing CIKM means a ~7-month wait for SIGIR 2027.
-- Mitigation: prioritize WS1/ACT-5 closure. Treat CIKM 2026 as the actionable deadline, not SIGIR 2027.
-- Source: `paper/venue-packaging.md` timing snapshot.
+- Risk: `SIGIR 2026` is closed. `CIKM 2026` has abstract deadline 2026-05-18 (41 days) and full paper deadline 2026-05-25 (48 days). If the 100-case canonical surface is not closed by ~2026-04-22, CIKM 2026 becomes infeasible.
+- Impact: missing CIKM means a ~7-month wait for SIGIR 2027 (likely ~2027-01).
+- Mitigation: MDR go/no-go decision due ~April 10. If MDR is dropped, the paper can proceed with `mdr_light` as the iterative baseline. The 20-case pilot signal (controller F1 = 0.46 vs dense 0.41) suggests the story is viable without trained MDR.
+- Source: `paper/venue-packaging.md` timing snapshot; updated 2026-04-07.
 
 ## Reviewer Risks
 
 ### 4. The story is still too narrow
 - Risk: the paper looks like a tuned operating point instead of a stable method.
-- Current state: 2Wiki calibration shows gains (+0.0175 F1) but the delta is small. The method needs to demonstrate larger gains on the harder IIRC surface to be convincing.
+- Current state (2026-04-07): the 20-case IIRC controller pilot shows +0.05 F1 over dense (0.46 vs 0.41), substantially larger than the 2Wiki calibration delta (+0.0175). If this holds on 100 cases, the "too narrow" risk is significantly reduced.
 - Mitigation:
   - Full-IIRC becomes the main harder-dataset surface.
   - `2Wiki` is reduced to calibration.
@@ -58,7 +58,7 @@
 
 ### 8. Claim strength depends on full-IIRC numbers
 - Risk: if gains on full-IIRC are smaller than on 2Wiki (or negative), the core claims weaken substantially.
-- Current signal: partial-IIRC chunk-00001 showed `constrained_multipath` beating dense at budgets 384/512. But partial store is deprecated and the sample is small (20 cases). On the historical 100-case non-controller full-IIRC coarse-node surface, `dense` still leads `mdr_light` and every `single_path_walk` variant at all fixed budgets.
+- Current signal (2026-04-07): the 20-case controller pilot (`runs/iirc-controller-pilot-v2`) shows F1 = 0.46 vs dense 0.41 — a +0.05 gain on the same 20 cases. This is the first positive controller signal on full-IIRC. The non-controller walk variants still lose to dense, so the controller is the sole viable headline method. The remaining risk is that the 20-case signal does not replicate on 100 cases.
 - Mitigation:
   - The 2Wiki calibration data shows the method is at least coherent.
   - The latest full-IIRC local runs do not yet invalidate the controller hypothesis; they only show that the current non-controller local/path variants are not enough on their own.
@@ -91,8 +91,8 @@
 - Do not begin prose writing before CTRL gate 4 (main claim boundary locked).
 
 ## Risk Priority Order
-1. **Canonical full-IIRC selector table** (blocks everything else) -- WS1/ACT-5
-2. **Real MDR pipeline closure** (blocks claim boundary) -- WS1/ACT-5
+1. **Canonical full-IIRC selector table** (blocks everything else; 20-case pilot landed with positive signal, 100-case surface remains) -- WS1/ACT-5
+2. **Real MDR pipeline closure** (blocks claim boundary; go/no-go decision due ~April 10) -- WS1/ACT-5
 3. **Timing for CIKM 2026** (hard deadline 2026-05-25) -- project-wide
 4. **Historical IIRC run-surface drift** (blocks a defensible main table) -- CTRL/ACT-9 + WS1/ACT-5
 5. **Claim strength on full-IIRC** (determines paper narrative) -- depends on 1 + 2

@@ -62,22 +62,22 @@ Two packages live under `src/`:
 - `.env` file holds API keys (never commit)
 - Git submodule: `baselines/mdr` — run `git submodule update --init` after clone
 
-## Current Phase: Paper Closure (Mar–Apr 2026)
+## Current Phase: Paper Closure (Mar–May 2026, targeting CIKM 2026-05-25)
 
-The project is in paper-closure mode, tracked in Linear (project: "Hypercorpus Paper Closure", ACT-5 through ACT-9). Five workstreams run in parallel:
+The project is in paper-closure mode, tracked in Linear (project: "Hypercorpus Paper Closure", ACT-5 through ACT-9). Current workstream status (2026-04-07):
 
-- **WS1** (ACT-5, High): Full-IIRC canonical store + real MDR export/train/index/run. Paper-facing IIRC tables at budgets 384 and 512.
-- **WS2** (ACT-7, Medium): Historical cleanup — complete 2Wiki retest, deprecate partial-IIRC results, clean docs.
-- **WS3** (ACT-6, High): Paper skeleton in `paper/` — outline, claim ledger, tables/figures plan, open risks.
-- **WS4** (ACT-8, Medium): Related work outline + SIGIR-default venue packaging.
-- **CTRL** (ACT-9, High): Integrator with 5 fixed gates: (1) Full-IIRC canonicalized, (2) Real MDR closed, (3) Paper-facing IIRC table locked, (4) Main claim boundary locked, (5) Draft writing starts.
+- **WS1** (ACT-5, High): Pre-gate passed. 20-case controller pilot landed with positive signal (F1 = 0.46 vs dense 0.41). Remaining: 100-case canonical surface on `gcr-vm` + MDR go/no-go decision (~April 10).
+- **WS2** (ACT-7, Done): Historical cleanup complete. 2Wiki retest merged, partial-IIRC deprecated.
+- **WS3** (ACT-6, In Progress): Paper skeleton landed. Sections 2-3 drafted. Sections 1, 4-9 blocked on IIRC table.
+- **WS4** (ACT-8, In Progress): Related work outline + venue packaging done. Prose expansion (C5/ACT-61) ready to write.
+- **CTRL** (ACT-9, In Progress): Gate 1 passed. Gates 2-5 blocked on 100-case surface + MDR decision.
 
 ### Phase constraints
 
-- No GraphRetriever or HippoRAG expansion before real MDR is closed.
+- No GraphRetriever or HippoRAG expansion before MDR decision is made.
 - No broad superiority claims before full-IIRC paper-facing table is locked.
 - No concurrent edits to main paper skeleton — hand off through Linear.
-- SIGIR is the default venue; KDD/WWW are packaging alternatives only.
+- CIKM 2026 is the target venue (abstract 2026-05-18, full paper 2026-05-25).
 
 ### Coordination
 

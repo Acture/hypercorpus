@@ -118,7 +118,7 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
 
 - `single_path_walk` variants start from a seed and expand over natural hyperlinks.
 - `link_context_*` scorers use anchor text and surrounding sentence context as the local decision unit.
-- `link_context_llm_controller` adds a zero-shot semantic controller that chooses actions (`stop`, `choose_one`, `choose_two`) rather than only emitting per-edge scores.
+- `link_context_llm_controller` adds a zero-shot semantic controller that chooses actions (`stop`, `choose_one`, `choose_two`) via ranked-choice decision selection (commit `b68148d`). The controller supports an adaptive hop surface (commit `cd63add`).
 - These are the current core selector family for the paper-facing story.
 
 ### Constrained Multi-Path Controller
@@ -126,6 +126,7 @@ The current repo is an offline research sandbox for selector-first subgraph/corp
 - `constrained_multipath` is a controller-guided branchy family with at most two live branches and one scout fork.
 - It is designed as a dense-anchored selector, not a general beam-search replacement.
 - It keeps branch count and backtracking explicitly bounded so precision collapse is measurable rather than hidden inside a broad search frontier.
+- The default LLM provider for selector and answerer calls is now the Copilot SDK (`github-copilot-sdk`, commits `6e91aab`, `e518a52`). The `openai` provider is also supported and was used for the IIRC controller pilot (`gpt-5.3-codex`).
 - `budget_pacing_stop` remains available only for fixed-token diagnostic runs; ratio-controlled selector-paper runs do not use it by default.
 
 ### Broad Search Variants

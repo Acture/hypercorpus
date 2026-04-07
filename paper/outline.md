@@ -131,6 +131,13 @@ For naturally linked corpora, a dense-started, budgeted selector can recover str
     - Best at tokens-384/512: `constrained_multipath` (LLM controller) F1 = 0.2850.
   - Source: `runs/iirc-controller-shortlist-v1/chunks/chunk-00001/summary.json`
   - **These numbers must not appear in the paper.** Full-IIRC will replace them.
+- **Preliminary full-IIRC controller signal (20-case pilot, not yet canonical):**
+  - On full store (61,304 articles), 20 cases, openai/gpt-5.3-codex, ratio-controlled budgets:
+    - ratio-0.01: `constrained_multipath + llm_controller` F1 = 0.4613, P = 0.400, R = 0.575
+    - ratio-0.02: F1 = 0.4756, P = 0.417, R = 0.588
+    - vs dense (same 20 cases): F1 = 0.4076 at tokens-512
+  - Source: `runs/iirc-controller-pilot-v2` vs `runs/iirc-dense-full-v1` chunk-00000
+  - **Directional only** until replicated on the 100-case canonical surface with dense and mdr_light baselines in the same run.
 
 ### 6. Analysis (~1 page)
 
@@ -197,5 +204,6 @@ For naturally linked corpora, a dense-started, budgeted selector can recover str
 | `runs/2wiki-baseline-retest-s100-v1` (2Wiki, 100 cases, budgets 128-512) | Complete | Calibration table, baseline ordering |
 | `runs/iirc-sample-s100-dense-v1` (IIRC partial, 100 cases) | Deprecated | Sample definition only |
 | `runs/iirc-controller-shortlist-v1` (IIRC partial, incomplete) | Deprecated | None -- must rerun on full store |
-| Full-IIRC canonical selector-table experiments | **Not started** | Table 1 (main), Analysis |
-| Real MDR export/train/index/run | **Not started** | Table 1 (main), Contributions |
+| `runs/iirc-controller-pilot-v2` (IIRC full, 20 cases, controller only) | **Complete (directional)** | Preliminary controller signal; needs 100-case replication |
+| Full-IIRC canonical selector-table experiments (100-case, all shortlist selectors) | **Not started** | Table 1 (main), Analysis |
+| Real MDR export/train/index/run | **Not started (go/no-go due ~April 10)** | Table 1 (main), Contributions |

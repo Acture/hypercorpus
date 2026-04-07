@@ -109,7 +109,7 @@ SIGIR is the default venue. KDD and WWW are packaging alternatives only.
 
 ## Timing and Deadlines
 
-### Current status (snapshot: 2026-03-23)
+### Current status (snapshot: 2026-04-07)
 
 | Venue | Cycle | Abstract | Full Paper | Notification | Conference |
 | --- | --- | --- | --- | --- | --- |
@@ -120,7 +120,7 @@ SIGIR is the default venue. KDD and WWW are packaging alternatives only.
 
 ### Actionable windows
 
-- **CIKM 2026** (CCF B) is the nearest realistic full-paper window. Abstract deadline: 2026-05-18. This gives approximately 8 weeks from today. Viable if full-IIRC + real MDR are closed by mid-April.
+- **CIKM 2026** (CCF B) is the nearest realistic full-paper window. Abstract deadline: 2026-05-18 (41 days). Full paper: 2026-05-25 (48 days). Viable if the 100-case canonical IIRC surface is closed by ~April 22. A 20-case controller pilot has landed with positive signal (F1 = 0.46 vs dense 0.41). MDR go/no-go decision due ~April 10.
 - **SIGIR 2027** (CCF A) is the primary target if the timeline allows. Based on past cycles, likely abstract deadline around 2027-01. This gives approximately 9-10 months.
 
 ### 2027 planning assumptions (not official deadlines)
