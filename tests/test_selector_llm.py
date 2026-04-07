@@ -28,6 +28,7 @@ from hypercorpus.selector_llm import (
 	LLMControllerStepScorer,
 	OpenAIBackendAdapter,
 	SelectorLLMConfig,
+	SelectorLLMFallbackError,
 	_controller_response_schema,
 	_controller_schema_instructions,
 	_controller_user_prompt,
@@ -1055,16 +1056,8 @@ def test_single_hop_selector_preserves_usage_on_response_failures(
 	)
 	budget = cast(RuntimeBudget, EvaluationBudget(token_budget_tokens=128))
 
-	result = selector.select(sample_graph, case, budget)
-
-	assert "cape" in result.selected_node_ids
-	assert result.selector_usage is not None
-	assert result.selector_usage.llm_calls == 2
-	assert result.selector_usage.total_tokens == 52
-	assert result.selector_usage.fallback_steps == 2
-	assert result.selector_logs[0].fallback_reason is not None
-	assert result.selector_logs[0].fallback_reason.startswith(expected_reason)
-	assert result.selector_logs[0].raw_response == '{"id":"mock-failure"}'
+	with pytest.raises(SelectorLLMFallbackError, match=expected_reason):
+		selector.select(sample_graph, case, budget)
 
 
 def test_controller_single_path_records_decision_and_backtrack(monkeypatch):
@@ -1217,7 +1210,7 @@ def test_controller_retries_schema_failure_then_succeeds(monkeypatch):
 	assert decision.visible_edge_ids == ["0", "1"]
 
 
-def test_controller_retries_three_times_then_falls_back(monkeypatch):
+def test_controller_retries_three_times_then_raises(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	graph = _build_bridge_graph()
 	backend = FakeTextSequenceBackend(
@@ -1247,22 +1240,15 @@ def test_controller_retries_three_times_then_falls_back(monkeypatch):
 		path_node_ids=["root"],
 		remaining_steps=2,
 	)
-	decision = controller.decide(
-		query="launch navigation root",
-		path_node_ids=["root"],
-		current_depth=1,
-		fallback_cards=fallback_cards,
-		exposure_plan=exposure_plan,
-		bundle=bundle,
-	)
-
-	assert backend.call_count == 3
-	assert decision.llm_attempts == 3
-	assert decision.total_tokens == 78
-	assert decision.prompt_tokens == 51
-	assert decision.completion_tokens == 27
-	assert decision.fallback_reason is not None
-	assert decision.fallback_reason.startswith("schema_error:")
+	with pytest.raises(SelectorLLMFallbackError, match="schema_error:"):
+		controller.decide(
+			query="launch navigation root",
+			path_node_ids=["root"],
+			current_depth=1,
+			fallback_cards=fallback_cards,
+			exposure_plan=exposure_plan,
+			bundle=bundle,
+		)
 
 
 def test_controller_retries_provider_rate_limit_then_succeeds(monkeypatch):
@@ -1381,7 +1367,7 @@ def test_llm_step_scorer_retries_provider_rate_limit_then_succeeds(
 	assert cards[0].prompt_tokens == 17
 
 
-def test_controller_openai_responses_schema_error_falls_back(monkeypatch):
+def test_controller_openai_responses_schema_error_raises(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	runner = FakeTypedResponsesRunner(
 		[
@@ -1418,18 +1404,17 @@ def test_controller_openai_responses_schema_error_falls_back(monkeypatch):
 		path_node_ids=["root"],
 		remaining_steps=2,
 	)
-	decision = controller.decide(
-		query="launch navigation root",
-		path_node_ids=["root"],
-		current_depth=1,
-		fallback_cards=fallback_cards,
-		exposure_plan=exposure_plan,
-		bundle=bundle,
-	)
-
-	assert runner.call_count == 1
-	assert decision.fallback_reason == "schema_error:missing_candidates_list"
-	assert decision.llm_attempts == 1
+	with pytest.raises(
+		SelectorLLMFallbackError, match="schema_error:missing_candidates_list"
+	):
+		controller.decide(
+			query="launch navigation root",
+			path_node_ids=["root"],
+			current_depth=1,
+			fallback_cards=fallback_cards,
+			exposure_plan=exposure_plan,
+			bundle=bundle,
+		)
 
 
 def test_controller_openai_responses_retries_provider_rate_limit_then_succeeds(
@@ -1813,8 +1798,8 @@ def test_lexical_controller_selector_does_not_require_embedder(monkeypatch):
 	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 	backend = FakeBackend(
 		_controller_payload(
-			"edge_1",
-			runner_up="edge_0",
+			"edge_0",
+			runner_up="stop",
 			state="need_bridge",
 			reason="Follow the bridge page.",
 		)

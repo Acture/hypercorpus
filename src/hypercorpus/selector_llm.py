@@ -325,6 +325,14 @@ class SelectorLLMResponseError(ValueError):
 		return self.kind
 
 
+class SelectorLLMFallbackError(RuntimeError):
+	"""Raised instead of silently falling back to the overlap scorer."""
+
+	def __init__(self, fallback_reason: str):
+		self.fallback_reason = fallback_reason
+		super().__init__(f"LLM selector failed (fail-fast): {fallback_reason}")
+
+
 class BackendAdapter(Protocol):
 	def complete_json(
 		self,
@@ -1617,6 +1625,8 @@ class LLMController:
 		cache_hit: bool | None = None,
 		llm_attempts: int = 1,
 	) -> ControllerDecision:
+		if fallback_reason != "empty_candidates":
+			raise SelectorLLMFallbackError(fallback_reason)
 		candidates = _visible_controller_candidates(
 			fallback_cards=fallback_cards,
 			exposure_plan=exposure_plan,
@@ -2055,27 +2065,7 @@ def _cards_with_fallback(
 	total_tokens: int | None = None,
 	cache_hit: bool | None = None,
 ) -> list[StepScoreCard]:
-	return [
-		StepScoreCard(
-			edge_id=card.edge_id,
-			total_score=card.total_score,
-			subscores=dict(card.subscores),
-			rationale=card.rationale,
-			text=text,
-			backend="overlap",
-			provider=provider,
-			model=model,
-			latency_s=latency_s,
-			prompt_tokens=prompt_tokens,
-			completion_tokens=completion_tokens,
-			total_tokens=total_tokens,
-			cache_hit=cache_hit,
-			fallback_reason=fallback_reason,
-			best_next_edge_id=card.best_next_edge_id,
-			raw_response=raw_response,
-		)
-		for card in cards
-	]
+	raise SelectorLLMFallbackError(fallback_reason)
 
 
 def _controller_candidate_from_card(
