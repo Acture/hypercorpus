@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import csv
+from datetime import UTC, datetime
 import json
 import logging
 import os
+import signal
 import shutil
+from time import monotonic
 import tomllib
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, Sequence, cast
+from typing import Any, Callable, Iterator, Literal, Sequence, cast
 
 from hypercorpus.answering import (
 	Answerer,
@@ -95,6 +99,13 @@ from hypercorpus.walker import walk_step_log_from_dict
 
 logger = logging.getLogger(__name__)
 
+_SELECTION_HEARTBEAT_INTERVAL_ENV = "HYPERCORPUS_SELECTION_HEARTBEAT_INTERVAL_S"
+_SELECTION_STAGE_TIMEOUT_ENV = "HYPERCORPUS_SELECTION_STAGE_TIMEOUT_S"
+_BUDGET_FILL_TIMEOUT_ENV = "HYPERCORPUS_BUDGET_FILL_TIMEOUT_S"
+_DEFAULT_SELECTION_HEARTBEAT_INTERVAL_S = 30.0
+_DEFAULT_SELECTION_STAGE_TIMEOUT_S = 1800.0
+_DEFAULT_BUDGET_FILL_TIMEOUT_S = 600.0
+
 
 ExperimentPhase = Literal[
 	"loading",
@@ -169,6 +180,188 @@ class _ResolvedExperimentConfig:
 	budget_ratios: list[float] | None
 	study_preset: str | None
 	control_selector_name: str | None
+
+
+class SelectionStageTimeout(RuntimeError):
+	"""Raised when a single selection stage exceeds its allowed wall clock budget."""
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectionExecutionConfig:
+	heartbeat_interval_s: float | None
+	selection_stage_timeout_s: float | None
+	budget_fill_timeout_s: float | None
+
+
+def _utc_now_iso() -> str:
+	return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _read_optional_positive_float_env(
+	name: str, *, default: float | None
+) -> float | None:
+	raw = os.environ.get(name)
+	if raw is None:
+		return default
+	text = raw.strip()
+	if not text:
+		return default
+	value = float(text)
+	if value <= 0:
+		return None
+	return value
+
+
+def _load_selection_execution_config() -> _SelectionExecutionConfig:
+	return _SelectionExecutionConfig(
+		heartbeat_interval_s=_read_optional_positive_float_env(
+			_SELECTION_HEARTBEAT_INTERVAL_ENV,
+			default=_DEFAULT_SELECTION_HEARTBEAT_INTERVAL_S,
+		),
+		selection_stage_timeout_s=_read_optional_positive_float_env(
+			_SELECTION_STAGE_TIMEOUT_ENV,
+			default=_DEFAULT_SELECTION_STAGE_TIMEOUT_S,
+		),
+		budget_fill_timeout_s=_read_optional_positive_float_env(
+			_BUDGET_FILL_TIMEOUT_ENV,
+			default=_DEFAULT_BUDGET_FILL_TIMEOUT_S,
+		),
+	)
+
+
+def _timeout_for_stage(
+	config: _SelectionExecutionConfig, stage: SelectionStage
+) -> float | None:
+	if stage == SelectionStage.BUDGET_FILL:
+		return config.budget_fill_timeout_s
+	return config.selection_stage_timeout_s
+
+
+@contextmanager
+def _selection_stage_timeout(
+	*,
+	item: SelectionPlanItem,
+	stage: SelectionStage,
+	timeout_s: float | None,
+) -> Iterator[None]:
+	if timeout_s is None:
+		yield
+		return
+
+	def _raise_timeout(_signum: int, _frame: Any) -> None:
+		raise SelectionStageTimeout(
+			"Selection stage timed out after "
+			f"{timeout_s:.1f}s: case={item.case_id} "
+			f"selector={item.selector_name} budget={item.budget_label} "
+			f"stage={stage.value}"
+		)
+
+	previous_handler = signal.getsignal(signal.SIGALRM)
+	previous_delay, previous_interval = signal.setitimer(signal.ITIMER_REAL, 0.0)
+	signal.signal(signal.SIGALRM, _raise_timeout)
+	signal.setitimer(signal.ITIMER_REAL, timeout_s)
+	try:
+		yield
+	finally:
+		signal.setitimer(signal.ITIMER_REAL, 0.0)
+		signal.signal(signal.SIGALRM, previous_handler)
+		if previous_delay > 0 or previous_interval > 0:
+			signal.setitimer(signal.ITIMER_REAL, previous_delay, previous_interval)
+
+
+class _SelectionExecutionMonitor:
+	def __init__(
+		self,
+		*,
+		item: SelectionPlanItem,
+		checkpoint_store: CheckpointStore,
+		run_state: RunState,
+		heartbeat_interval_s: float | None,
+	):
+		self._item = item
+		self._checkpoint_store = checkpoint_store
+		self._run_state = run_state
+		self._heartbeat_interval_s = heartbeat_interval_s
+		self._stage_start_monotonic: float | None = None
+		self._last_heartbeat_monotonic: float | None = None
+
+	def start_stage(self, stage: SelectionStage, *, detail: str | None = None) -> None:
+		now = _utc_now_iso()
+		now_monotonic = monotonic()
+		self._stage_start_monotonic = now_monotonic
+		self._last_heartbeat_monotonic = now_monotonic
+		self._run_state.current_stage = stage.value
+		self._run_state.stage_started_at = now
+		self._run_state.last_heartbeat_at = now
+		self._checkpoint_store.save_run_state(self._run_state)
+		logger.info(
+			"Selection stage start case=%s selector=%s budget=%s stage=%s%s",
+			self._item.case_id,
+			self._item.selector_name,
+			self._item.budget_label,
+			stage.value,
+			f" detail={detail}" if detail is not None else "",
+		)
+
+	def heartbeat(self, *, detail: str | None = None, force: bool = False) -> None:
+		now_monotonic = monotonic()
+		if (
+			not force
+			and self._heartbeat_interval_s is not None
+			and self._last_heartbeat_monotonic is not None
+			and now_monotonic - self._last_heartbeat_monotonic
+			< self._heartbeat_interval_s
+		):
+			return
+		self._last_heartbeat_monotonic = now_monotonic
+		self._run_state.last_heartbeat_at = _utc_now_iso()
+		self._checkpoint_store.save_run_state(self._run_state)
+		elapsed_s = self.current_stage_elapsed_s()
+		logger.info(
+			"Selection heartbeat case=%s selector=%s budget=%s stage=%s elapsed_s=%.1f%s",
+			self._item.case_id,
+			self._item.selector_name,
+			self._item.budget_label,
+			self._run_state.current_stage,
+			elapsed_s,
+			f" detail={detail}" if detail is not None else "",
+		)
+
+	def finish_stage(self) -> None:
+		if self._run_state.current_stage is None:
+			return
+		logger.info(
+			"Selection stage done case=%s selector=%s budget=%s stage=%s elapsed_s=%.1f",
+			self._item.case_id,
+			self._item.selector_name,
+			self._item.budget_label,
+			self._run_state.current_stage,
+			self.current_stage_elapsed_s(),
+		)
+
+	def current_stage_elapsed_s(self) -> float:
+		if self._stage_start_monotonic is None:
+			return 0.0
+		return monotonic() - self._stage_start_monotonic
+
+	@contextmanager
+	def stage(
+		self,
+		stage: SelectionStage,
+		*,
+		timeout_s: float | None,
+		detail: str | None = None,
+	) -> Iterator[None]:
+		self.start_stage(stage, detail=detail)
+		try:
+			with _selection_stage_timeout(
+				item=self._item,
+				stage=stage,
+				timeout_s=timeout_s,
+			):
+				yield
+		finally:
+			self.finish_stage()
 
 
 _EXPERIMENT_DEFAULTS_FILENAME = ".hypercorpus-experiments.toml"
@@ -2537,6 +2730,25 @@ def _save_selection_resume_state(
 	)
 
 
+def _selection_checkpoint_detail(payload: dict[str, Any]) -> str | None:
+	detail_parts: list[str] = []
+	if "candidate_index" in payload:
+		detail_parts.append(f"candidate_index={int(payload['candidate_index'])}")
+	if "selected_node_ids" in payload:
+		detail_parts.append(
+			f"selected_nodes={len(payload.get('selected_node_ids', []))}"
+		)
+	if "token_cost_estimate" in payload:
+		detail_parts.append(
+			f"token_cost_estimate={int(payload['token_cost_estimate'])}"
+		)
+	if "trace" in payload:
+		detail_parts.append(f"trace_len={len(payload.get('trace', []))}")
+	if "base_resume_state" in payload:
+		detail_parts.append("substage=base_selector")
+	return " ".join(detail_parts) or None
+
+
 def _execute_selector_body_raw(
 	*,
 	selector: Any,
@@ -2601,8 +2813,16 @@ def _execute_selector_body(
 	checkpoint_store: CheckpointStore,
 	interrupt_controller: InterruptController,
 	resume_state: SelectionResumeState | None,
+	run_state: RunState,
+	execution_config: _SelectionExecutionConfig,
 	base_result_cache: dict[tuple[str, str], CorpusSelectionResult] | None = None,
 ) -> CorpusSelectionResult:
+	monitor = _SelectionExecutionMonitor(
+		item=item,
+		checkpoint_store=checkpoint_store,
+		run_state=run_state,
+		heartbeat_interval_s=execution_config.heartbeat_interval_s,
+	)
 	if isinstance(selector, BudgetFillSelector):
 		base_resume_payload = None
 		fill_resume_payload = None
@@ -2632,6 +2852,14 @@ def _execute_selector_body(
 					"base_resume_state": payload,
 				},
 			)
+			monitor.heartbeat(
+				detail=_selection_checkpoint_detail(
+					{
+						"base_resume_state": payload,
+						"trace": payload.get("trace", []),
+					}
+				)
+			)
 
 		if fill_resume_payload is not None:
 			base_result = corpus_selection_result_from_dict(
@@ -2640,16 +2868,22 @@ def _execute_selector_body(
 		elif base_result_cache is not None and base_cache_key in base_result_cache:
 			base_result = base_result_cache[base_cache_key]
 		else:
-			base_result = _execute_selector_body_raw(
-				selector=base_selector,
-				graph=graph,
-				case=case,
-				budget=budget,
-				family=_selection_family(base_selector),
-				resume_payload=base_resume_payload,
-				checkpoint_callback=_base_checkpoint,
-				stop_callback=interrupt_controller.checkpoint,
-			)
+			with monitor.stage(
+				SelectionStage.BASE_SELECTOR,
+				timeout_s=_timeout_for_stage(
+					execution_config, SelectionStage.BASE_SELECTOR
+				),
+			):
+				base_result = _execute_selector_body_raw(
+					selector=base_selector,
+					graph=graph,
+					case=case,
+					budget=budget,
+					family=_selection_family(base_selector),
+					resume_payload=base_resume_payload,
+					checkpoint_callback=_base_checkpoint,
+					stop_callback=interrupt_controller.checkpoint,
+				)
 			if base_result_cache is not None:
 				base_result_cache[base_cache_key] = base_result
 
@@ -2660,16 +2894,21 @@ def _execute_selector_body(
 				stage=SelectionStage.BUDGET_FILL,
 				payload=payload,
 			)
+			monitor.heartbeat(detail=_selection_checkpoint_detail(payload))
 
-		return selector.select(
-			graph,
-			case,
-			budget,
-			base_result=base_result,
-			resume_state=fill_resume_payload,
-			checkpoint_callback=_budget_fill_checkpoint,
-			stop_callback=interrupt_controller.checkpoint,
-		)
+		with monitor.stage(
+			SelectionStage.BUDGET_FILL,
+			timeout_s=_timeout_for_stage(execution_config, SelectionStage.BUDGET_FILL),
+		):
+			return selector.select(
+				graph,
+				case,
+				budget,
+				base_result=base_result,
+				resume_state=fill_resume_payload,
+				checkpoint_callback=_budget_fill_checkpoint,
+				stop_callback=interrupt_controller.checkpoint,
+			)
 
 	# Non-BudgetFill selectors (gold_support_context, full_corpus_upper_bound).
 	# These produce identical results regardless of budget — cache across budgets.
@@ -2688,17 +2927,22 @@ def _execute_selector_body(
 			stage=SelectionStage.SELECTOR_BODY,
 			payload=payload,
 		)
+		monitor.heartbeat(detail=_selection_checkpoint_detail(payload))
 
-	result = _execute_selector_body_raw(
-		selector=selector,
-		graph=graph,
-		case=case,
-		budget=budget,
-		family=item.selector_family,
-		resume_payload=selection_body_resume,
-		checkpoint_callback=_checkpoint,
-		stop_callback=interrupt_controller.checkpoint,
-	)
+	with monitor.stage(
+		SelectionStage.SELECTOR_BODY,
+		timeout_s=_timeout_for_stage(execution_config, SelectionStage.SELECTOR_BODY),
+	):
+		result = _execute_selector_body_raw(
+			selector=selector,
+			graph=graph,
+			case=case,
+			budget=budget,
+			family=item.selector_family,
+			resume_payload=selection_body_resume,
+			checkpoint_callback=_checkpoint,
+			stop_callback=interrupt_controller.checkpoint,
+		)
 	if base_result_cache is not None:
 		base_result_cache[result_cache_key] = result
 	return result
@@ -2713,11 +2957,19 @@ def _execute_selection(
 	budget: EvaluationBudget,
 	checkpoint_store: CheckpointStore,
 	interrupt_controller: InterruptController,
+	run_state: RunState,
+	execution_config: _SelectionExecutionConfig,
 	answerer: SupportsAnswer | None,
 	export_graphrag_inputs: bool,
 	output_dir: Path,
 	base_result_cache: dict[tuple[str, str], CorpusSelectionResult] | None = None,
 ) -> SelectionCheckpointBundle:
+	monitor = _SelectionExecutionMonitor(
+		item=item,
+		checkpoint_store=checkpoint_store,
+		run_state=run_state,
+		heartbeat_interval_s=execution_config.heartbeat_interval_s,
+	)
 	resume_state = checkpoint_store.load_resume_state(item.selection_key)
 
 	if resume_state is not None and resume_state.stage in {
@@ -2739,6 +2991,8 @@ def _execute_selection(
 			checkpoint_store=checkpoint_store,
 			interrupt_controller=interrupt_controller,
 			resume_state=resume_state,
+			run_state=run_state,
+			execution_config=execution_config,
 			base_result_cache=base_result_cache,
 		)
 		selection = _selection_result_from_raw(
@@ -2765,12 +3019,18 @@ def _execute_selection(
 		resume_state is not None
 		and resume_state.stage == SelectionStage.EXPORT_GRAPHRAG
 	):
-		selection.graphrag_input_path = _write_graphrag_input(
-			graph=graph,
-			case_id=current_case.case_id,
-			selection=selection,
-			output_dir=output_dir,
-		)
+		with monitor.stage(
+			SelectionStage.EXPORT_GRAPHRAG,
+			timeout_s=_timeout_for_stage(
+				execution_config, SelectionStage.EXPORT_GRAPHRAG
+			),
+		):
+			selection.graphrag_input_path = _write_graphrag_input(
+				graph=graph,
+				case_id=current_case.case_id,
+				selection=selection,
+				output_dir=output_dir,
+			)
 		next_stage = (
 			SelectionStage.E2E if answerer is not None else SelectionStage.FINAL_COMMIT
 		)
@@ -2786,13 +3046,17 @@ def _execute_selection(
 	if resume_state is not None and resume_state.stage == SelectionStage.E2E:
 		if answerer is None:
 			raise ValueError("Encountered e2e resume state without an answerer.")
-		selection.end_to_end = _run_end_to_end(
-			graph=graph,
-			case=current_case,
-			node_ids=selection.corpus.node_ids,
-			extractor=SubgraphExtractor(),
-			answerer=answerer,
-		)
+		with monitor.stage(
+			SelectionStage.E2E,
+			timeout_s=_timeout_for_stage(execution_config, SelectionStage.E2E),
+		):
+			selection.end_to_end = _run_end_to_end(
+				graph=graph,
+				case=current_case,
+				node_ids=selection.corpus.node_ids,
+				extractor=SubgraphExtractor(),
+				answerer=answerer,
+			)
 		_save_selection_resume_state(
 			checkpoint_store=checkpoint_store,
 			item=item,
@@ -2801,9 +3065,13 @@ def _execute_selection(
 		)
 		interrupt_controller.checkpoint()
 
-	bundle = _bundle_from_selection(current_case, selection)
-	checkpoint_store.save_selection_checkpoint(bundle)
-	checkpoint_store.remove_resume_state(item.selection_key)
+	with monitor.stage(
+		SelectionStage.FINAL_COMMIT,
+		timeout_s=_timeout_for_stage(execution_config, SelectionStage.FINAL_COMMIT),
+	):
+		bundle = _bundle_from_selection(current_case, selection)
+		checkpoint_store.save_selection_checkpoint(bundle)
+		checkpoint_store.remove_resume_state(item.selection_key)
 	return bundle
 
 
@@ -3090,6 +3358,8 @@ def _run_loaded_experiment(
 		try:
 			completed_selection_keys = set(checkpoint_store.list_selection_keys())
 			run_state.status = RunStatus.RUNNING
+			run_state.interrupted_reason = None
+			run_state.last_error = None
 			run_state.completed_selection_keys = _ordered_completed_selection_keys(
 				plan_items, completed_selection_keys
 			)
@@ -3116,6 +3386,13 @@ def _run_loaded_experiment(
 				completed_cases=0,
 			)
 			_warmup_selectors(selectors)
+			execution_config = _load_selection_execution_config()
+			logger.info(
+				"Selection execution config heartbeat_interval_s=%s selection_stage_timeout_s=%s budget_fill_timeout_s=%s",
+				execution_config.heartbeat_interval_s,
+				execution_config.selection_stage_timeout_s,
+				execution_config.budget_fill_timeout_s,
+			)
 
 			_notify_progress(
 				progress_observer,
@@ -3139,6 +3416,11 @@ def _run_loaded_experiment(
 				case = case_by_id[item.case_id]
 				run_state.current_case_id = item.case_id
 				run_state.current_selection_key = item.selection_key
+				run_state.current_selector_name = item.selector_name
+				run_state.current_budget_label = item.budget_label
+				run_state.current_stage = None
+				run_state.stage_started_at = None
+				run_state.last_heartbeat_at = None
 				checkpoint_store.save_run_state(run_state)
 				current_progress = _selection_progress_snapshot(
 					plan_items=plan_items,
@@ -3178,6 +3460,8 @@ def _run_loaded_experiment(
 					budget=budget_by_label[item.budget_label],
 					checkpoint_store=checkpoint_store,
 					interrupt_controller=interrupt_controller,
+					run_state=run_state,
+					execution_config=execution_config,
 					answerer=answerer,
 					export_graphrag_inputs=export_graphrag_inputs,
 					output_dir=output_dir,
@@ -3195,6 +3479,11 @@ def _run_loaded_experiment(
 				)
 				run_state.current_case_id = None
 				run_state.current_selection_key = None
+				run_state.current_selector_name = None
+				run_state.current_budget_label = None
+				run_state.current_stage = None
+				run_state.stage_started_at = None
+				run_state.last_heartbeat_at = None
 				checkpoint_store.save_run_state(run_state)
 				completed_progress = _selection_progress_snapshot(
 					plan_items=plan_items,
@@ -3264,6 +3553,11 @@ def _run_loaded_experiment(
 			run_state.status = RunStatus.COMPLETED
 			run_state.current_case_id = None
 			run_state.current_selection_key = None
+			run_state.current_selector_name = None
+			run_state.current_budget_label = None
+			run_state.current_stage = None
+			run_state.stage_started_at = None
+			run_state.last_heartbeat_at = None
 			run_state.interrupted_reason = None
 			run_state.last_error = None
 			run_state.completed_selection_keys = _ordered_completed_selection_keys(
@@ -3287,6 +3581,7 @@ def _run_loaded_experiment(
 			)
 			run_state.status = RunStatus.INTERRUPTED
 			run_state.interrupted_reason = "SIGINT"
+			run_state.last_error = None
 			checkpoint_store.save_run_state(run_state)
 			interrupted_item = (
 				plan_items_by_key.get(run_state.current_selection_key)
@@ -3329,6 +3624,7 @@ def _run_loaded_experiment(
 		except HardStopRequested:
 			run_state.status = RunStatus.INTERRUPTED
 			run_state.interrupted_reason = "SIGINT(force)"
+			run_state.last_error = None
 			checkpoint_store.save_run_state(run_state)
 			interrupted_item = (
 				plan_items_by_key.get(run_state.current_selection_key)

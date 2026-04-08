@@ -101,6 +101,11 @@ class RunState:
 	completed_case_ids: list[str] = field(default_factory=list)
 	current_case_id: str | None = None
 	current_selection_key: str | None = None
+	current_selector_name: str | None = None
+	current_budget_label: str | None = None
+	current_stage: str | None = None
+	stage_started_at: str | None = None
+	last_heartbeat_at: str | None = None
 	interrupted_reason: str | None = None
 	last_error: str | None = None
 	created_at: str = field(default_factory=_utcnow)
@@ -117,6 +122,11 @@ class RunState:
 			"completed_case_ids": list(self.completed_case_ids),
 			"current_case_id": self.current_case_id,
 			"current_selection_key": self.current_selection_key,
+			"current_selector_name": self.current_selector_name,
+			"current_budget_label": self.current_budget_label,
+			"current_stage": self.current_stage,
+			"stage_started_at": self.stage_started_at,
+			"last_heartbeat_at": self.last_heartbeat_at,
 			"interrupted_reason": self.interrupted_reason,
 			"last_error": self.last_error,
 			"created_at": self.created_at,
@@ -147,6 +157,21 @@ class RunState:
 			current_selection_key=None
 			if payload.get("current_selection_key") is None
 			else str(payload["current_selection_key"]),
+			current_selector_name=None
+			if payload.get("current_selector_name") is None
+			else str(payload["current_selector_name"]),
+			current_budget_label=None
+			if payload.get("current_budget_label") is None
+			else str(payload["current_budget_label"]),
+			current_stage=None
+			if payload.get("current_stage") is None
+			else str(payload["current_stage"]),
+			stage_started_at=None
+			if payload.get("stage_started_at") is None
+			else str(payload["stage_started_at"]),
+			last_heartbeat_at=None
+			if payload.get("last_heartbeat_at") is None
+			else str(payload["last_heartbeat_at"]),
 			interrupted_reason=None
 			if payload.get("interrupted_reason") is None
 			else str(payload["interrupted_reason"]),

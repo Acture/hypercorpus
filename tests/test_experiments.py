@@ -1,10 +1,12 @@
 import csv
 from dataclasses import asdict
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
+import hypercorpus.experiments as experiments_module
 from hypercorpus.experiments import (
 	_EXPERIMENT_DEFAULTS_FILE_ENV,
 	_resolve_runtime_defaults,
@@ -23,8 +25,9 @@ from hypercorpus.experiments import (
 	run_iirc_experiment,
 	run_2wiki_experiment,
 	run_2wiki_store_experiment,
+	SelectionStageTimeout,
 )
-from hypercorpus.resume import StopRequested
+from hypercorpus.resume import RunStatus, StopRequested
 from hypercorpus.eval import EvaluationBudget, ExperimentSummary, SelectorBudgetSummary
 from hypercorpus.reports import (
 	SUBSET_COMPARISON_FIELDNAMES,
@@ -311,6 +314,53 @@ def test_run_2wiki_experiment_fails_fast_for_missing_openai_llm_key(
 			answer_api_key_env="OPENAI_API_KEY",
 			export_graphrag_inputs=False,
 		)
+
+
+def test_run_2wiki_experiment_records_stage_on_selection_timeout(
+	two_wiki_files, tmp_path, monkeypatch
+):
+	questions_path, graph_path = two_wiki_files
+	output_dir = tmp_path / "selection-timeout"
+	inner_selector = build_selector(CANONICAL_DENSE)
+
+	class SlowSelector:
+		def __init__(self, inner: object):
+			self._inner = inner
+			self.name = getattr(inner, "name")
+
+		def select(self, graph, case, budget):
+			time.sleep(0.05)
+			return self._inner.select(graph, case, budget)
+
+	slow_selector = SlowSelector(inner_selector)
+	monkeypatch.setattr(
+		experiments_module,
+		"select_selectors",
+		lambda *args, **kwargs: [slow_selector],
+	)
+	monkeypatch.setenv("HYPERCORPUS_SELECTION_STAGE_TIMEOUT_S", "0.01")
+	monkeypatch.delenv("HYPERCORPUS_BUDGET_FILL_TIMEOUT_S", raising=False)
+
+	with pytest.raises(SelectionStageTimeout, match="stage=selector_body"):
+		run_2wiki_experiment(
+			questions_path=questions_path,
+			graph_records_path=graph_path,
+			output_dir=output_dir,
+			limit=1,
+			selector_names=[CANONICAL_DENSE],
+			token_budgets=[128],
+			with_e2e=False,
+			export_graphrag_inputs=False,
+		)
+
+	run_state = json.loads((output_dir / "run_state.json").read_text(encoding="utf-8"))
+	assert run_state["status"] == RunStatus.FAILED.value
+	assert run_state["current_selector_name"] == CANONICAL_DENSE
+	assert run_state["current_budget_label"] == "tokens-128"
+	assert run_state["current_stage"] == "selector_body"
+	assert run_state["stage_started_at"] is not None
+	assert run_state["last_heartbeat_at"] is not None
+	assert "SelectionStageTimeout" in run_state["last_error"]
 
 
 def test_run_2wiki_experiment_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
