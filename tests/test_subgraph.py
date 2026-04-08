@@ -105,14 +105,12 @@ def test_llm_answerer_defaults_to_copilot_sdk(sample_graph):
 			model: str,
 			system_prompt: str,
 			user_prompt: str,
-			temperature: float,
 			timeout_s: float = 120.0,
 		) -> CopilotSdkCompletion:
 			captured["request"] = {
 				"model": model,
 				"system_prompt": system_prompt,
 				"user_prompt": user_prompt,
-				"temperature": temperature,
 				"timeout_s": timeout_s,
 			}
 			return CopilotSdkCompletion(
@@ -139,7 +137,6 @@ def test_llm_answerer_defaults_to_copilot_sdk(sample_graph):
 		"Answer only from the supplied evidence context. "
 		'Return JSON with a single string field: {"answer": "..."}'
 	)
-	assert request["temperature"] == 0.0
 	assert request["timeout_s"] == 120.0
 	user_prompt = cast(str, request["user_prompt"])
 	assert "Question:\nWhich city hosts the launch site?" in user_prompt

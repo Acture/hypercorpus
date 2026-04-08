@@ -809,7 +809,6 @@ def test_copilot_backend_adapter_uses_sdk_runner():
 			model: str,
 			system_prompt: str,
 			user_prompt: str,
-			temperature: float,
 			timeout_s: float = 120.0,
 		) -> CopilotSdkCompletion:
 			self.calls.append(
@@ -817,7 +816,6 @@ def test_copilot_backend_adapter_uses_sdk_runner():
 					"model": model,
 					"system_prompt": system_prompt,
 					"user_prompt": user_prompt,
-					"temperature": temperature,
 					"timeout_s": timeout_s,
 				}
 			)
@@ -849,7 +847,6 @@ def test_copilot_backend_adapter_uses_sdk_runner():
 			"model": "gpt-5",
 			"system_prompt": "score candidates",
 			"user_prompt": "bundle",
-			"temperature": 0.0,
 			"timeout_s": 120.0,
 		}
 	]

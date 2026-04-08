@@ -327,7 +327,6 @@ class LLMAnswerer:
 					'Return JSON with a single string field: {"answer": "..."}'
 				),
 				user_prompt=f"Question:\n{query}\n\nEvidence context:\n{context}",
-				temperature=self.config.temperature,
 			)
 		api_key_env = self.config.api_key_env
 		assert api_key_env is not None

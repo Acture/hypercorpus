@@ -552,12 +552,12 @@ class CopilotBackendAdapter:
 		temperature: float,
 		response_schema: dict[str, Any] | None = None,
 	) -> BackendCompletion:
+		del temperature
 		del response_schema
 		completion = self._runner.complete(
 			model=model,
 			system_prompt=system_prompt,
 			user_prompt=user_prompt,
-			temperature=temperature,
 		)
 		return BackendCompletion(
 			text=completion.text,
