@@ -1,0 +1,5 @@
+# This directory is a Syncthing folder marker.
+# Do not delete.
+
+folderID: hypercorpus
+created: 2026-04-07T20:20:01+08:00

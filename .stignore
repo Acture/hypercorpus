@@ -1,0 +1,15 @@
+// Runtime artifacts (regenerate locally)
+.git
+.venv
+__pycache__
+*.pyc
+dist
+build
+*.egg-info
+~
+
+// OS / IDE
+.DS_Store
+.idea
+.vscode
+*.swp

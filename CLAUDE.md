@@ -48,11 +48,13 @@ Two packages live under `src/`:
 - **Protocol-based interfaces**: `SupportsAnswer`, `TextEmbedder`, `EmbeddedGraphLike`, `GraphLike` — duck-typed contracts over concrete inheritance.
 - **Budget as a first-class concept**: token budgets flow through selection, evaluation, and reporting. `EvaluationBudget` supports absolute and relative modes.
 - **Checkpoint/resume**: `RunState` and `InterruptController` in `resume.py` allow experiment resumption from partial runs.
+- **Fail-fast on LLM errors**: `SelectorLLMFallbackError` is raised instead of silently falling back to the overlap scorer. Provider retries with backoff are the only designed retry path.
+- **Budget-independent caching**: base selector results are cached per (case, selector) across budget ratios in `experiments.py`, avoiding redundant seed retrieval and walk computation.
 
 ### External integrations
 
 - **MDR baseline** via git submodule at `baselines/mdr` (fork of multihop_dense_retrieval). Wrapped by `baselines/mdr.py`.
-- **LLM providers**: Anthropic (Claude), OpenAI, Google Gemini — used for LLM-based selectors and answering.
+- **LLM providers**: Copilot SDK (default, via `github-copilot-sdk`), OpenAI, Anthropic, Google Gemini — used for LLM-based selectors and answering. Copilot model names must not use provider prefixes (e.g., `gpt-4.1` not `openai/gpt-4.1`).
 - **GraphRAG**: optional export of selection results for downstream GraphRAG processing.
 
 ## Build & Environment

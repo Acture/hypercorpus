@@ -1,3 +1,6 @@
 [submodule "baselines/mdr"]
 	path = baselines/mdr
 	url = git@github.com:Acture/multihop_dense_retrieval.git
+[submodule "paper"]
+	path = paper
+	url = git@github.com:Acture/hypercorpus_paper.git

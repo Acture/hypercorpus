@@ -4,13 +4,22 @@ import asyncio
 import atexit
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import threading
 from typing import Any, Protocol
 
 DEFAULT_COPILOT_MODEL = "gpt-4.1"
 GITHUB_MODELS_API_VERSION = "2022-11-28"
-_COPILOT_TIMEOUT_S = 120.0
+_COPILOT_TIMEOUT_S_DEFAULT = 120.0
+_COPILOT_TIMEOUT_ENV = "HYPERCORPUS_COPILOT_TIMEOUT_S"
+
+
+def _copilot_timeout_s() -> float:
+	raw = os.environ.get(_COPILOT_TIMEOUT_ENV)
+	if raw is not None:
+		return float(raw)
+	return _COPILOT_TIMEOUT_S_DEFAULT
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +39,7 @@ class SupportsCopilotSdkRunner(Protocol):
 		model: str,
 		system_prompt: str,
 		user_prompt: str,
-		timeout_s: float = _COPILOT_TIMEOUT_S,
+		timeout_s: float | None = None,
 	) -> CopilotSdkCompletion: ...
 
 	def validate_environment(self) -> None: ...
@@ -77,7 +86,7 @@ class CopilotSdkRunner:
 		model: str,
 		system_prompt: str,
 		user_prompt: str,
-		timeout_s: float = _COPILOT_TIMEOUT_S,
+		timeout_s: float | None = None,
 	) -> CopilotSdkCompletion:
 		resolved_model = validate_copilot_model_name(model)
 		with self._lock:
@@ -98,10 +107,11 @@ class CopilotSdkRunner:
 		model: str,
 		system_prompt: str,
 		user_prompt: str,
-		timeout_s: float,
+		timeout_s: float | None,
 	) -> CopilotSdkCompletion:
 		from copilot.types import PermissionHandler
 
+		resolved_timeout = timeout_s if timeout_s is not None else _copilot_timeout_s()
 		assert self._client is not None
 		session = await self._client.create_session(
 			model=model,
@@ -112,7 +122,7 @@ class CopilotSdkRunner:
 			on_permission_request=PermissionHandler.approve_all,
 		)
 		try:
-			response = await session.send_and_wait(user_prompt, timeout=timeout_s)
+			response = await session.send_and_wait(user_prompt, timeout=resolved_timeout)
 			if response is None:
 				raise RuntimeError("Copilot SDK returned no assistant message.")
 			data = response.data

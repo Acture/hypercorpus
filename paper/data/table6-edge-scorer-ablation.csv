@@ -1,7 +1,0 @@
-edge_scorer,profile,lookahead,support_f1,support_recall,support_precision
-ST embedding,st_future_heavy,2,0.39352525252525256,0.5575,0.3247142857142857
-ST embedding,st_balanced,2,0.38461255411255413,0.545,0.317547619047619
-ST embedding,st_direct_heavy,2,0.3561038961038961,0.505,0.293468253968254
-ST embedding,st_balanced,1,0.3536277056277056,0.5,0.2913015873015873
-Overlap (ctx),overlap_balanced,1,0.35199278499278497,0.5,0.289468253968254
-Anchor overlap,---,1,0.35099278499278497,0.5,0.2878015873015873
