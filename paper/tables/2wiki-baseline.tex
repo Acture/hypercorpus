@@ -4,26 +4,27 @@
 \begin{table}[t]
 \centering
 \caption{%
-  2WikiMultihopQA calibration summary (dev set, token budget = 256).
-  \textsc{Single-Path Walk} uses the \texttt{st\_future\_heavy} scorer profile with lookahead 2.
-  All selectors use sentence-transformer seeds (\texttt{multi-qa-MiniLM-L6-cos-v1})
-  and \texttt{budget\_fill\_relative\_drop}.%
+  \TwoWiki calibration summary (dev set, token budget = 256, $N{=}100$ for walk
+  and oracle, $N{=}88$ for baselines).
+  \selwalk uses the \stfuture scorer profile with lookahead~2.
+  All selectors use sentence-transformer seeds (\stmodel)
+  and \budgetfill.%
 }
 \label{tab:2wiki-calibration}
 \smallskip
 \begin{tabular}{@{}l c c c c@{}}
 \toprule
-\textbf{Selector} & \textbf{Supp.\ F1} & \textbf{Precision} & \textbf{Recall} & \textbf{Budget Util.} \\
+\textbf{Selector} & \textbf{$\Fempty$} & \textbf{P} & \textbf{R} & \textbf{Util.} \\
 \midrule
-\textsc{Oracle} & 1.000 & 1.000 & 1.000 & .944 \\
+\seloracle & 1.000 & 1.000 & 1.000 & .944 \\
 \midrule
-\textsc{Single-Path Walk} (ST, la2) & \textbf{.414} & .310 & \textbf{.730} & .971 \\
-\textsc{Dense} (top-1) & .386 & \textbf{.311} & .602 & .968 \\
-\textsc{Iter. Dense} (top-3) & .375 & .296 & .602 & .981 \\
-\textsc{MDR-Light} (top-3) & .367 & .287 & .602 & .980 \\
-\textsc{Dense} (top-3) & .369 & .289 & .602 & .980 \\
+\selwalk (ST, la2) & \textbf{.414} & .310 & \textbf{.730} & .971 \\
+\seldense (top-1) & .386 & \textbf{.311} & .602 & .968 \\
+\seliterdense (top-3) & .362 & .280 & .605 & .980 \\
+\selmdrlight (top-3) & .362 & .280 & .605 & .980 \\
+\seldense (top-3) & .369 & .289 & .602 & .980 \\
 \midrule
-\textsc{Full Corpus} & .005 & .002 & 1.000 & 404.7 \\
+\selfullcorpus & .005 & .002 & 1.000 & 404.7 \\
 \bottomrule
 \end{tabular}
 \end{table}
