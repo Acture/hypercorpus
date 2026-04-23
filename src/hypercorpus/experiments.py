@@ -2464,6 +2464,54 @@ def _bundle_from_selection(
 	)
 
 
+def _build_timeout_result_bundle(
+	*,
+	item: SelectionPlanItem,
+	case: EvaluationCase,
+	budget: EvaluationBudget,
+	timeout_exc: SelectionStageTimeout,
+	checkpoint_store: CheckpointStore,
+) -> SelectionCheckpointBundle:
+	"""Build a minimal checkpoint bundle for a timed-out selection and persist it."""
+	empty_selection = SelectionResult(
+		selector_name=item.selector_name,
+		budget=budget,
+		corpus=SelectedCorpus(
+			node_ids=[],
+			edge_contexts=[],
+			token_estimate=0,
+			root_node_ids=[],
+		),
+		metrics=SelectionMetrics(
+			budget_mode=budget.budget_mode,
+			budget_value=budget.budget_value,
+			budget_label=budget.budget_label,
+			token_budget_ratio=budget.token_budget_ratio,
+			token_budget_tokens=budget.token_budget_tokens,
+			budget_token_limit=0,
+			selection_runtime_s=0.0,
+			selected_nodes_count=0,
+			selected_token_estimate=0,
+			compression_ratio=0.0,
+			budget_adherence=True,
+			budget_utilization=0.0,
+			empty_selection=True,
+			support_f1=0.0,
+			support_f1_zero_on_empty=0.0,
+			support_precision=0.0,
+			support_recall=0.0,
+			support_set_em=0.0,
+		),
+		trace=[],
+		stop_reason="timeout",
+		selector_usage=SelectorUsage(),
+	)
+	bundle = _bundle_from_selection(case, empty_selection)
+	checkpoint_store.save_selection_checkpoint(bundle)
+	checkpoint_store.remove_resume_state(item.selection_key)
+	return bundle
+
+
 def _evaluations_from_checkpoint_bundles(
 	*,
 	plan_items: Sequence[SelectionPlanItem],
@@ -3469,21 +3517,37 @@ def _run_loaded_experiment(
 				case_graph = (
 					graph_for_case(case) if graph_for_case is not None else graph
 				)
-				bundle = _execute_selection(
-					item=item,
-					selector=selector_by_name[item.selector_name],
-					graph=case_graph,
-					case=case,
-					budget=budget_by_label[item.budget_label],
-					checkpoint_store=checkpoint_store,
-					interrupt_controller=interrupt_controller,
-					run_state=run_state,
-					execution_config=execution_config,
-					answerer=answerer,
-					export_graphrag_inputs=export_graphrag_inputs,
-					output_dir=output_dir,
-					base_result_cache=base_result_cache,
-				)
+				try:
+					bundle = _execute_selection(
+						item=item,
+						selector=selector_by_name[item.selector_name],
+						graph=case_graph,
+						case=case,
+						budget=budget_by_label[item.budget_label],
+						checkpoint_store=checkpoint_store,
+						interrupt_controller=interrupt_controller,
+						run_state=run_state,
+						execution_config=execution_config,
+						answerer=answerer,
+						export_graphrag_inputs=export_graphrag_inputs,
+						output_dir=output_dir,
+						base_result_cache=base_result_cache,
+					)
+				except SelectionStageTimeout as timeout_exc:
+					logger.warning(
+						"Selection timed out, skipping: case=%s selector=%s budget=%s — %s",
+						item.case_id,
+						item.selector_name,
+						item.budget_label,
+						timeout_exc,
+					)
+					bundle = _build_timeout_result_bundle(
+						item=item,
+						case=case,
+						budget=budget_by_label[item.budget_label],
+						timeout_exc=timeout_exc,
+						checkpoint_store=checkpoint_store,
+					)
 				completed_selection_keys.add(bundle.selection_key)
 				run_state.completed_selection_keys = _ordered_completed_selection_keys(
 					plan_items, completed_selection_keys

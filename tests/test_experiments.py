@@ -25,7 +25,6 @@ from hypercorpus.experiments import (
 	run_iirc_experiment,
 	run_2wiki_experiment,
 	run_2wiki_store_experiment,
-	SelectionStageTimeout,
 )
 from hypercorpus.resume import RunStatus, StopRequested
 from hypercorpus.eval import EvaluationBudget, ExperimentSummary, SelectorBudgetSummary
@@ -341,26 +340,27 @@ def test_run_2wiki_experiment_records_stage_on_selection_timeout(
 	monkeypatch.setenv("HYPERCORPUS_SELECTION_STAGE_TIMEOUT_S", "0.01")
 	monkeypatch.delenv("HYPERCORPUS_BUDGET_FILL_TIMEOUT_S", raising=False)
 
-	with pytest.raises(SelectionStageTimeout, match="stage=selector_body"):
-		run_2wiki_experiment(
-			questions_path=questions_path,
-			graph_records_path=graph_path,
-			output_dir=output_dir,
-			limit=1,
-			selector_names=[CANONICAL_DENSE],
-			token_budgets=[128],
-			with_e2e=False,
-			export_graphrag_inputs=False,
-		)
+	run_2wiki_experiment(
+		questions_path=questions_path,
+		graph_records_path=graph_path,
+		output_dir=output_dir,
+		limit=1,
+		selector_names=[CANONICAL_DENSE],
+		token_budgets=[128],
+		with_e2e=False,
+		export_graphrag_inputs=False,
+	)
 
 	run_state = json.loads((output_dir / "run_state.json").read_text(encoding="utf-8"))
-	assert run_state["status"] == RunStatus.FAILED.value
-	assert run_state["current_selector_name"] == CANONICAL_DENSE
-	assert run_state["current_budget_label"] == "tokens-128"
-	assert run_state["current_stage"] == "selector_body"
-	assert run_state["stage_started_at"] is not None
-	assert run_state["last_heartbeat_at"] is not None
-	assert "SelectionStageTimeout" in run_state["last_error"]
+	assert run_state["status"] == RunStatus.COMPLETED.value
+	assert run_state["last_error"] is None
+
+	results_path = output_dir / "results.jsonl"
+	assert results_path.exists()
+	records = [json.loads(line) for line in results_path.read_text().splitlines() if line.strip()]
+	assert len(records) == 1
+	assert records[0]["selection"]["stop_reason"] == "timeout"
+	assert records[0]["selection"]["metrics"]["empty_selection"] is True
 
 
 def test_run_2wiki_experiment_rejects_legacy_selector_ids(two_wiki_files, tmp_path):
