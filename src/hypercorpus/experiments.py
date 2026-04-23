@@ -37,6 +37,7 @@ from hypercorpus.datasets.iirc import IIRCAdapter
 from hypercorpus.datasets.musique import MuSiQueAdapter
 from hypercorpus.datasets.store import ShardedDocumentStore
 from hypercorpus.datasets.twowiki import TwoWikiAdapter
+from hypercorpus.graph import LinkContextMaskMode
 from hypercorpus.eval import (
 	DEFAULT_BUDGET_RATIOS,
 	DEFAULT_TOKEN_BUDGETS,
@@ -1506,8 +1507,14 @@ def run_store_experiment(
 	progress_observer: ExperimentProgressObserver | None = None,
 	resume: bool = False,
 	restart: bool = False,
+	link_context_mask: str | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
-	store = ShardedDocumentStore(store_uri, cache_dir=cache_dir)
+	mask_mode = (
+		LinkContextMaskMode(link_context_mask)
+		if link_context_mask
+		else LinkContextMaskMode.NONE
+	)
+	store = ShardedDocumentStore(store_uri, cache_dir=cache_dir, mask_mode=mask_mode)
 	resolved_dataset_name = dataset_label or store.manifest.dataset_name
 	_notify_progress(
 		progress_observer,
@@ -1698,6 +1705,7 @@ def run_2wiki_store_experiment(
 	progress_observer: ExperimentProgressObserver | None = None,
 	resume: bool = False,
 	restart: bool = False,
+	link_context_mask: str | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
 	return run_store_experiment(
 		store_uri=store_uri,
@@ -1739,6 +1747,7 @@ def run_2wiki_store_experiment(
 		progress_observer=progress_observer,
 		resume=resume,
 		restart=restart,
+		link_context_mask=link_context_mask,
 	)
 
 

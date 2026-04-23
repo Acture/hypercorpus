@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 import re
 from typing import Any, Iterable, Sequence
 
@@ -35,6 +36,49 @@ class LinkContext:
 	metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class LinkContextMaskMode(str, Enum):
+	"""Controls which link-context fields are masked for ablation."""
+
+	NONE = "none"
+	MASK_ANCHOR = "mask_anchor"
+	MASK_SENTENCE = "mask_sentence"
+	MASK_BOTH = "mask_both"
+
+
+def mask_link_context(link: LinkContext, mode: LinkContextMaskMode) -> LinkContext:
+	"""Return a copy of the link with fields masked according to mode."""
+	if mode == LinkContextMaskMode.NONE:
+		return link
+	anchor = (
+		"[LINK]"
+		if mode in (LinkContextMaskMode.MASK_ANCHOR, LinkContextMaskMode.MASK_BOTH)
+		else link.anchor_text
+	)
+	sentence = (
+		"[CONTEXT]"
+		if mode in (LinkContextMaskMode.MASK_SENTENCE, LinkContextMaskMode.MASK_BOTH)
+		else link.sentence
+	)
+	return LinkContext(
+		source=link.source,
+		target=link.target,
+		anchor_text=anchor,
+		sentence=sentence,
+		sent_idx=link.sent_idx,
+		ref_id=link.ref_id,
+		metadata=link.metadata,
+	)
+
+
+def mask_link_contexts(
+	links: list[LinkContext], mode: LinkContextMaskMode
+) -> list[LinkContext]:
+	"""Apply masking to a list of links."""
+	if mode == LinkContextMaskMode.NONE:
+		return links
+	return [mask_link_context(link, mode) for link in links]
+
+
 @dataclass(slots=True)
 class NormalizedLinkRecord:
 	target: str
@@ -65,6 +109,8 @@ class LinkContextGraph(EmbeddedGraphLike[str]):
 		self,
 		documents: Iterable[DocumentNode] | None = None,
 		links: Iterable[LinkContext] | None = None,
+		*,
+		mask_mode: LinkContextMaskMode = LinkContextMaskMode.NONE,
 	):
 		self.documents: dict[str, DocumentNode] = {}
 		self.adj: dict[str, list[str]] = {}
@@ -74,6 +120,7 @@ class LinkContextGraph(EmbeddedGraphLike[str]):
 		self._links_by_edge: dict[tuple[str, str], list[LinkContext]] = defaultdict(
 			list
 		)
+		self.mask_mode = mask_mode
 
 		for document in documents or ():
 			self.add_document(document)
@@ -128,10 +175,12 @@ class LinkContextGraph(EmbeddedGraphLike[str]):
 		return list(self.adj.get(u, ()))
 
 	def links_from(self, source: str) -> list[LinkContext]:
-		return list(self._links_by_source.get(source, ()))
+		links = list(self._links_by_source.get(source, ()))
+		return mask_link_contexts(links, self.mask_mode)
 
 	def links_between(self, source: str, target: str) -> list[LinkContext]:
-		return list(self._links_by_edge.get((source, target), ()))
+		links = list(self._links_by_edge.get((source, target), ()))
+		return mask_link_contexts(links, self.mask_mode)
 
 	def induced_subgraph(self, node_ids: Sequence[str]) -> "LinkContextGraph":
 		selected = set(node_ids)

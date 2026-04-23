@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Iterable, Iterator, Protocol, Sequence
 
-from hypercorpus.graph import DocumentNode, LinkContext
+from hypercorpus.graph import (
+	DocumentNode,
+	LinkContext,
+	LinkContextMaskMode,
+	mask_link_contexts,
+)
 from hypercorpus.logging import copy_stream_with_progress
 from hypercorpus.text import approx_token_count, normalized_token_overlap
 
@@ -272,8 +277,10 @@ class ShardedDocumentStore:
 		*,
 		cache_dir: str | Path | None = None,
 		object_store: ObjectStore | None = None,
+		mask_mode: LinkContextMaskMode = LinkContextMaskMode.NONE,
 	):
 		self.store = object_store or open_object_store(store_uri)
+		self.mask_mode = mask_mode
 		logger.info("Opening sharded dataset store from %s", self.store.uri)
 		manifest_path = self._ensure_metadata_file("manifest.json", cache_dir=cache_dir)
 		self.manifest = DatasetStoreManifest.from_dict(
@@ -361,7 +368,9 @@ class ShardedDocumentStore:
 
 	def links_from(self, source: str) -> list[LinkContext]:
 		if source in self._links_from_cache:
-			return list(self._links_from_cache[source])
+			return mask_link_contexts(
+				list(self._links_from_cache[source]), self.mask_mode
+			)
 		rows = self._connection.execute(
 			"""
             SELECT source, target, anchor_text, sentence, sent_idx, ref_id, ref_url
@@ -384,7 +393,7 @@ class ShardedDocumentStore:
 			for row in rows
 		]
 		self._links_from_cache[source] = links
-		return list(links)
+		return mask_link_contexts(list(links), self.mask_mode)
 
 	def links_between(self, source: str, target: str) -> list[LinkContext]:
 		return [link for link in self.links_from(source) if link.target == target]

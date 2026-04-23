@@ -261,6 +261,7 @@ class SelectorMetadata:
 	budget_fill_pool_k: int | None = None
 	budget_fill_score_floor: float | None = None
 	budget_fill_relative_drop_ratio: float | None = None
+	link_context_mask_mode: str | None = None
 
 
 @dataclass(slots=True)
@@ -427,6 +428,7 @@ def selector_metadata_to_dict(
 		"budget_fill_pool_k": metadata.budget_fill_pool_k,
 		"budget_fill_score_floor": metadata.budget_fill_score_floor,
 		"budget_fill_relative_drop_ratio": metadata.budget_fill_relative_drop_ratio,
+		"link_context_mask_mode": metadata.link_context_mask_mode,
 	}
 
 
@@ -495,6 +497,11 @@ def selector_metadata_from_dict(
 			None
 			if payload.get("budget_fill_relative_drop_ratio") is None
 			else float(payload["budget_fill_relative_drop_ratio"])
+		),
+		link_context_mask_mode=(
+			None
+			if payload.get("link_context_mask_mode") is None
+			else str(payload["link_context_mask_mode"])
 		),
 	)
 
@@ -708,6 +715,7 @@ class SelectorSpec:
 	budget_fill_pool_k: int | None = None
 	budget_fill_score_floor: float | None = None
 	budget_fill_relative_drop_ratio: float | None = None
+	link_context_mask_mode: str | None = None
 
 
 @dataclass(slots=True)

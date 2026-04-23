@@ -1336,6 +1336,11 @@ def run_2wiki_store(
 	restart: bool = typer.Option(
 		False, "--restart", help="Discard existing run artifacts and start over"
 	),
+	link_context_mask: str | None = typer.Option(
+		None,
+		"--link-context-mask",
+		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1383,6 +1388,7 @@ def run_2wiki_store(
 			progress_observer=progress_observer,
 			resume=resume,
 			restart=restart,
+			link_context_mask=link_context_mask,
 		),
 	)
 	_print_summary(console, summary)
@@ -1598,6 +1604,11 @@ def run_iirc_store(
 	restart: bool = typer.Option(
 		False, "--restart", help="Discard existing run artifacts and start over"
 	),
+	link_context_mask: str | None = typer.Option(
+		None,
+		"--link-context-mask",
+		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1652,6 +1663,7 @@ def run_iirc_store(
 			progress_observer=progress_observer,
 			resume=resume,
 			restart=restart,
+			link_context_mask=link_context_mask,
 		),
 	)
 
@@ -1825,6 +1837,11 @@ def run_musique_store(
 	restart: bool = typer.Option(
 		False, "--restart", help="Discard existing run artifacts and start over"
 	),
+	link_context_mask: str | None = typer.Option(
+		None,
+		"--link-context-mask",
+		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1879,6 +1896,7 @@ def run_musique_store(
 			progress_observer=progress_observer,
 			resume=resume,
 			restart=restart,
+			link_context_mask=link_context_mask,
 		),
 	)
 
@@ -2052,6 +2070,11 @@ def run_hotpotqa_store(
 	restart: bool = typer.Option(
 		False, "--restart", help="Discard existing run artifacts and start over"
 	),
+	link_context_mask: str | None = typer.Option(
+		None,
+		"--link-context-mask",
+		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -2106,6 +2129,7 @@ def run_hotpotqa_store(
 			progress_observer=progress_observer,
 			resume=resume,
 			restart=restart,
+			link_context_mask=link_context_mask,
 		),
 	)
 
