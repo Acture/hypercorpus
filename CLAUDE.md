@@ -64,11 +64,6 @@ Two packages live under `src/`:
 - `.env` file holds API keys (never commit)
 - Git submodule: `baselines/mdr` — run `git submodule update --init` after clone
 
-## Git Commit Preferences
-
-- **Do NOT** include `Co-authored-by:` trailers or any AI/Copilot attribution in commit messages.
-- Keep commits concise, imperative, one-line summary.
-
 ## Current Phase: Paper Closure (Mar–May 2026, targeting CIKM 2026-05-25)
 
 The project is in paper-closure mode, tracked in Linear (project: "Hypercorpus Paper Closure", ACT-5 through ACT-9). Current workstream status (2026-04-07):
