@@ -261,6 +261,7 @@ class SelectorMetadata:
 	budget_fill_pool_k: int | None = None
 	budget_fill_score_floor: float | None = None
 	budget_fill_relative_drop_ratio: float | None = None
+	walk_score_threshold: float | None = None
 	link_context_mask_mode: str | None = None
 
 
@@ -428,6 +429,7 @@ def selector_metadata_to_dict(
 		"budget_fill_pool_k": metadata.budget_fill_pool_k,
 		"budget_fill_score_floor": metadata.budget_fill_score_floor,
 		"budget_fill_relative_drop_ratio": metadata.budget_fill_relative_drop_ratio,
+		"walk_score_threshold": metadata.walk_score_threshold,
 		"link_context_mask_mode": metadata.link_context_mask_mode,
 	}
 
@@ -497,6 +499,11 @@ def selector_metadata_from_dict(
 			None
 			if payload.get("budget_fill_relative_drop_ratio") is None
 			else float(payload["budget_fill_relative_drop_ratio"])
+		),
+		walk_score_threshold=(
+			None
+			if payload.get("walk_score_threshold") is None
+			else float(payload["walk_score_threshold"])
 		),
 		link_context_mask_mode=(
 			None
@@ -715,6 +722,7 @@ class SelectorSpec:
 	budget_fill_pool_k: int | None = None
 	budget_fill_score_floor: float | None = None
 	budget_fill_relative_drop_ratio: float | None = None
+	walk_score_threshold: float | None = None
 	link_context_mask_mode: str | None = None
 
 
@@ -2329,7 +2337,7 @@ class CanonicalSinglePathSelector(_SentenceTransformerSupport):
 			start_nodes,
 			WalkBudget(
 				max_steps=_controller_runtime_max_steps(self.spec),
-				min_score=0.05,
+				min_score=self.spec.walk_score_threshold if self.spec.walk_score_threshold is not None else 0.05,
 				allow_revisit=False,
 			),
 			resume_state=resume_state,
@@ -2585,7 +2593,7 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 						),
 					)
 				)
-			if primary_card.total_score < 0.05:
+			if primary_card.total_score < (self.spec.walk_score_threshold if self.spec.walk_score_threshold is not None else 0.05):
 				if apply_controller_backtrack(
 					current_node_id=current,
 					steps=steps,
@@ -3488,6 +3496,8 @@ def build_selector(
 	| None = None,
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
+	budget_fill_ratio: float | None = None,
+	walk_score_threshold: float | None = None,
 ) -> CorpusSelector:
 	from hypercorpus.baselines.mdr import (
 		EXTERNAL_MDR_SELECTOR_NAME,
@@ -3505,6 +3515,10 @@ def build_selector(
 			mdr_home=mdr_home,
 		)
 	spec = parse_selector_spec(name)
+	if budget_fill_ratio is not None and spec.budget_fill_mode == "relative_drop":
+		spec = replace(spec, budget_fill_relative_drop_ratio=budget_fill_ratio)
+	if walk_score_threshold is not None:
+		spec = replace(spec, walk_score_threshold=walk_score_threshold)
 	llm_config = SelectorLLMConfig(
 		provider=cast(SelectorProvider, selector_provider),
 		model=selector_model,
@@ -3626,6 +3640,8 @@ def select_selectors(
 	| None = None,
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
+	budget_fill_ratio: float | None = None,
+	walk_score_threshold: float | None = None,
 ) -> list[CorpusSelector]:
 	selector_names = (
 		list(names)
@@ -3651,6 +3667,8 @@ def select_selectors(
 			sentence_transformer_embedder_factory=sentence_transformer_embedder_factory,
 			mdr_home=mdr_home,
 			mdr_artifact_manifest=mdr_artifact_manifest,
+			budget_fill_ratio=budget_fill_ratio,
+			walk_score_threshold=walk_score_threshold,
 		)
 		for name in selector_names
 	]
@@ -3950,6 +3968,7 @@ def _baseline_selector_metadata(
 		budget_fill_pool_k=spec.budget_fill_pool_k,
 		budget_fill_score_floor=spec.budget_fill_score_floor,
 		budget_fill_relative_drop_ratio=spec.budget_fill_relative_drop_ratio,
+		walk_score_threshold=spec.walk_score_threshold,
 	)
 
 
@@ -3996,6 +4015,11 @@ def _apply_selector_metadata(
 				spec.budget_fill_relative_drop_ratio
 				if spec.budget_fill_relative_drop_ratio is not None
 				else metadata.budget_fill_relative_drop_ratio
+			),
+			walk_score_threshold=(
+				spec.walk_score_threshold
+				if spec.walk_score_threshold is not None
+				else metadata.walk_score_threshold
 			),
 		)
 	result.selector_metadata = metadata

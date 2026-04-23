@@ -28,6 +28,7 @@ SUMMARY_REPORT_FIELDNAMES = [
 	"budget_fill_pool_k",
 	"budget_fill_score_floor",
 	"budget_fill_relative_drop_ratio",
+	"walk_score_threshold",
 	"budget_mode",
 	"budget_value",
 	"budget_label",
@@ -487,6 +488,7 @@ def _selector_spec_details(selector_name: str) -> dict[str, Any]:
 			"budget_fill_pool_k": None,
 			"budget_fill_score_floor": None,
 			"budget_fill_relative_drop_ratio": None,
+			"walk_score_threshold": None,
 		}
 	spec_dict = asdict(spec)
 	return {
@@ -503,6 +505,7 @@ def _selector_spec_details(selector_name: str) -> dict[str, Any]:
 		"budget_fill_pool_k": spec_dict["budget_fill_pool_k"],
 		"budget_fill_score_floor": spec_dict["budget_fill_score_floor"],
 		"budget_fill_relative_drop_ratio": spec_dict["budget_fill_relative_drop_ratio"],
+		"walk_score_threshold": spec_dict["walk_score_threshold"],
 	}
 
 

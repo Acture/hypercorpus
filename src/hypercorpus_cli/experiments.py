@@ -1341,6 +1341,16 @@ def run_2wiki_store(
 		"--link-context-mask",
 		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
 	),
+	budget_fill_ratio: float | None = typer.Option(
+		None,
+		"--budget-fill-ratio",
+		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
+	),
+	walk_score_threshold: float | None = typer.Option(
+		None,
+		"--walk-score-threshold",
+		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1389,6 +1399,8 @@ def run_2wiki_store(
 			resume=resume,
 			restart=restart,
 			link_context_mask=link_context_mask,
+			budget_fill_ratio=budget_fill_ratio,
+			walk_score_threshold=walk_score_threshold,
 		),
 	)
 	_print_summary(console, summary)
@@ -1609,6 +1621,16 @@ def run_iirc_store(
 		"--link-context-mask",
 		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
 	),
+	budget_fill_ratio: float | None = typer.Option(
+		None,
+		"--budget-fill-ratio",
+		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
+	),
+	walk_score_threshold: float | None = typer.Option(
+		None,
+		"--walk-score-threshold",
+		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1664,6 +1686,8 @@ def run_iirc_store(
 			resume=resume,
 			restart=restart,
 			link_context_mask=link_context_mask,
+			budget_fill_ratio=budget_fill_ratio,
+			walk_score_threshold=walk_score_threshold,
 		),
 	)
 
@@ -1842,6 +1866,16 @@ def run_musique_store(
 		"--link-context-mask",
 		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
 	),
+	budget_fill_ratio: float | None = typer.Option(
+		None,
+		"--budget-fill-ratio",
+		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
+	),
+	walk_score_threshold: float | None = typer.Option(
+		None,
+		"--walk-score-threshold",
+		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1897,6 +1931,8 @@ def run_musique_store(
 			resume=resume,
 			restart=restart,
 			link_context_mask=link_context_mask,
+			budget_fill_ratio=budget_fill_ratio,
+			walk_score_threshold=walk_score_threshold,
 		),
 	)
 
@@ -2075,6 +2111,16 @@ def run_hotpotqa_store(
 		"--link-context-mask",
 		help="Ablation mask mode: none, mask_anchor, mask_sentence, or mask_both",
 	),
+	budget_fill_ratio: float | None = typer.Option(
+		None,
+		"--budget-fill-ratio",
+		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
+	),
+	walk_score_threshold: float | None = typer.Option(
+		None,
+		"--walk-score-threshold",
+		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -2130,6 +2176,8 @@ def run_hotpotqa_store(
 			resume=resume,
 			restart=restart,
 			link_context_mask=link_context_mask,
+			budget_fill_ratio=budget_fill_ratio,
+			walk_score_threshold=walk_score_threshold,
 		),
 	)
 
