@@ -521,6 +521,11 @@ def run_iirc(
 		"--sentence-transformer-device",
 		help="Optional sentence-transformer device override, for example cpu or mps",
 	),
+	cross_encoder_model: str | None = typer.Option(
+		None,
+		"--cross-encoder-model",
+		help="Cross-encoder model for dense_rerank baseline (default: cross-encoder/ms-marco-MiniLM-L-12-v2)",
+	),
 	with_e2e: bool = typer.Option(
 		False, "--with-e2e/--no-e2e", help="Attach secondary end-to-end QA metrics"
 	),
@@ -591,6 +596,7 @@ def run_iirc(
 			sentence_transformer_model=sentence_transformer_model,
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
 			sentence_transformer_device=sentence_transformer_device,
+			cross_encoder_model=cross_encoder_model,
 			with_e2e=with_e2e,
 			answerer_mode=answerer,
 			answer_provider=answer_provider,

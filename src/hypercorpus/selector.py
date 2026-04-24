@@ -13,7 +13,10 @@ import time
 from typing import Any, Callable, Literal, Protocol, Sequence, cast
 
 from hypercorpus.embeddings import (
+	DEFAULT_CROSS_ENCODER_MODEL,
 	DEFAULT_SENTENCE_TRANSFORMER_MODEL,
+	CrossEncoderReranker,
+	CrossEncoderRerankerConfig,
 	SentenceTransformerEmbedder,
 	SentenceTransformerEmbedderConfig,
 	TextEmbedder,
@@ -65,6 +68,7 @@ SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
 BudgetFillMode = Literal["score_floor", "always", "relative_drop"]
 BaselineName = Literal[
 	"dense",
+	"dense_rerank",
 	"iterative_dense",
 	"mdr_light",
 	"topology_neighbors",
@@ -90,6 +94,7 @@ SelectorPresetName = Literal[
 _SEED_STRATEGIES: set[str] = {"sentence_transformer", "lexical_overlap"}
 _BASELINES: set[str] = {
 	"dense",
+	"dense_rerank",
 	"iterative_dense",
 	"mdr_light",
 	"topology_neighbors",
@@ -262,6 +267,7 @@ class SelectorMetadata:
 	budget_fill_score_floor: float | None = None
 	budget_fill_relative_drop_ratio: float | None = None
 	walk_score_threshold: float | None = None
+	rerank_model: str | None = None
 	link_context_mask_mode: str | None = None
 
 
@@ -723,6 +729,7 @@ class SelectorSpec:
 	budget_fill_score_floor: float | None = None
 	budget_fill_relative_drop_ratio: float | None = None
 	walk_score_threshold: float | None = None
+	rerank_pool_k: int | None = None
 	link_context_mask_mode: str | None = None
 
 
@@ -1699,6 +1706,154 @@ class CanonicalDenseSelector(_SentenceTransformerSupport):
 			),
 			selector_usage=SelectorUsage(runtime_s=runtime_s),
 			stop_reason="top_k_retrieval",
+		)
+
+
+_DENSE_RERANK_DEFAULT_POOL_K = 64
+
+
+class CanonicalDenseRerankSelector(_SentenceTransformerSupport):
+	"""Dense retrieval + cross-encoder reranking baseline."""
+
+	def __init__(
+		self,
+		spec: SelectorSpec,
+		*,
+		embedder_config: SentenceTransformerSelectorConfig | None = None,
+		embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder]
+		| None = None,
+		cross_encoder_config: CrossEncoderRerankerConfig | None = None,
+		cross_encoder_factory: Callable[[CrossEncoderRerankerConfig], CrossEncoderReranker]
+		| None = None,
+	):
+		super().__init__(
+			embedder_config=embedder_config, embedder_factory=embedder_factory
+		)
+		self.spec = spec
+		self.name = spec.canonical_name
+		self._cross_encoder_config = cross_encoder_config or CrossEncoderRerankerConfig()
+		self._cross_encoder_factory = cross_encoder_factory
+		self._reranker: CrossEncoderReranker | None = None
+
+	def _get_reranker(self) -> CrossEncoderReranker:
+		if self._reranker is None:
+			if self._cross_encoder_factory is not None:
+				self._reranker = self._cross_encoder_factory(self._cross_encoder_config)
+			else:
+				self._reranker = CrossEncoderReranker(self._cross_encoder_config)
+		return self._reranker
+
+	def select(
+		self,
+		graph: LinkContextGraph,
+		case: SelectionCase,
+		budget: RuntimeBudget,
+		*,
+		resume_state: dict[str, Any] | None = None,
+		checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+		stop_callback: Callable[[], None] | None = None,
+	) -> CorpusSelectionResult:
+		started_at = time.perf_counter()
+		pool_k = self.spec.rerank_pool_k or _DENSE_RERANK_DEFAULT_POOL_K
+		seed_candidates = _select_seed_candidates(
+			graph,
+			case.query,
+			pool_k,
+			seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+			embedder=_seed_embedder(self.spec, self._get_embedder),
+		)
+		if not seed_candidates:
+			runtime_s = time.perf_counter() - started_at
+			seed_backend, seed_model = _seed_backend_metadata(
+				self.spec, self._get_embedder
+			)
+			return _build_corpus_selection_result(
+				selector_name=self.name,
+				graph=graph,
+				query=case.query,
+				node_scores={},
+				link_scores={},
+				budget=SelectorBudget(
+					max_nodes=None,
+					max_hops=0,
+					max_tokens=_runtime_budget_token_limit(graph, budget),
+				),
+				strategy="dense_rerank",
+				mode=SelectionMode.STANDALONE,
+				debug_trace=["rerank:no_candidates"],
+				root_node_ids=[],
+				trace=[],
+				selector_metadata=_dense_rerank_metadata(
+					self.spec,
+					seed_backend=seed_backend,
+					seed_model=seed_model,
+					rerank_model=self._cross_encoder_config.model_name,
+				),
+				selector_usage=SelectorUsage(runtime_s=runtime_s),
+				stop_reason="dense_rerank_no_candidates",
+			)
+
+		reranker = self._get_reranker()
+		passages = [_node_text(graph, node_id) for node_id, _score in seed_candidates]
+		rerank_scores = reranker.score_pairs(case.query, passages)
+
+		reranked = sorted(
+			zip(seed_candidates, rerank_scores),
+			key=lambda item: item[1],
+			reverse=True,
+		)
+
+		node_scores = {
+			node_id: rerank_score
+			for (node_id, _orig_score), rerank_score in reranked
+		}
+		root_candidates = [
+			node_id
+			for (node_id, _orig_score), _rerank_score in reranked[
+				: (self.spec.seed_top_k or 1)
+			]
+		]
+		trace = [
+			SelectionTraceStep(
+				index=index,
+				node_id=node_id,
+				score=rerank_score,
+			)
+			for index, ((node_id, _orig_score), rerank_score) in enumerate(reranked)
+		]
+		debug_trace = [
+			f"rerank:{node_id}:{orig_score:.4f}->{rerank_score:.4f}"
+			for (node_id, orig_score), rerank_score in reranked
+		]
+
+		runtime_s = time.perf_counter() - started_at
+		seed_backend, seed_model = _seed_backend_metadata(
+			self.spec, self._get_embedder
+		)
+		return _build_corpus_selection_result(
+			selector_name=self.name,
+			graph=graph,
+			query=case.query,
+			node_scores=node_scores,
+			link_scores={},
+			budget=SelectorBudget(
+				max_nodes=None,
+				max_hops=0,
+				max_tokens=_runtime_budget_token_limit(graph, budget),
+			),
+			strategy="dense_rerank",
+			mode=SelectionMode.STANDALONE,
+			debug_trace=debug_trace,
+			root_node_ids=root_candidates,
+			trace=trace,
+			selector_metadata=_dense_rerank_metadata(
+				self.spec,
+				seed_backend=seed_backend,
+				seed_model=seed_model,
+				rerank_model=self._cross_encoder_config.model_name,
+			),
+			selector_usage=SelectorUsage(runtime_s=runtime_s),
+			stop_reason="dense_rerank",
 		)
 
 
@@ -3323,13 +3478,17 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 			raise ValueError(f"Unknown selector: {name}")
 		if baseline == "dense" and hop_budget != 0:
 			raise ValueError(f"Unknown selector: {name}")
+		if baseline == "dense_rerank" and hop_budget != 0:
+			raise ValueError(f"Unknown selector: {name}")
+		if baseline == "dense_rerank" and seed_strategy != "sentence_transformer":
+			raise ValueError(f"Unknown selector: {name}")
 		if baseline == "iterative_dense" and hop_budget < 1:
 			raise ValueError(f"Unknown selector: {name}")
 		if baseline == "mdr_light":
 			if seed_strategy != "sentence_transformer" or hop_budget < 1:
 				raise ValueError(f"Unknown selector: {name}")
 		if (
-			baseline not in {"dense", "iterative_dense", "mdr_light"}
+			baseline not in {"dense", "dense_rerank", "iterative_dense", "mdr_light"}
 			and hop_budget != 1
 		):
 			raise ValueError(f"Unknown selector: {name}")
@@ -3348,6 +3507,7 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 			budget_fill_relative_drop_ratio=0.5
 			if budget_fill_mode == "relative_drop"
 			else None,
+			rerank_pool_k=64 if baseline == "dense_rerank" else None,
 		)
 		_validate_profile_for_spec(spec, raw_name=name)
 		return spec
@@ -3425,6 +3585,8 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
 		if seed_strategy == "sentence_transformer":
 			names.extend(
 				[
+					f"top_1_seed__{seed_strategy}__hop_0__dense_rerank",
+					f"top_3_seed__{seed_strategy}__hop_0__dense_rerank",
 					f"top_1_seed__{seed_strategy}__hop_2__iterative_dense",
 					f"top_3_seed__{seed_strategy}__hop_2__iterative_dense",
 					f"top_1_seed__{seed_strategy}__hop_2__mdr_light",
@@ -3494,6 +3656,10 @@ def build_selector(
 		[SentenceTransformerEmbedderConfig], TextEmbedder
 	]
 	| None = None,
+	cross_encoder_model: str | None = None,
+	cross_encoder_device: str | None = None,
+	cross_encoder_factory: Callable[[CrossEncoderRerankerConfig], CrossEncoderReranker]
+	| None = None,
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
 	budget_fill_ratio: float | None = None,
@@ -3537,6 +3703,10 @@ def build_selector(
 		else Path(sentence_transformer_cache_path),
 		device=sentence_transformer_device,
 	)
+	cross_encoder_config = CrossEncoderRerankerConfig(
+		model_name=cross_encoder_model or DEFAULT_CROSS_ENCODER_MODEL,
+		device=cross_encoder_device or sentence_transformer_device,
+	)
 	if spec.family == "diagnostic":
 		if name == "gold_support_context":
 			return GoldSupportContextSelector()
@@ -3549,6 +3719,8 @@ def build_selector(
 		backend_factory=selector_backend_factory,
 		sentence_transformer_config=sentence_transformer_config,
 		sentence_transformer_embedder_factory=sentence_transformer_embedder_factory,
+		cross_encoder_config=cross_encoder_config,
+		cross_encoder_factory=cross_encoder_factory,
 	)
 	if spec.budget_fill_mode is None:
 		return selector
@@ -3570,6 +3742,9 @@ def _build_canonical_selector(
 		[SentenceTransformerEmbedderConfig], TextEmbedder
 	]
 	| None,
+	cross_encoder_config: CrossEncoderRerankerConfig | None = None,
+	cross_encoder_factory: Callable[[CrossEncoderRerankerConfig], CrossEncoderReranker]
+	| None = None,
 ) -> CorpusSelector:
 	if spec.family == "baseline":
 		if spec.baseline == "dense":
@@ -3577,6 +3752,14 @@ def _build_canonical_selector(
 				spec,
 				embedder_config=sentence_transformer_config,
 				embedder_factory=sentence_transformer_embedder_factory,
+			)
+		if spec.baseline == "dense_rerank":
+			return CanonicalDenseRerankSelector(
+				spec,
+				embedder_config=sentence_transformer_config,
+				embedder_factory=sentence_transformer_embedder_factory,
+				cross_encoder_config=cross_encoder_config,
+				cross_encoder_factory=cross_encoder_factory,
 			)
 		if spec.baseline == "iterative_dense":
 			return CanonicalIterativeDenseSelector(
@@ -3641,6 +3824,10 @@ def select_selectors(
 		[SentenceTransformerEmbedderConfig], TextEmbedder
 	]
 	| None = None,
+	cross_encoder_model: str | None = None,
+	cross_encoder_device: str | None = None,
+	cross_encoder_factory: Callable[[CrossEncoderRerankerConfig], CrossEncoderReranker]
+	| None = None,
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
 	budget_fill_ratio: float | None = None,
@@ -3669,6 +3856,9 @@ def select_selectors(
 			sentence_transformer_cache_path=sentence_transformer_cache_path,
 			sentence_transformer_device=sentence_transformer_device,
 			sentence_transformer_embedder_factory=sentence_transformer_embedder_factory,
+			cross_encoder_model=cross_encoder_model,
+			cross_encoder_device=cross_encoder_device,
+			cross_encoder_factory=cross_encoder_factory,
 			mdr_home=mdr_home,
 			mdr_artifact_manifest=mdr_artifact_manifest,
 			budget_fill_ratio=budget_fill_ratio,
@@ -3974,6 +4164,30 @@ def _baseline_selector_metadata(
 		budget_fill_score_floor=spec.budget_fill_score_floor,
 		budget_fill_relative_drop_ratio=spec.budget_fill_relative_drop_ratio,
 		walk_score_threshold=spec.walk_score_threshold,
+	)
+
+
+def _dense_rerank_metadata(
+	spec: SelectorSpec,
+	*,
+	seed_backend: str | None,
+	seed_model: str | None,
+	rerank_model: str | None,
+) -> SelectorMetadata:
+	return SelectorMetadata(
+		scorer_kind="baseline",
+		backend="dense_rerank",
+		profile_name=_resolved_profile_name(spec),
+		seed_strategy=spec.seed_strategy,
+		seed_backend=seed_backend,
+		seed_model=seed_model,
+		seed_top_k=spec.seed_top_k,
+		hop_budget=spec.hop_budget,
+		budget_fill_mode=spec.budget_fill_mode,
+		budget_fill_pool_k=spec.budget_fill_pool_k,
+		budget_fill_score_floor=spec.budget_fill_score_floor,
+		budget_fill_relative_drop_ratio=spec.budget_fill_relative_drop_ratio,
+		rerank_model=rerank_model,
 	)
 
 

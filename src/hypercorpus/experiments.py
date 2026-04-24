@@ -393,6 +393,7 @@ class _ExperimentRuntimeDefaults:
 	answer_base_url: str | None = None
 	sentence_transformer_model: str | None = None
 	sentence_transformer_device: str | None = None
+	cross_encoder_model: str | None = None
 
 
 _SINGLE_PATH_EDGE_ABLATION_SELECTORS: tuple[str, ...] = (
@@ -663,6 +664,7 @@ def _resolve_runtime_defaults(
 	answer_base_url: str | None,
 	sentence_transformer_model: str | None,
 	sentence_transformer_device: str | None,
+	cross_encoder_model: str | None = None,
 ) -> _ExperimentRuntimeDefaults:
 	file_defaults = _ExperimentRuntimeDefaults()
 	defaults_path = _discover_experiment_defaults_path()
@@ -797,6 +799,8 @@ def _resolve_runtime_defaults(
 		or resolved_defaults.sentence_transformer_model,
 		sentence_transformer_device=sentence_transformer_device
 		or resolved_defaults.sentence_transformer_device,
+		cross_encoder_model=cross_encoder_model
+		or resolved_defaults.cross_encoder_model,
 	)
 
 
@@ -837,6 +841,7 @@ def run_dataset_experiment(
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
 	sentence_transformer_device: str | None = None,
+	cross_encoder_model: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
 	answer_provider: str | None = None,
@@ -878,6 +883,7 @@ def run_dataset_experiment(
 		answer_base_url=answer_base_url,
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_device=sentence_transformer_device,
+		cross_encoder_model=cross_encoder_model,
 	)
 	selector_provider = runtime_defaults.selector_provider
 	selector_model = runtime_defaults.selector_model
@@ -891,6 +897,7 @@ def run_dataset_experiment(
 	answer_base_url = runtime_defaults.answer_base_url
 	sentence_transformer_model = runtime_defaults.sentence_transformer_model
 	sentence_transformer_device = runtime_defaults.sentence_transformer_device
+	cross_encoder_model = runtime_defaults.cross_encoder_model
 	resolved = _resolve_experiment_config(
 		selector_names=selector_names,
 		selector_preset=selector_preset,
@@ -913,6 +920,7 @@ def run_dataset_experiment(
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_cache_path=sentence_transformer_cache_path,
 		sentence_transformer_device=sentence_transformer_device,
+		cross_encoder_model=cross_encoder_model,
 	)
 	budgets = _resolve_budgets(
 		token_budgets=resolved.token_budgets,
@@ -1069,6 +1077,7 @@ def run_iirc_experiment(
 	sentence_transformer_model: str | None = None,
 	sentence_transformer_cache_path: str | Path | None = None,
 	sentence_transformer_device: str | None = None,
+	cross_encoder_model: str | None = None,
 	with_e2e: bool = False,
 	answerer_mode: str = "heuristic",
 	answer_provider: str | None = None,
@@ -1102,6 +1111,7 @@ def run_iirc_experiment(
 		sentence_transformer_model=sentence_transformer_model,
 		sentence_transformer_cache_path=sentence_transformer_cache_path,
 		sentence_transformer_device=sentence_transformer_device,
+		cross_encoder_model=cross_encoder_model,
 		with_e2e=with_e2e,
 		answerer_mode=answerer_mode,
 		answer_provider=answer_provider,

@@ -199,8 +199,62 @@ def _cache_key(*, model_name: str, text: str) -> str:
 	).hexdigest()
 
 
+DEFAULT_CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+
+_CROSS_ENCODER_RERANK_BATCH_SIZE = 256
+
+
+@dataclass(slots=True)
+class CrossEncoderRerankerConfig:
+	model_name: str = DEFAULT_CROSS_ENCODER_MODEL
+	device: str | None = None
+
+
+class CrossEncoderReranker:
+	"""Reranks (query, passage) pairs using a cross-encoder model."""
+
+	_model_cache: dict[tuple[str, str | None], object] = {}
+
+	def __init__(self, config: CrossEncoderRerankerConfig):
+		self.config = config
+		self.model_name = config.model_name
+
+	def score_pairs(self, query: str, passages: Sequence[str]) -> list[float]:
+		if not passages:
+			return []
+		model = self._get_model()
+		pairs = [[query, passage] for passage in passages]
+		batch_size = _CROSS_ENCODER_RERANK_BATCH_SIZE
+		all_scores: list[float] = []
+		for batch_start in range(0, len(pairs), batch_size):
+			batch = pairs[batch_start : batch_start + batch_size]
+			scores = model.predict(batch, show_progress_bar=False)
+			all_scores.extend(float(s) for s in scores)
+		return all_scores
+
+	def _get_model(self):
+		cache_key = (self.model_name, self.config.device)
+		if cache_key in self._model_cache:
+			return self._model_cache[cache_key]
+		try:
+			from sentence_transformers import CrossEncoder
+		except ImportError as exc:  # pragma: no cover
+			raise RuntimeError(
+				"sentence-transformers is required for CrossEncoderReranker."
+			) from exc
+		kwargs: dict[str, object] = {}
+		if self.config.device is not None:
+			kwargs["device"] = self.config.device
+		model = CrossEncoder(self.model_name, **kwargs)
+		self._model_cache[cache_key] = model
+		return model
+
+
 __all__ = [
+	"DEFAULT_CROSS_ENCODER_MODEL",
 	"DEFAULT_SENTENCE_TRANSFORMER_MODEL",
+	"CrossEncoderReranker",
+	"CrossEncoderRerankerConfig",
 	"SentenceTransformerEmbedder",
 	"SentenceTransformerEmbedderConfig",
 	"TextEmbedder",

@@ -1,5 +1,6 @@
 import pytest
 
+from hypercorpus.embeddings import CrossEncoderRerankerConfig
 from hypercorpus.eval import EvaluationBudget, EvaluationCase
 from hypercorpus.graph import DocumentNode, LinkContext, LinkContextGraph
 from hypercorpus.selector import (
@@ -850,3 +851,152 @@ def test_budget_fill_variants_recover_small_nodes_and_stop_differently():
 	assert score_floor_result.selector_metadata.budget_fill_score_floor == 0.05
 	assert relative_drop_result.selector_metadata is not None
 	assert relative_drop_result.selector_metadata.budget_fill_relative_drop_ratio == 0.5
+
+
+# --- dense_rerank baseline tests ---
+
+
+class FakeCrossEncoderReranker:
+	"""Fake cross-encoder that scores by simple token overlap with query."""
+
+	model_name = "fake-cross-encoder"
+
+	def __init__(self, config: CrossEncoderRerankerConfig):
+		self.config = config
+		self.model_name = config.model_name
+
+	def score_pairs(self, query: str, passages: list[str]) -> list[float]:
+		query_tokens = set(query.lower().split())
+		scores = []
+		for passage in passages:
+			passage_tokens = set(passage.lower().split())
+			overlap = len(query_tokens & passage_tokens)
+			scores.append(float(overlap))
+		return scores
+
+
+def test_parse_selector_spec_accepts_dense_rerank():
+	spec = parse_selector_spec(
+		"top_1_seed__sentence_transformer__hop_0__dense_rerank"
+	)
+	assert spec.family == "baseline"
+	assert spec.baseline == "dense_rerank"
+	assert spec.hop_budget == 0
+	assert spec.seed_strategy == "sentence_transformer"
+	assert spec.rerank_pool_k == 64
+
+
+def test_parse_selector_spec_dense_rerank_requires_sentence_transformer():
+	with pytest.raises(ValueError, match="Unknown selector"):
+		parse_selector_spec(
+			"top_1_seed__lexical_overlap__hop_0__dense_rerank"
+		)
+
+
+def test_parse_selector_spec_dense_rerank_requires_hop_0():
+	with pytest.raises(ValueError, match="Unknown selector"):
+		parse_selector_spec(
+			"top_1_seed__sentence_transformer__hop_2__dense_rerank"
+		)
+
+
+def test_parse_selector_spec_dense_rerank_with_budget_fill():
+	spec = parse_selector_spec(
+		"top_1_seed__sentence_transformer__hop_0__dense_rerank__budget_fill_relative_drop"
+	)
+	assert spec.baseline == "dense_rerank"
+	assert spec.budget_fill_mode == "relative_drop"
+	assert spec.budget_fill_pool_k == 64
+
+
+def test_dense_rerank_in_available_selector_names():
+	names = available_selector_names()
+	assert "top_1_seed__sentence_transformer__hop_0__dense_rerank" in names
+	assert "top_3_seed__sentence_transformer__hop_0__dense_rerank" in names
+
+
+def test_dense_rerank_selector_reranks_and_selects_under_budget():
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode("alpha", "Alpha", ("Alpha discusses city launch sites.",)),
+			DocumentNode(
+				"beta", "Beta", ("Beta is about unrelated underwater caves.",)
+			),
+			DocumentNode(
+				"gamma", "Gamma", ("Gamma covers launch schedules for city.",)
+			),
+		]
+	)
+	query = "launch city"
+	alpha_text = "Alpha Alpha discusses city launch sites."
+	beta_text = "Beta Beta is about unrelated underwater caves."
+	gamma_text = "Gamma Gamma covers launch schedules for city."
+
+	selector = build_selector(
+		"top_1_seed__sentence_transformer__hop_0__dense_rerank",
+		sentence_transformer_embedder_factory=lambda _config: FakeEmbedder(
+			{
+				query: [1.0, 0.0],
+				alpha_text: [0.7, 0.0],
+				beta_text: [0.1, 0.8],
+				gamma_text: [0.6, 0.1],
+			}
+		),
+		cross_encoder_factory=lambda config: FakeCrossEncoderReranker(config),
+	)
+
+	result = selector.select(
+		graph,
+		EvaluationCase(case_id="rerank-1", query=query),
+		EvaluationBudget(token_budget_tokens=256),
+	)
+
+	# FakeCrossEncoderReranker scores by token overlap:
+	# alpha text has "city", "launch" -> overlap=2
+	# gamma text has "launch", "city" -> overlap=2
+	# beta text has neither -> overlap=0
+	# So alpha and gamma should be ranked above beta
+	assert "beta" not in result.selected_node_ids[:2]
+	assert result.strategy == "dense_rerank"
+	assert result.stop_reason == "dense_rerank"
+	assert result.selector_metadata is not None
+	assert result.selector_metadata.backend == "dense_rerank"
+	assert result.selector_metadata.seed_strategy == "sentence_transformer"
+	assert result.selector_metadata.rerank_model is not None
+
+
+def test_dense_rerank_selector_with_budget_fill():
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode("a", "A Doc", ("a launch city site",)),
+			DocumentNode("b", "B Doc", ("b unrelated text",)),
+			DocumentNode("c", "C Doc", ("c launch schedule",)),
+		]
+	)
+	query = "launch city"
+	a_text = "A Doc a launch city site"
+	b_text = "B Doc b unrelated text"
+	c_text = "C Doc c launch schedule"
+
+	selector = build_selector(
+		"top_1_seed__sentence_transformer__hop_0__dense_rerank__budget_fill_relative_drop",
+		sentence_transformer_embedder_factory=lambda _config: FakeEmbedder(
+			{
+				query: [1.0, 0.0],
+				a_text: [0.9, 0.0],
+				b_text: [0.1, 0.8],
+				c_text: [0.5, 0.2],
+			}
+		),
+		cross_encoder_factory=lambda config: FakeCrossEncoderReranker(config),
+	)
+
+	result = selector.select(
+		graph,
+		EvaluationCase(case_id="rerank-fill", query=query),
+		EvaluationBudget(token_budget_tokens=256),
+	)
+
+	assert result.selector_metadata is not None
+	assert result.selector_metadata.budget_fill_mode == "relative_drop"
+	assert len(result.selected_node_ids) >= 1
