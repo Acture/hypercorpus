@@ -315,10 +315,13 @@ def _resolve_question_files(
 	resolved = Path(raw_source)
 	if resolved.is_file():
 		return {_infer_split_name(resolved): resolved}
+	_MANIFEST_STEMS = {"source-manifest", "conversion-manifest"}
 	candidates = sorted(
 		path
 		for path in resolved.rglob("*")
-		if path.is_file() and path.suffix.lower() in {".json", ".jsonl"}
+		if path.is_file()
+		and path.suffix.lower() in {".json", ".jsonl"}
+		and path.stem.lower() not in _MANIFEST_STEMS
 	)
 	variant_token = "distractor" if variant == "distractor" else "fullwiki"
 	filtered = [

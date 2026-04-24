@@ -1207,12 +1207,15 @@ def run_hotpotqa_experiment(
 		total_cases=None,
 		completed_cases=0,
 	)
+	effective_limit = None if case_ids_file is not None else limit
 	records = load_json_records(questions_path)
 	cases = load_hotpotqa_questions(
 		questions_path,
-		limit=None if case_ids_file is not None else limit,
+		limit=effective_limit,
 		variant="distractor",
 	)
+	if effective_limit is not None:
+		records = records[:effective_limit]
 	paired_cases = list(zip(records, cases, strict=True))
 	if case_ids_file is not None and limit is not None:
 		raise ValueError("Specify either limit or case_ids_file, not both.")
