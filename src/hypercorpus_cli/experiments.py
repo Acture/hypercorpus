@@ -1346,6 +1346,11 @@ def run_2wiki_store(
 		"--budget-fill-ratio",
 		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
 	),
+	budget_fill_pool_k: int | None = typer.Option(
+		None,
+		"--budget-fill-pool-k",
+		help="Override the backfill pool size K (default: 64).",
+	),
 	walk_score_threshold: float | None = typer.Option(
 		None,
 		"--walk-score-threshold",
@@ -1400,6 +1405,7 @@ def run_2wiki_store(
 			restart=restart,
 			link_context_mask=link_context_mask,
 			budget_fill_ratio=budget_fill_ratio,
+			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
 		),
 	)
@@ -1626,6 +1632,11 @@ def run_iirc_store(
 		"--budget-fill-ratio",
 		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
 	),
+	budget_fill_pool_k: int | None = typer.Option(
+		None,
+		"--budget-fill-pool-k",
+		help="Override the backfill pool size K (default: 64).",
+	),
 	walk_score_threshold: float | None = typer.Option(
 		None,
 		"--walk-score-threshold",
@@ -1687,6 +1698,7 @@ def run_iirc_store(
 			restart=restart,
 			link_context_mask=link_context_mask,
 			budget_fill_ratio=budget_fill_ratio,
+			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
 		),
 	)
@@ -1871,6 +1883,11 @@ def run_musique_store(
 		"--budget-fill-ratio",
 		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
 	),
+	budget_fill_pool_k: int | None = typer.Option(
+		None,
+		"--budget-fill-pool-k",
+		help="Override the backfill pool size K (default: 64).",
+	),
 	walk_score_threshold: float | None = typer.Option(
 		None,
 		"--walk-score-threshold",
@@ -1932,6 +1949,7 @@ def run_musique_store(
 			restart=restart,
 			link_context_mask=link_context_mask,
 			budget_fill_ratio=budget_fill_ratio,
+			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
 		),
 	)
@@ -2116,6 +2134,11 @@ def run_hotpotqa_store(
 		"--budget-fill-ratio",
 		help="Override the relative-drop fill ratio (default: 0.5). Values 0-1.",
 	),
+	budget_fill_pool_k: int | None = typer.Option(
+		None,
+		"--budget-fill-pool-k",
+		help="Override the backfill pool size K (default: 64).",
+	),
 	walk_score_threshold: float | None = typer.Option(
 		None,
 		"--walk-score-threshold",
@@ -2177,6 +2200,7 @@ def run_hotpotqa_store(
 			restart=restart,
 			link_context_mask=link_context_mask,
 			budget_fill_ratio=budget_fill_ratio,
+			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
 		),
 	)

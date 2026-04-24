@@ -3497,6 +3497,7 @@ def build_selector(
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
 	budget_fill_ratio: float | None = None,
+	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
 ) -> CorpusSelector:
 	from hypercorpus.baselines.mdr import (
@@ -3517,6 +3518,8 @@ def build_selector(
 	spec = parse_selector_spec(name)
 	if budget_fill_ratio is not None and spec.budget_fill_mode == "relative_drop":
 		spec = replace(spec, budget_fill_relative_drop_ratio=budget_fill_ratio)
+	if budget_fill_pool_k is not None and spec.budget_fill_pool_k is not None:
+		spec = replace(spec, budget_fill_pool_k=budget_fill_pool_k)
 	if walk_score_threshold is not None:
 		spec = replace(spec, walk_score_threshold=walk_score_threshold)
 	llm_config = SelectorLLMConfig(
@@ -3641,6 +3644,7 @@ def select_selectors(
 	mdr_home: str | Path | None = None,
 	mdr_artifact_manifest: str | Path | None = None,
 	budget_fill_ratio: float | None = None,
+	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
 ) -> list[CorpusSelector]:
 	selector_names = (
@@ -3668,6 +3672,7 @@ def select_selectors(
 			mdr_home=mdr_home,
 			mdr_artifact_manifest=mdr_artifact_manifest,
 			budget_fill_ratio=budget_fill_ratio,
+			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
 		)
 		for name in selector_names

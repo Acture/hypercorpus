@@ -1509,6 +1509,7 @@ def run_store_experiment(
 	restart: bool = False,
 	link_context_mask: str | None = None,
 	budget_fill_ratio: float | None = None,
+	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
 	mask_mode = (
@@ -1592,6 +1593,7 @@ def run_store_experiment(
 		sentence_transformer_cache_path=sentence_transformer_cache_path,
 		sentence_transformer_device=sentence_transformer_device,
 		budget_fill_ratio=budget_fill_ratio,
+		budget_fill_pool_k=budget_fill_pool_k,
 		walk_score_threshold=walk_score_threshold,
 	)
 	budgets = _resolve_budgets(
@@ -1711,6 +1713,7 @@ def run_2wiki_store_experiment(
 	restart: bool = False,
 	link_context_mask: str | None = None,
 	budget_fill_ratio: float | None = None,
+	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
 	return run_store_experiment(
@@ -1755,6 +1758,7 @@ def run_2wiki_store_experiment(
 		restart=restart,
 		link_context_mask=link_context_mask,
 		budget_fill_ratio=budget_fill_ratio,
+		budget_fill_pool_k=budget_fill_pool_k,
 		walk_score_threshold=walk_score_threshold,
 	)
 
