@@ -1524,6 +1524,7 @@ def run_store_experiment(
 	budget_fill_ratio: float | None = None,
 	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
+	cross_encoder_model: str | None = None,
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
 	mask_mode = (
 		LinkContextMaskMode(link_context_mask)
@@ -1608,9 +1609,9 @@ def run_store_experiment(
 		budget_fill_ratio=budget_fill_ratio,
 		budget_fill_pool_k=budget_fill_pool_k,
 		walk_score_threshold=walk_score_threshold,
+		cross_encoder_model=cross_encoder_model,
 	)
-	budgets = _resolve_budgets(
-		token_budgets=resolved.token_budgets,
+	budgets = _resolve_budgets(		token_budgets=resolved.token_budgets,
 		budget_ratios=resolved.budget_ratios,
 	)
 	total_selection_count = len(selected_cases) * len(selectors) * len(budgets)

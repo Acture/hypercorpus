@@ -1648,6 +1648,11 @@ def run_iirc_store(
 		"--walk-score-threshold",
 		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
 	),
+	cross_encoder_model: str | None = typer.Option(
+		None,
+		"--cross-encoder-model",
+		help="Cross-encoder model for dense_rerank baseline (default: cross-encoder/ms-marco-MiniLM-L-12-v2)",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1706,6 +1711,7 @@ def run_iirc_store(
 			budget_fill_ratio=budget_fill_ratio,
 			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
+			cross_encoder_model=cross_encoder_model,
 		),
 	)
 
