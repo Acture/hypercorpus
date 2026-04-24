@@ -1213,7 +1213,7 @@ def test_controller_retries_three_times_then_raises(monkeypatch):
 	backend = FakeTextSequenceBackend(
 		[
 			'{"decision":": "}',
-			'{"decision":"edge_0"}',
+			'{"decision":"edge_99"}',
 			'{"wrong":[]}',
 		]
 	)
@@ -1246,6 +1246,182 @@ def test_controller_retries_three_times_then_raises(monkeypatch):
 			exposure_plan=exposure_plan,
 			bundle=bundle,
 		)
+
+
+def test_controller_lenient_secondary_fields(monkeypatch):
+	"""Open-weight models may omit or malform runner_up, state, reason.
+
+	The controller should degrade gracefully: primary decision must be valid,
+	but secondary fields fall back to safe defaults instead of raising.
+	"""
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	graph = _build_bridge_graph()
+	# Only decision is present; runner_up, state, reason all missing.
+	backend = FakeBackend({"decision": "edge_0"})
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: backend,
+	)
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
+		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+	)
+	assert decision.decision == "edge_0"
+	assert decision.runner_up is None
+	assert decision.state == "need_bridge"
+	assert decision.reason is None
+
+
+def test_controller_lenient_runner_up_none_string(monkeypatch):
+	"""runner_up returned as 'none' or 'null' should resolve to None."""
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	graph = _build_bridge_graph()
+	for none_value in ["none", "null", "None", "NULL", "N/A"]:
+		backend = FakeBackend(
+			{
+				"decision": "edge_0",
+				"runner_up": none_value,
+				"state": "need_bridge",
+				"reason": "proceed",
+			}
+		)
+		controller = LLMController(
+			config=SelectorLLMConfig(
+				provider="openai",
+				model="gpt-test-mini",
+				api_key_env="OPENAI_API_KEY",
+			),
+			mode="two_hop",
+			backend_factory=lambda _config: backend,
+		)
+		candidate_links = list(graph.links_from("root"))
+		fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+			controller,
+			query="launch navigation root",
+			graph=graph,
+			current_node_id="root",
+			candidate_links=candidate_links,
+			visited_nodes={"root"},
+			path_node_ids=["root"],
+			remaining_steps=2,
+		)
+		decision = controller.decide(
+			query="launch navigation root",
+			path_node_ids=["root"],
+			current_depth=1,
+			fallback_cards=fallback_cards,
+			exposure_plan=exposure_plan,
+			bundle=bundle,
+		)
+		assert decision.runner_up is None, f"runner_up={none_value!r} should become None"
+
+
+def test_controller_lenient_runner_up_matches_decision(monkeypatch):
+	"""runner_up matching decision should be cleared to None, not raise."""
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	graph = _build_bridge_graph()
+	backend = FakeBackend(
+		{
+			"decision": "edge_0",
+			"runner_up": "edge_0",
+			"state": "need_bridge",
+			"reason": "proceed",
+		}
+	)
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: backend,
+	)
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
+		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+	)
+	assert decision.decision == "edge_0"
+	assert decision.runner_up is None
+
+
+def test_controller_lenient_invalid_state_falls_back(monkeypatch):
+	"""Unrecognized state string should fall back, not raise."""
+	monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+	graph = _build_bridge_graph()
+	backend = FakeBackend(
+		{
+			"decision": "stop",
+			"runner_up": None,
+			"state": "exploring",
+			"reason": "done",
+		}
+	)
+	controller = LLMController(
+		config=SelectorLLMConfig(
+			provider="openai",
+			model="gpt-test-mini",
+			api_key_env="OPENAI_API_KEY",
+		),
+		mode="two_hop",
+		backend_factory=lambda _config: backend,
+	)
+	candidate_links = list(graph.links_from("root"))
+	fallback_cards, exposure_plan, bundle = _prepare_controller_inputs(
+		controller,
+		query="launch navigation root",
+		graph=graph,
+		current_node_id="root",
+		candidate_links=candidate_links,
+		visited_nodes={"root"},
+		path_node_ids=["root"],
+		remaining_steps=2,
+	)
+	decision = controller.decide(
+		query="launch navigation root",
+		path_node_ids=["root"],
+		current_depth=1,
+		fallback_cards=fallback_cards,
+		exposure_plan=exposure_plan,
+		bundle=bundle,
+	)
+	assert decision.decision == "stop"
+	assert decision.state == "enough_evidence"
 
 
 def test_controller_retries_provider_rate_limit_then_succeeds(monkeypatch):

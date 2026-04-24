@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -59,6 +60,8 @@ from hypercorpus.walker import (
 	TitleAwareOverlapStepScorer,
 	_clamp_score,
 )
+
+logger = logging.getLogger(__name__)
 
 SelectorProvider = Literal["copilot", "openai", "anthropic", "gemini"]
 OpenAIApiMode = Literal[
@@ -1560,8 +1563,11 @@ class LLMController:
 			required=False,
 		)
 		if runner_up_choice is not None and runner_up_choice == decision_choice:
-			raise SelectorLLMResponseError("schema_error", "runner_up_matches_decision")
-		state = _parse_controller_state(payload.get("state"))
+			runner_up_choice = None
+			logger.debug("runner_up matches decision, clearing to None")
+		state = _parse_controller_state(
+			payload.get("state"), decision_choice=decision_choice
+		)
 		reason = _parse_optional_controller_text(
 			payload.get("reason"),
 			required=True,
@@ -2157,23 +2163,52 @@ def _parse_controller_choice(
 			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
 		return None
 	text = text.lower()
+	if text in {"none", "null", "n/a"}:
+		if required:
+			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
+		return None
 	if text not in choices:
-		raise SelectorLLMResponseError("schema_error", f"invalid_{field_name}")
+		if required:
+			raise SelectorLLMResponseError("schema_error", f"invalid_{field_name}")
+		logger.debug(
+			"controller field %s value %r not in valid choices, defaulting to None",
+			field_name,
+			text,
+		)
+		return None
 	return text
 
 
-def _parse_controller_state(value: Any) -> ControllerDecisionState:
+_VALID_CONTROLLER_STATES: set[str] = {
+	"enough_evidence",
+	"need_bridge",
+	"need_answer_grounding",
+	"drift_recovery",
+}
+
+
+def _parse_controller_state(
+	value: Any,
+	*,
+	decision_choice: str | None = None,
+) -> ControllerDecisionState:
 	text = _maybe_text(value)
-	if text is None:
-		raise SelectorLLMResponseError("schema_error", "missing_state")
-	if text not in {
-		"enough_evidence",
-		"need_bridge",
-		"need_answer_grounding",
-		"drift_recovery",
-	}:
-		raise SelectorLLMResponseError("schema_error", "invalid_state")
-	return cast(ControllerDecisionState, text)
+	if text is not None:
+		text = text.lower().replace(" ", "_").replace("-", "_")
+	if text is not None and text in _VALID_CONTROLLER_STATES:
+		return cast(ControllerDecisionState, text)
+	fallback: ControllerDecisionState = (
+		"enough_evidence" if decision_choice == "stop" else "need_bridge"
+	)
+	if text is not None:
+		logger.debug(
+			"controller state %r not recognized, falling back to %r",
+			text,
+			fallback,
+		)
+	else:
+		logger.debug("controller state missing, falling back to %r", fallback)
+	return fallback
 
 
 def _coerce_root_stop_decision(
@@ -2257,7 +2292,7 @@ def _parse_optional_controller_text(
 	text = _maybe_text(value)
 	if text is None:
 		if required:
-			raise SelectorLLMResponseError("schema_error", f"missing_{field_name}")
+			logger.debug("controller field %s missing, omitting", field_name)
 		return None
 	return text
 
