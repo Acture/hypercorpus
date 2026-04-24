@@ -1723,7 +1723,9 @@ class CanonicalDenseRerankSelector(_SentenceTransformerSupport):
 		embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder]
 		| None = None,
 		cross_encoder_config: CrossEncoderRerankerConfig | None = None,
-		cross_encoder_factory: Callable[[CrossEncoderRerankerConfig], CrossEncoderReranker]
+		cross_encoder_factory: Callable[
+			[CrossEncoderRerankerConfig], CrossEncoderReranker
+		]
 		| None = None,
 	):
 		super().__init__(
@@ -1731,7 +1733,9 @@ class CanonicalDenseRerankSelector(_SentenceTransformerSupport):
 		)
 		self.spec = spec
 		self.name = spec.canonical_name
-		self._cross_encoder_config = cross_encoder_config or CrossEncoderRerankerConfig()
+		self._cross_encoder_config = (
+			cross_encoder_config or CrossEncoderRerankerConfig()
+		)
 		self._cross_encoder_factory = cross_encoder_factory
 		self._reranker: CrossEncoderReranker | None = None
 
@@ -1804,8 +1808,7 @@ class CanonicalDenseRerankSelector(_SentenceTransformerSupport):
 		)
 
 		node_scores = {
-			node_id: rerank_score
-			for (node_id, _orig_score), rerank_score in reranked
+			node_id: rerank_score for (node_id, _orig_score), rerank_score in reranked
 		}
 		root_candidates = [
 			node_id
@@ -1827,9 +1830,7 @@ class CanonicalDenseRerankSelector(_SentenceTransformerSupport):
 		]
 
 		runtime_s = time.perf_counter() - started_at
-		seed_backend, seed_model = _seed_backend_metadata(
-			self.spec, self._get_embedder
-		)
+		seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
 		return _build_corpus_selection_result(
 			selector_name=self.name,
 			graph=graph,
@@ -2492,7 +2493,9 @@ class CanonicalSinglePathSelector(_SentenceTransformerSupport):
 			start_nodes,
 			WalkBudget(
 				max_steps=_controller_runtime_max_steps(self.spec),
-				min_score=self.spec.walk_score_threshold if self.spec.walk_score_threshold is not None else 0.05,
+				min_score=self.spec.walk_score_threshold
+				if self.spec.walk_score_threshold is not None
+				else 0.05,
 				allow_revisit=False,
 			),
 			resume_state=resume_state,
@@ -2748,7 +2751,11 @@ class CanonicalConstrainedMultipathSelector(_SentenceTransformerSupport):
 						),
 					)
 				)
-			if primary_card.total_score < (self.spec.walk_score_threshold if self.spec.walk_score_threshold is not None else 0.05):
+			if primary_card.total_score < (
+				self.spec.walk_score_threshold
+				if self.spec.walk_score_threshold is not None
+				else 0.05
+			):
 				if apply_controller_backtrack(
 					current_node_id=current,
 					steps=steps,

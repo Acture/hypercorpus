@@ -876,9 +876,7 @@ class FakeCrossEncoderReranker:
 
 
 def test_parse_selector_spec_accepts_dense_rerank():
-	spec = parse_selector_spec(
-		"top_1_seed__sentence_transformer__hop_0__dense_rerank"
-	)
+	spec = parse_selector_spec("top_1_seed__sentence_transformer__hop_0__dense_rerank")
 	assert spec.family == "baseline"
 	assert spec.baseline == "dense_rerank"
 	assert spec.hop_budget == 0
@@ -888,16 +886,12 @@ def test_parse_selector_spec_accepts_dense_rerank():
 
 def test_parse_selector_spec_dense_rerank_requires_sentence_transformer():
 	with pytest.raises(ValueError, match="Unknown selector"):
-		parse_selector_spec(
-			"top_1_seed__lexical_overlap__hop_0__dense_rerank"
-		)
+		parse_selector_spec("top_1_seed__lexical_overlap__hop_0__dense_rerank")
 
 
 def test_parse_selector_spec_dense_rerank_requires_hop_0():
 	with pytest.raises(ValueError, match="Unknown selector"):
-		parse_selector_spec(
-			"top_1_seed__sentence_transformer__hop_2__dense_rerank"
-		)
+		parse_selector_spec("top_1_seed__sentence_transformer__hop_2__dense_rerank")
 
 
 def test_parse_selector_spec_dense_rerank_with_budget_fill():
