@@ -3695,6 +3695,7 @@ def build_selector(
 	budget_fill_ratio: float | None = None,
 	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
+	seed_top_k: int | None = None,
 ) -> CorpusSelector:
 	from hypercorpus.baselines.mdr import (
 		EXTERNAL_MDR_SELECTOR_NAME,
@@ -3722,6 +3723,8 @@ def build_selector(
 		spec = replace(spec, budget_fill_pool_k=budget_fill_pool_k)
 	if walk_score_threshold is not None:
 		spec = replace(spec, walk_score_threshold=walk_score_threshold)
+	if seed_top_k is not None:
+		spec = replace(spec, seed_top_k=seed_top_k)
 	llm_config = SelectorLLMConfig(
 		provider=cast(SelectorProvider, selector_provider),
 		model=selector_model,
@@ -3867,6 +3870,7 @@ def select_selectors(
 	budget_fill_ratio: float | None = None,
 	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
+	seed_top_k: int | None = None,
 ) -> list[CorpusSelector]:
 	selector_names = (
 		list(names)
@@ -3898,6 +3902,7 @@ def select_selectors(
 			budget_fill_ratio=budget_fill_ratio,
 			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
+			seed_top_k=seed_top_k,
 		)
 		for name in selector_names
 	]

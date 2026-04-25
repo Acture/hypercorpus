@@ -1362,6 +1362,12 @@ def run_2wiki_store(
 		"--walk-score-threshold",
 		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
 	),
+	seed_top_k: int | None = typer.Option(
+		None,
+		"--seed-top-k",
+		min=1,
+		help="Override the number of dense seeds for walk/controller selectors (default: 1).",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1413,6 +1419,7 @@ def run_2wiki_store(
 			budget_fill_ratio=budget_fill_ratio,
 			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
+			seed_top_k=seed_top_k,
 		),
 	)
 	_print_summary(console, summary)
@@ -1648,6 +1655,12 @@ def run_iirc_store(
 		"--walk-score-threshold",
 		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
 	),
+	seed_top_k: int | None = typer.Option(
+		None,
+		"--seed-top-k",
+		min=1,
+		help="Override the number of dense seeds for walk/controller selectors (default: 1).",
+	),
 	cross_encoder_model: str | None = typer.Option(
 		None,
 		"--cross-encoder-model",
@@ -1712,6 +1725,7 @@ def run_iirc_store(
 			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
 			cross_encoder_model=cross_encoder_model,
+			seed_top_k=seed_top_k,
 		),
 	)
 
@@ -1905,6 +1919,12 @@ def run_musique_store(
 		"--walk-score-threshold",
 		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
 	),
+	seed_top_k: int | None = typer.Option(
+		None,
+		"--seed-top-k",
+		min=1,
+		help="Override the number of dense seeds for walk/controller selectors (default: 1).",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1963,6 +1983,7 @@ def run_musique_store(
 			budget_fill_ratio=budget_fill_ratio,
 			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
+			seed_top_k=seed_top_k,
 		),
 	)
 
@@ -2156,6 +2177,12 @@ def run_hotpotqa_store(
 		"--walk-score-threshold",
 		help="Override the walk score threshold θ (default: 0.05). Set 0 to disable.",
 	),
+	seed_top_k: int | None = typer.Option(
+		None,
+		"--seed-top-k",
+		min=1,
+		help="Override the number of dense seeds for walk/controller selectors (default: 1).",
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -2214,6 +2241,7 @@ def run_hotpotqa_store(
 			budget_fill_ratio=budget_fill_ratio,
 			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
+			seed_top_k=seed_top_k,
 		),
 	)
 
