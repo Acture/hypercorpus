@@ -853,6 +853,86 @@ def test_budget_fill_variants_recover_small_nodes_and_stop_differently():
 	assert relative_drop_result.selector_metadata.budget_fill_relative_drop_ratio == 0.5
 
 
+def test_parse_selector_spec_accepts_neighbor_and_diverse_fill_suffixes():
+	neighbor = parse_selector_spec(
+		"top_1_seed__lexical_overlap__hop_0__dense__budget_fill_neighbor"
+	)
+	assert neighbor.budget_fill_mode == "neighbor"
+	assert neighbor.budget_fill_pool_k == 64
+	assert neighbor.budget_fill_relative_drop_ratio == 0.5
+
+	diverse = parse_selector_spec(
+		"top_1_seed__lexical_overlap__hop_0__dense__budget_fill_diverse"
+	)
+	assert diverse.budget_fill_mode == "diverse"
+	assert diverse.budget_fill_pool_k == 64
+	assert diverse.budget_fill_relative_drop_ratio == 0.5
+
+	ctrl_neighbor = parse_selector_spec(
+		"top_1_seed__sentence_transformer__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2__budget_fill_neighbor"
+	)
+	assert ctrl_neighbor.budget_fill_mode == "neighbor"
+	assert ctrl_neighbor.family == "path_search"
+
+
+def test_budget_fill_neighbor_only_admits_graph_neighbors():
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode("seed", "Launch City", ("launch city",)),
+			DocumentNode("nbr1", "Launch Harbor", ("launch harbor",)),
+			DocumentNode("nbr2", "City Port", ("city port",)),
+			DocumentNode("island", "Island Launch City", ("island launch city",)),
+		],
+		links=[
+			LinkContext(source="seed", target="nbr1", anchor_text="harbor", sentence="go to harbor", sent_idx=0),
+			LinkContext(source="seed", target="nbr2", anchor_text="port", sentence="the port", sent_idx=0),
+		],
+	)
+	case = EvaluationCase(case_id="nbr-fill", query="launch city harbor")
+	budget = EvaluationBudget(token_budget_tokens=100)
+	selector = build_selector(
+		"top_1_seed__lexical_overlap__hop_0__dense__budget_fill_neighbor"
+	)
+	result = selector.select(graph, case, budget)  # ty: ignore[invalid-argument-type]
+	# "island" has highest overlap but is not a neighbor of "seed"
+	assert "island" not in result.selected_node_ids
+	# neighbors of seed should be considered
+	filled_ids = set(result.selected_node_ids) - {"seed"}
+	assert filled_ids <= {"nbr1", "nbr2"}
+	assert result.selector_metadata is not None
+	assert result.selector_metadata.budget_fill_mode == "neighbor"
+
+
+def test_budget_fill_diverse_reranks_by_mmr():
+	vectors = {
+		"launch city": [0.9, 0.1],
+		"Launch City launch city": [0.9, 0.1],
+		"Launch Harbor launch harbor": [0.85, 0.15],
+		"Clone City clone city launch": [0.88, 0.12],
+		"Other Topic other topic": [0.1, 0.9],
+	}
+	embedder = FakeEmbedder(vectors)
+	graph = LinkContextGraph(
+		documents=[
+			DocumentNode("seed", "Launch City", ("launch city",)),
+			DocumentNode("dup", "Clone City", ("clone city launch",)),
+			DocumentNode("diff", "Launch Harbor", ("launch harbor",)),
+			DocumentNode("far", "Other Topic", ("other topic",)),
+		],
+	)
+	case = EvaluationCase(case_id="diverse-fill", query="launch city")
+	budget = EvaluationBudget(token_budget_tokens=100)
+	selector = build_selector(
+		"top_1_seed__sentence_transformer__hop_0__dense__budget_fill_diverse",
+		sentence_transformer_embedder_factory=lambda _cfg: embedder,
+	)
+	result = selector.select(graph, case, budget)  # ty: ignore[invalid-argument-type]
+	assert result.selector_metadata is not None
+	assert result.selector_metadata.budget_fill_mode == "diverse"
+	# The diverse fill should have added nodes
+	assert len(result.selected_node_ids) >= 2
+
+
 # --- dense_rerank baseline tests ---
 
 

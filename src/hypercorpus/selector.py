@@ -65,7 +65,7 @@ from hypercorpus.walker import (
 logger = logging.getLogger(__name__)
 
 SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
-BudgetFillMode = Literal["score_floor", "always", "relative_drop"]
+BudgetFillMode = Literal["score_floor", "always", "relative_drop", "neighbor", "diverse"]
 BaselineName = Literal[
 	"dense",
 	"dense_rerank",
@@ -121,7 +121,10 @@ _BUDGET_FILL_SUFFIXES: dict[str, BudgetFillMode] = {
 	"budget_fill_score_floor": "score_floor",
 	"budget_fill_always": "always",
 	"budget_fill_relative_drop": "relative_drop",
+	"budget_fill_neighbor": "neighbor",
+	"budget_fill_diverse": "diverse",
 }
+_DEFAULT_BUDGET_FILL_MMR_LAMBDA = 0.7
 _SELECTOR_PATTERN = re.compile(
 	r"^top_(?P<seed_top_k>\d+)_seed__(?P<seed_strategy>sentence_transformer|lexical_overlap)__hop_(?P<hop_budget>\d+|adaptive)__(?P<rest>.+)$"
 )
@@ -3189,7 +3192,16 @@ class BudgetFillSelector(_SentenceTransformerSupport):
 			)
 		else:
 			cache_key = (case.case_id, case.query)
-			if cache_key in self._seed_candidates_cache:
+			if self.spec.budget_fill_mode == "neighbor":
+				seed_candidates = _neighbor_fill_candidates(
+					graph,
+					case.query,
+					result.selected_node_ids,
+					self.spec.budget_fill_pool_k or 64,
+					seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+					embedder=_seed_embedder(self.spec, self._get_embedder),
+				)
+			elif cache_key in self._seed_candidates_cache:
 				seed_candidates = self._seed_candidates_cache[cache_key]
 			else:
 				seed_candidates = _select_seed_candidates(
@@ -3200,6 +3212,17 @@ class BudgetFillSelector(_SentenceTransformerSupport):
 					embedder=_seed_embedder(self.spec, self._get_embedder),
 				)
 				self._seed_candidates_cache[cache_key] = seed_candidates
+			if self.spec.budget_fill_mode == "diverse":
+				seed_candidates = _mmr_rerank_candidates(
+					[
+						(nid, sc)
+						for nid, sc in seed_candidates
+						if nid not in set(result.selected_node_ids)
+					],
+					result.selected_node_ids,
+					graph,
+					self._get_embedder(),
+				)
 			candidate_index = 0
 			selected_node_ids = list(result.selected_node_ids)
 			selected_node_set = set(selected_node_ids)
@@ -3512,7 +3535,7 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 			budget_fill_pool_k=64 if budget_fill_mode is not None else None,
 			budget_fill_score_floor=0.05 if budget_fill_mode == "score_floor" else None,
 			budget_fill_relative_drop_ratio=0.5
-			if budget_fill_mode == "relative_drop"
+			if budget_fill_mode in ("relative_drop", "neighbor", "diverse")
 			else None,
 			rerank_pool_k=64 if baseline == "dense_rerank" else None,
 		)
@@ -3557,7 +3580,7 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		budget_fill_pool_k=64 if budget_fill_mode is not None else None,
 		budget_fill_score_floor=0.05 if budget_fill_mode == "score_floor" else None,
 		budget_fill_relative_drop_ratio=0.5
-		if budget_fill_mode == "relative_drop"
+		if budget_fill_mode in ("relative_drop", "neighbor", "diverse")
 		else None,
 	)
 	_validate_profile_for_spec(spec, raw_name=name)
@@ -3689,7 +3712,11 @@ def build_selector(
 			mdr_home=mdr_home,
 		)
 	spec = parse_selector_spec(name)
-	if budget_fill_ratio is not None and spec.budget_fill_mode == "relative_drop":
+	if budget_fill_ratio is not None and spec.budget_fill_mode in (
+		"relative_drop",
+		"neighbor",
+		"diverse",
+	):
 		spec = replace(spec, budget_fill_relative_drop_ratio=budget_fill_ratio)
 	if budget_fill_pool_k is not None and spec.budget_fill_pool_k is not None:
 		spec = replace(spec, budget_fill_pool_k=budget_fill_pool_k)
@@ -4074,12 +4101,83 @@ def _should_continue_budget_fill(
 		return True
 	if spec.budget_fill_mode == "score_floor":
 		return score >= (spec.budget_fill_score_floor or 0.05)
-	if spec.budget_fill_mode == "relative_drop":
+	if spec.budget_fill_mode in ("relative_drop", "neighbor", "diverse"):
 		threshold = first_backfill_candidate_score * (
 			spec.budget_fill_relative_drop_ratio or 0.5
 		)
 		return score >= threshold
 	return True
+
+
+def _neighbor_fill_candidates(
+	graph: LinkContextGraph,
+	query: str,
+	selected_node_ids: Sequence[str],
+	top_k: int,
+	*,
+	seed_strategy: SeedStrategyName,
+	embedder: TextEmbedder | None,
+) -> list[tuple[str, float]]:
+	"""Build fill pool from hyperlink neighbors of already-selected nodes."""
+	selected_set = set(selected_node_ids)
+	neighbor_ids: list[str] = []
+	seen: set[str] = set()
+	for node_id in selected_node_ids:
+		for nbr in graph.neighbors(node_id):
+			if nbr not in selected_set and nbr not in seen:
+				neighbor_ids.append(nbr)
+				seen.add(nbr)
+	if not neighbor_ids:
+		return []
+	return _select_seed_candidates(
+		graph,
+		query,
+		min(top_k, len(neighbor_ids)),
+		seed_strategy=seed_strategy,
+		embedder=embedder,
+		candidate_ids=neighbor_ids,
+	)
+
+
+def _mmr_rerank_candidates(
+	candidates: list[tuple[str, float]],
+	selected_node_ids: Sequence[str],
+	graph: LinkContextGraph,
+	embedder: TextEmbedder,
+	*,
+	mmr_lambda: float = _DEFAULT_BUDGET_FILL_MMR_LAMBDA,
+) -> list[tuple[str, float]]:
+	"""Rerank fill candidates by Maximal Marginal Relevance."""
+	if not candidates:
+		return []
+	all_node_ids = [nid for nid, _ in candidates] + list(selected_node_ids)
+	all_texts = [_node_text(graph, nid) for nid in all_node_ids]
+	all_embeddings = embedder.encode(all_texts)
+	emb_by_id: dict[str, Sequence[float]] = dict(zip(all_node_ids, all_embeddings))
+	sim_by_id: dict[str, float] = {nid: score for nid, score in candidates}
+	selected_embs = [emb_by_id[nid] for nid in selected_node_ids if nid in emb_by_id]
+
+	remaining = [nid for nid, _ in candidates]
+	reranked: list[tuple[str, float]] = []
+	while remaining:
+		best_mmr = -float("inf")
+		best_idx = 0
+		for i, nid in enumerate(remaining):
+			relevance = sim_by_id[nid]
+			if selected_embs:
+				max_sim = max(
+					_dot_similarity(emb_by_id[nid], s) for s in selected_embs
+				)
+			else:
+				max_sim = 0.0
+			mmr = mmr_lambda * relevance - (1 - mmr_lambda) * max_sim
+			if mmr > best_mmr:
+				best_mmr = mmr
+				best_idx = i
+		chosen_id = remaining.pop(best_idx)
+		reranked.append((chosen_id, sim_by_id[chosen_id]))
+		selected_embs.append(emb_by_id[chosen_id])
+	return reranked
 
 
 def _lexical_seed_candidates(
