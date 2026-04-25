@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
-from hypercorpus.graph import LinkContext, LinkContextGraph
+from hypercorpus.graph import LinkContext, LinkContextGraph, LinkContextMaskMode
 from hypercorpus.text import content_tokens
 from hypercorpus.walker import (
 	LinkContextOverlapStepScorer,
@@ -290,6 +290,7 @@ def build_controller_candidate_bundle(
 ) -> ControllerCandidateBundle:
 	"""Build the typed prompt bundle for the already-planned visible candidates."""
 
+	mask_titles = _masks_title(graph)
 	entries: list[ControllerCandidateBundleEntry] = []
 	future_scorer = LinkContextOverlapStepScorer()
 	for index in exposure_plan.visible_indices:
@@ -320,8 +321,12 @@ def build_controller_candidate_bundle(
 		)
 		entry = ControllerCandidateBundleEntry(
 			edge_id=str(index),
-			source_title=node_title(graph, link.source),
-			target_title=target_title,
+			source_title=(
+				_MASKED_TITLE
+				if mask_titles
+				else node_title(graph, link.source)
+			),
+			target_title=_MASKED_TITLE if mask_titles else target_title,
 			anchor_text=link.anchor_text,
 			sentence=link.sentence,
 			prefilter_score=score_card.total_score,
@@ -371,7 +376,11 @@ def build_controller_candidate_bundle(
 			entry.future_candidates = [
 				ControllerFutureCandidateBundle(
 					edge_id=f"{index}-{future_index}",
-					target_title=node_title(graph, next_links[future_index].target),
+					target_title=(
+						_MASKED_TITLE
+						if mask_titles
+						else node_title(graph, next_links[future_index].target)
+					),
 					anchor_text=next_links[future_index].anchor_text,
 					sentence=next_links[future_index].sentence,
 					prefilter_score=future_cards[future_index].total_score,
@@ -400,7 +409,11 @@ def build_controller_candidate_bundle(
 	return ControllerCandidateBundle(
 		query=query,
 		current_node_id=current_node_id,
-		path_titles=[node_title(graph, node_id) for node_id in path_node_ids],
+		path_titles=(
+			[_MASKED_TITLE] * len(path_node_ids)
+			if mask_titles
+			else [node_title(graph, node_id) for node_id in path_node_ids]
+		),
 		raw_candidate_count=exposure_plan.raw_candidate_count,
 		valid_candidate_count=exposure_plan.valid_candidate_count,
 		small_page_bypass=exposure_plan.small_page_bypass,
@@ -584,3 +597,14 @@ def node_title(graph: LinkContextGraph, node_id: str) -> str:
 	attr = graph.node_attr.get(node_id, {})
 	title = str(attr.get("title", "")).strip()
 	return title or node_id
+
+
+def _masks_title(graph: LinkContextGraph) -> bool:
+	"""Return True when the graph's mask mode requires title masking."""
+	return getattr(graph, "mask_mode", LinkContextMaskMode.NONE) in (
+		LinkContextMaskMode.MASK_TITLE,
+		LinkContextMaskMode.MASK_ALL,
+	)
+
+
+_MASKED_TITLE = "[TARGET]"

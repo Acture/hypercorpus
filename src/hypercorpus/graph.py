@@ -43,6 +43,8 @@ class LinkContextMaskMode(str, Enum):
 	MASK_ANCHOR = "mask_anchor"
 	MASK_SENTENCE = "mask_sentence"
 	MASK_BOTH = "mask_both"
+	MASK_TITLE = "mask_title"
+	MASK_ALL = "mask_all"
 
 
 def mask_link_context(link: LinkContext, mode: LinkContextMaskMode) -> LinkContext:
@@ -51,12 +53,22 @@ def mask_link_context(link: LinkContext, mode: LinkContextMaskMode) -> LinkConte
 		return link
 	anchor = (
 		"[LINK]"
-		if mode in (LinkContextMaskMode.MASK_ANCHOR, LinkContextMaskMode.MASK_BOTH)
+		if mode
+		in (
+			LinkContextMaskMode.MASK_ANCHOR,
+			LinkContextMaskMode.MASK_BOTH,
+			LinkContextMaskMode.MASK_ALL,
+		)
 		else link.anchor_text
 	)
 	sentence = (
 		"[CONTEXT]"
-		if mode in (LinkContextMaskMode.MASK_SENTENCE, LinkContextMaskMode.MASK_BOTH)
+		if mode
+		in (
+			LinkContextMaskMode.MASK_SENTENCE,
+			LinkContextMaskMode.MASK_BOTH,
+			LinkContextMaskMode.MASK_ALL,
+		)
 		else link.sentence
 	)
 	return LinkContext(
