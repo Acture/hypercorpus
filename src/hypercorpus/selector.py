@@ -3725,6 +3725,24 @@ def build_selector(
 		spec = replace(spec, walk_score_threshold=walk_score_threshold)
 	if seed_top_k is not None:
 		spec = replace(spec, seed_top_k=seed_top_k)
+		# Update canonical names to reflect the override
+		updated_canonical = re.sub(
+			r"^top_\d+_seed__", f"top_{seed_top_k}_seed__", spec.canonical_name, count=1
+		)
+		if spec.base_canonical_name is not None:
+			updated_base_canonical = re.sub(
+				r"^top_\d+_seed__",
+				f"top_{seed_top_k}_seed__",
+				spec.base_canonical_name,
+				count=1,
+			)
+		else:
+			updated_base_canonical = None
+		spec = replace(
+			spec,
+			canonical_name=updated_canonical,
+			base_canonical_name=updated_base_canonical,
+		)
 	llm_config = SelectorLLMConfig(
 		provider=cast(SelectorProvider, selector_provider),
 		model=selector_model,

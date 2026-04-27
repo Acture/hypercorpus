@@ -1074,3 +1074,28 @@ def test_dense_rerank_selector_with_budget_fill():
 	assert result.selector_metadata is not None
 	assert result.selector_metadata.budget_fill_mode == "relative_drop"
 	assert len(result.selected_node_ids) >= 1
+
+
+def test_seed_top_k_override_updates_canonical_name():
+	"""Test that seed_top_k override updates canonical_name and base_canonical_name."""
+	# Build selector with top_1 in name but seed_top_k=3 override
+	selector = build_selector(
+		"top_1_seed__sentence_transformer__hop_0__dense__budget_fill_relative_drop",
+		seed_top_k=3,
+	)
+	# Canonical name should reflect the override
+	assert selector.name.startswith("top_3_seed__")
+	assert selector.spec.seed_top_k == 3
+	assert selector.spec.canonical_name.startswith("top_3_seed__")
+	# Base canonical name should also be updated
+	assert selector.spec.base_canonical_name is not None
+	assert selector.spec.base_canonical_name.startswith("top_3_seed__")
+	
+	# Test with a path_search selector
+	selector_path = build_selector(
+		"top_1_seed__sentence_transformer__hop_2__single_path_walk__link_context_overlap__lookahead_1",
+		seed_top_k=5,
+	)
+	assert selector_path.name.startswith("top_5_seed__")
+	assert selector_path.spec.seed_top_k == 5
+	assert selector_path.spec.canonical_name.startswith("top_5_seed__")
