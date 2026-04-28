@@ -1666,6 +1666,15 @@ def run_iirc_store(
 		"--cross-encoder-model",
 		help="Cross-encoder model for dense_rerank baseline (default: cross-encoder/ms-marco-MiniLM-L-12-v2)",
 	),
+	prefilter_mode: str = typer.Option(
+		"full",
+		"--prefilter-mode",
+		help=(
+			"Controller prefilter mode: 'full' (default; bonus rescue, generic-page"
+			" penalty, answer-bearing pin, small-page bypass) or 'minimal' (top-K by"
+			" embedding similarity only — for prefilter-vs-LLM ablation)."
+		),
+	),
 ) -> None:
 	console = Console()
 	resolved_token_budgets, resolved_budget_ratios = _resolve_budget_options(
@@ -1726,6 +1735,7 @@ def run_iirc_store(
 			walk_score_threshold=walk_score_threshold,
 			cross_encoder_model=cross_encoder_model,
 			seed_top_k=seed_top_k,
+			prefilter_mode=prefilter_mode,
 		),
 	)
 

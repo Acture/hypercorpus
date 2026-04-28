@@ -27,6 +27,7 @@ from hypercorpus.selector_llm import (
 	LLMControllerStepScorer,
 	LLMStepLinkScorer,
 	OpenAIApiMode,
+	PrefilterTop1ControllerStepScorer,
 	SelectorLLMConfig,
 	SelectorProvider,
 	TitleAwareOverlapStepScorer,
@@ -113,6 +114,7 @@ _EDGE_SCORERS: set[str] = {
 	"link_context_overlap",
 	"link_context_llm",
 	"link_context_llm_controller",
+	"link_context_prefilter_top1",
 	"anchor_overlap",
 	"link_context_sentence_transformer",
 }
@@ -3550,7 +3552,7 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		or lookahead not in _LOOKAHEADS
 	):
 		raise ValueError(f"Unknown selector: {name}")
-	if edge_scorer == "link_context_llm_controller":
+	if edge_scorer in {"link_context_llm_controller", "link_context_prefilter_top1"}:
 		if hop_budget is not None:
 			raise ValueError(f"Unknown selector: {name}")
 	else:
@@ -3560,6 +3562,8 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		"single_path_walk",
 		"constrained_multipath",
 	}:
+		raise ValueError(f"Unknown selector: {name}")
+	if edge_scorer == "link_context_prefilter_top1" and search_structure != "single_path_walk":
 		raise ValueError(f"Unknown selector: {name}")
 	if search_structure == "constrained_multipath" and (
 		edge_scorer != "link_context_llm_controller" or lookahead != "lookahead_2"
@@ -3606,6 +3610,7 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
 				f"top_1_seed__{seed_strategy}__hop_2__single_path_walk__link_context_llm__lookahead_2",
 				f"top_1_seed__{seed_strategy}__hop_adaptive__single_path_walk__link_context_llm_controller__lookahead_2",
 				f"top_1_seed__{seed_strategy}__hop_adaptive__constrained_multipath__link_context_llm_controller__lookahead_2",
+				f"top_1_seed__{seed_strategy}__hop_adaptive__single_path_walk__link_context_prefilter_top1__lookahead_2",
 				f"top_3_seed__{seed_strategy}__hop_0__dense",
 				f"top_3_seed__{seed_strategy}__hop_1__topology_neighbors",
 				f"top_3_seed__{seed_strategy}__hop_1__anchor_neighbors",
@@ -3696,6 +3701,7 @@ def build_selector(
 	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
 	seed_top_k: int | None = None,
+	prefilter_mode: str = "full",
 ) -> CorpusSelector:
 	from hypercorpus.baselines.mdr import (
 		EXTERNAL_MDR_SELECTOR_NAME,
@@ -3750,6 +3756,7 @@ def build_selector(
 		base_url=selector_base_url,
 		openai_api_mode=cast(OpenAIApiMode | None, selector_openai_api_mode),
 		cache_path=None if selector_cache_path is None else Path(selector_cache_path),
+		controller_prefilter_mode=cast(Any, prefilter_mode),
 	)
 	sentence_transformer_config = SentenceTransformerSelectorConfig(
 		model_name=sentence_transformer_model or DEFAULT_SENTENCE_TRANSFORMER_MODEL,
@@ -3889,6 +3896,7 @@ def select_selectors(
 	budget_fill_pool_k: int | None = None,
 	walk_score_threshold: float | None = None,
 	seed_top_k: int | None = None,
+	prefilter_mode: str = "full",
 ) -> list[CorpusSelector]:
 	selector_names = (
 		list(names)
@@ -3921,6 +3929,7 @@ def select_selectors(
 			budget_fill_pool_k=budget_fill_pool_k,
 			walk_score_threshold=walk_score_threshold,
 			seed_top_k=seed_top_k,
+			prefilter_mode=prefilter_mode,
 		)
 		for name in selector_names
 	]
@@ -3941,7 +3950,10 @@ def _build_algorithm(search_structure: SearchStructure) -> _PathfindingSelector:
 
 
 def _controller_runtime_hop_cap(spec: SelectorSpec) -> int | None:
-	if spec.edge_scorer != "link_context_llm_controller":
+	if spec.edge_scorer not in {
+		"link_context_llm_controller",
+		"link_context_prefilter_top1",
+	}:
 		return spec.hop_budget
 	return (
 		_CONTROLLER_INTERNAL_SAFETY_HOPS if spec.hop_budget is None else spec.hop_budget
@@ -4024,6 +4036,35 @@ def _build_step_scorer_from_spec(
 			backend_factory=backend_factory,
 		)
 		return LLMControllerStepScorer(
+			controller=controller,
+			config=llm_config,
+			mode=mode,
+			fallback_scorer=LinkContextOverlapStepScorer(
+				lookahead_steps=lookahead_steps
+			),
+		)
+	if spec.edge_scorer == "link_context_prefilter_top1":
+		mode = "two_hop" if lookahead_steps == 2 else "single_hop"
+		semantic_prefilter_scorer = (
+			SentenceTransformerStepScorer(
+				embedder=embedder,
+				lookahead_steps=1,
+				profile_name="controller_prefilter_semantic",
+			)
+			if embedder is not None
+			else None
+		)
+		controller = LLMController(
+			config=llm_config,
+			mode=mode,
+			prefilter_scorer=TitleAwareOverlapStepScorer(),
+			semantic_prefilter_scorer=semantic_prefilter_scorer,
+			fallback_scorer=LinkContextOverlapStepScorer(
+				lookahead_steps=lookahead_steps
+			),
+			backend_factory=backend_factory,
+		)
+		return PrefilterTop1ControllerStepScorer(
 			controller=controller,
 			config=llm_config,
 			mode=mode,

@@ -1526,6 +1526,7 @@ def run_store_experiment(
 	walk_score_threshold: float | None = None,
 	cross_encoder_model: str | None = None,
 	seed_top_k: int | None = None,
+	prefilter_mode: str = "full",
 ) -> tuple[list[CaseEvaluation], ExperimentSummary, Path]:
 	mask_mode = (
 		LinkContextMaskMode(link_context_mask)
@@ -1612,6 +1613,7 @@ def run_store_experiment(
 		walk_score_threshold=walk_score_threshold,
 		cross_encoder_model=cross_encoder_model,
 		seed_top_k=seed_top_k,
+		prefilter_mode=prefilter_mode,
 	)
 	budgets = _resolve_budgets(		token_budgets=resolved.token_budgets,
 		budget_ratios=resolved.budget_ratios,
