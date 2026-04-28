@@ -28,6 +28,9 @@ ControllerGenericPagePolicy = Literal[
 ]
 
 
+ControllerPrefilterMode = Literal["full", "minimal"]
+
+
 @dataclass(slots=True)
 class ControllerExposurePlan:
 	"""Deterministic candidate-visibility decision for one controller step."""
@@ -163,8 +166,18 @@ def build_controller_exposure_plan(
 	semantic_top_n: int,
 	bonus_keep_n: int,
 	visible_cap: int,
+	prefilter_mode: ControllerPrefilterMode = "full",
 ) -> ControllerExposurePlan:
-	"""Plan which candidate edges are visible to the controller LLM."""
+	"""Plan which candidate edges are visible to the controller LLM.
+
+	When ``prefilter_mode`` is ``"minimal"`` the deterministic prefilter is
+	stripped down to a pure embedding-similarity (or lexical-fallback) top-K
+	ranking: no bonus rescue, no answer-bearing pin, no small-page bypass, no
+	hybrid lexical/semantic union. The candidate hygiene step (dangling-target
+	filtering) still runs because it is correctness, not heuristic curation.
+	This mode exists for the controller prefilter ablation that isolates the
+	LLM's contribution from the deterministic curation heuristics.
+	"""
 
 	raw_candidate_count = len(candidate_links)
 	valid_indices: list[int] = []
@@ -187,6 +200,30 @@ def build_controller_exposure_plan(
 			bonus_rescued_edge_ids=[],
 			visible_indices=[],
 		)
+
+	if prefilter_mode == "minimal":
+		ranking_cards = (
+			semantic_cards if semantic_cards is not None else lexical_cards
+		)
+		ranked = rank_indices_by_score(valid_indices, ranking_cards)
+		visible_indices = ranked[:visible_cap]
+		ranked_edge_ids = [str(index) for index in visible_indices]
+		return ControllerExposurePlan(
+			raw_candidate_count=raw_candidate_count,
+			valid_candidate_count=valid_candidate_count,
+			small_page_bypass=False,
+			valid_indices=valid_indices,
+			dangling_indices=dangling_indices,
+			lexical_prefilter_edge_ids=(
+				[] if semantic_cards is not None else ranked_edge_ids
+			),
+			semantic_prefilter_edge_ids=(
+				ranked_edge_ids if semantic_cards is not None else []
+			),
+			bonus_rescued_edge_ids=[],
+			visible_indices=visible_indices,
+		)
+
 	if valid_candidate_count <= small_page_bypass_n:
 		return ControllerExposurePlan(
 			raw_candidate_count=raw_candidate_count,

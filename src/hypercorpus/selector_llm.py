@@ -41,6 +41,7 @@ from hypercorpus.controller_exposure import (
 	ControllerCandidateBundle,
 	ControllerExposurePlan,
 	ControllerGenericPagePolicy,
+	ControllerPrefilterMode,
 	build_controller_candidate_bundle,
 	build_controller_exposure_plan,
 	prefilter_indices,
@@ -111,6 +112,7 @@ class SelectorLLMConfig:
 	controller_future_top_n: int = 2
 	controller_max_attempts: int = 3
 	controller_generic_page_policy: ControllerGenericPagePolicy = "prompt_only"
+	controller_prefilter_mode: ControllerPrefilterMode = "full"
 	enable_stop: bool = True
 	enable_backtrack: bool = True
 	enable_scout_fork: bool = True
@@ -1809,6 +1811,7 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 			semantic_top_n=self.config.controller_semantic_top_n,
 			bonus_keep_n=self.config.controller_bonus_keep_n,
 			visible_cap=self.config.controller_visible_top_n,
+			prefilter_mode=self.config.controller_prefilter_mode,
 		)
 		bundle = build_controller_candidate_bundle(
 			graph=graph,
@@ -1863,6 +1866,207 @@ class LLMControllerStepScorer(ControllerRuntimeScorer):
 					secondary=runner_up_candidate,
 					forks_used=forks_used,
 				),
+				allow_backtrack=(
+					self.config.enable_backtrack
+					and backtracks_used < self.config.max_backtracks_per_case
+				),
+			),
+		)
+
+
+class PrefilterTop1ControllerStepScorer(ControllerRuntimeScorer):
+	"""Controller-shaped scorer that picks top-1 by prefilter, with no LLM call.
+
+	This selector keeps the full deterministic prefilter (small-page bypass,
+	hybrid lexical+semantic union, bonus rescue, answer-bearing pin) and
+	substitutes the LLM decision with an argmax over visible candidates ranked
+	by their combined prefilter score. It exists for the prefilter-only
+	ablation that isolates the contribution of the deterministic curation
+	heuristics from the LLM controller.
+	"""
+
+	scorer_kind = "prefilter_top1_controller"
+
+	def __init__(
+		self,
+		*,
+		controller: "LLMController",
+		config: SelectorLLMConfig,
+		mode: Literal["single_hop", "two_hop"],
+		fallback_scorer: StepLinkScorer | None = None,
+	):
+		self.controller = controller
+		self.config = config
+		self.mode = mode
+		self.fallback_scorer = fallback_scorer or LinkContextOverlapStepScorer()
+		self.metadata = StepScorerMetadata(
+			scorer_kind=self.scorer_kind,
+			backend=self.scorer_kind,
+			provider=None,
+			model=None,
+			prompt_version=None,
+			candidate_prefilter_top_n=self.config.controller_prefilter_top_n,
+			two_hop_prefilter_top_n=self.config.controller_future_top_n
+			if self.mode == "two_hop"
+			else None,
+			controller_prompt_version=None,
+			controller_prefilter_top_n=self.config.controller_prefilter_top_n,
+			controller_visible_top_n=self.config.controller_visible_top_n,
+			controller_future_top_n=self.config.controller_future_top_n
+			if self.mode == "two_hop"
+			else None,
+		)
+
+	def score_candidates(
+		self,
+		*,
+		query: str,
+		graph: LinkContextGraph,
+		current_node_id: str,
+		candidate_links: Sequence[LinkContext],
+		visited_nodes: set[str],
+		path_node_ids: Sequence[str],
+		remaining_steps: int,
+	) -> list[StepScoreCard]:
+		return self.fallback_scorer.score_candidates(
+			query=query,
+			graph=graph,
+			current_node_id=current_node_id,
+			candidate_links=candidate_links,
+			visited_nodes=visited_nodes,
+			path_node_ids=path_node_ids,
+			remaining_steps=remaining_steps,
+		)
+
+	def evaluate_controller_step(
+		self,
+		*,
+		query: str,
+		graph: LinkContextGraph,
+		current_node_id: str,
+		candidate_links: Sequence[LinkContext],
+		visited_nodes: set[str],
+		path_node_ids: Sequence[str],
+		remaining_steps: int,
+		current_depth: int,
+		forks_used: int = 0,
+		backtracks_used: int = 0,
+	) -> ControllerExecutionResult:
+		started = time.perf_counter()
+		fallback_cards = self.fallback_scorer.score_candidates(
+			query=query,
+			graph=graph,
+			current_node_id=current_node_id,
+			candidate_links=candidate_links,
+			visited_nodes=visited_nodes,
+			path_node_ids=path_node_ids,
+			remaining_steps=remaining_steps,
+		)
+		lexical_cards = self.controller.prefilter_scorer.score_candidates(
+			query=query,
+			graph=graph,
+			current_node_id=current_node_id,
+			candidate_links=candidate_links,
+			visited_nodes=visited_nodes,
+			path_node_ids=path_node_ids,
+			remaining_steps=remaining_steps,
+		)
+		semantic_cards = (
+			self.controller.semantic_prefilter_scorer.score_candidates(
+				query=query,
+				graph=graph,
+				current_node_id=current_node_id,
+				candidate_links=candidate_links,
+				visited_nodes=visited_nodes,
+				path_node_ids=path_node_ids,
+				remaining_steps=remaining_steps,
+			)
+			if self.controller.semantic_prefilter_scorer is not None
+			else None
+		)
+		exposure_plan = build_controller_exposure_plan(
+			query=query,
+			graph=graph,
+			candidate_links=candidate_links,
+			lexical_cards=lexical_cards,
+			semantic_cards=semantic_cards,
+			small_page_bypass_n=self.config.controller_small_page_bypass_n,
+			lexical_top_n=self.config.controller_lexical_top_n,
+			semantic_top_n=self.config.controller_semantic_top_n,
+			bonus_keep_n=self.config.controller_bonus_keep_n,
+			visible_cap=self.config.controller_visible_top_n,
+			prefilter_mode=self.config.controller_prefilter_mode,
+		)
+
+		# Rank visible candidates by max(lexical, semantic) combined score
+		# (mirrors `combined_order` used inside the full prefilter).
+		def _combined_score(index: int) -> tuple[float, int]:
+			semantic_score = (
+				semantic_cards[index].total_score
+				if semantic_cards is not None
+				else 0.0
+			)
+			return (
+				max(lexical_cards[index].total_score, semantic_score),
+				-index,
+			)
+
+		ranked_visible = sorted(
+			exposure_plan.visible_indices,
+			key=_combined_score,
+			reverse=True,
+		)
+		primary_edge_id = (
+			str(ranked_visible[0]) if ranked_visible else None
+		)
+		runner_up_edge_id = (
+			str(ranked_visible[1]) if len(ranked_visible) > 1 else None
+		)
+		latency_s = time.perf_counter() - started
+		decision = ControllerDecision(
+			decision="stop" if primary_edge_id is None else primary_edge_id,
+			runner_up=runner_up_edge_id,
+			state="need_bridge",
+			reason="prefilter_top1_argmax",
+			primary_edge_id=primary_edge_id,
+			runner_up_edge_id=runner_up_edge_id,
+			effective_action="stop" if primary_edge_id is None else "choose_one",
+			backup_edge_id=None,
+			backend=self.scorer_kind,
+			provider=None,
+			model=None,
+			candidates=[],
+			text=None,
+			raw_response=None,
+			prompt_tokens=None,
+			completion_tokens=None,
+			total_tokens=None,
+			latency_s=latency_s,
+			cache_hit=None,
+			fallback_reason=None,
+			llm_attempts=0,
+			raw_candidate_count=exposure_plan.raw_candidate_count,
+			valid_candidate_count=exposure_plan.valid_candidate_count,
+			small_page_bypass=exposure_plan.small_page_bypass,
+			dangling_edge_ids=[
+				str(index) for index in exposure_plan.dangling_indices
+			],
+			lexical_prefilter_edge_ids=list(
+				exposure_plan.lexical_prefilter_edge_ids
+			),
+			semantic_prefilter_edge_ids=list(
+				exposure_plan.semantic_prefilter_edge_ids
+			),
+			bonus_rescued_edge_ids=list(exposure_plan.bonus_rescued_edge_ids),
+			visible_edge_ids=[str(index) for index in exposure_plan.visible_indices],
+		)
+		return build_controller_execution_result(
+			decision=decision,
+			candidate_links=candidate_links,
+			score_cards=fallback_cards,
+			policy=ControllerExecutionPolicy(
+				allow_stop=False,
+				allow_choose_two=False,
 				allow_backtrack=(
 					self.config.enable_backtrack
 					and backtracks_used < self.config.max_backtracks_per_case
