@@ -102,10 +102,17 @@ def iter_input_rows(
 	selector_filter: Sequence[str] | None = None,
 	budget_label_filter: Sequence[str] | None = None,
 ) -> Iterator[ReanswerInputRow]:
-	"""Yield filtered `ReanswerInputRow`s from `runs/<name>/chunks/*/results.jsonl`."""
+	"""Yield filtered, deduplicated `ReanswerInputRow`s from results.jsonl files.
+
+	When the same `(case_id, selector, budget_label)` triple appears in more
+	than one input run, only the first occurrence is yielded. This lets a
+	caller pass overlapping run directories (for example, several runs that
+	all include the same dense baseline) without inflating the per-row count.
+	"""
 
 	selector_set = set(selector_filter) if selector_filter else None
 	budget_set = set(budget_label_filter) if budget_label_filter else None
+	seen: set[tuple[str, str, str]] = set()
 	for run_dir in run_dirs:
 		run_dir = Path(run_dir)
 		chunks_dir = run_dir / "chunks"
@@ -124,6 +131,10 @@ def iter_input_rows(
 						continue
 					if budget_set is not None and row.budget_label not in budget_set:
 						continue
+					key = (row.case_id, row.selector, row.budget_label)
+					if key in seen:
+						continue
+					seen.add(key)
 					yield row
 
 
