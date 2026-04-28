@@ -40,6 +40,7 @@ from hypercorpus.experiments import (
 	token_budget_choices_help,
 )
 from hypercorpus.baselines import EXTERNAL_MDR_SELECTOR_NAME
+from hypercorpus.reanswer import run_reanswer
 from hypercorpus.logging import (
 	DashboardLogBuffer,
 	DashboardProgressState,
@@ -2244,6 +2245,112 @@ def run_hotpotqa_store(
 			seed_top_k=seed_top_k,
 		),
 	)
+
+
+@experiments_app.command("reanswer-iirc")
+def reanswer_iirc(
+	input_runs: str = typer.Option(
+		...,
+		"--input-runs",
+		help="Comma-separated paths to prior run dirs (each containing chunks/*/results.jsonl).",
+	),
+	store: str = typer.Option(
+		..., "--store", help="Path or s3:// URI to the prepared IIRC store"
+	),
+	exp_name: str = typer.Option(
+		..., "--exp-name", help="Output run name under --output-root"
+	),
+	output_root: Path = typer.Option(
+		Path("runs"),
+		"--output-root",
+		file_okay=False,
+		help="Root directory for the output run",
+	),
+	selectors: str | None = typer.Option(
+		None,
+		"--selectors",
+		help="Optional comma-separated selector name filter (exact match).",
+	),
+	budget_labels: str | None = typer.Option(
+		None,
+		"--budget-labels",
+		help="Optional comma-separated budget_label filter, e.g. 'ratio-0.0100,tokens-512'.",
+	),
+	max_cases: int | None = typer.Option(
+		None,
+		"--max-cases",
+		min=1,
+		help="Cap the number of distinct case_ids re-answered (across all selectors/budgets).",
+	),
+	answerer: str = typer.Option(
+		"llm_fixed",
+		"--answerer",
+		help="Answerer mode: heuristic or llm_fixed (default).",
+	),
+	answer_provider: str = typer.Option(
+		"copilot",
+		"--answerer-provider",
+		help="Answerer LLM provider (default: copilot).",
+	),
+	answer_model: str = typer.Option(
+		"gpt-4.1",
+		"--answerer-model",
+		help="Answerer LLM model (default: gpt-4.1).",
+	),
+	answer_api_key_env: str | None = typer.Option(
+		None,
+		"--answerer-api-key-env",
+		help="Env var holding the answerer API key (non-copilot providers).",
+	),
+	answer_base_url: str | None = typer.Option(
+		None, "--answerer-base-url", help="Optional answerer base URL override."
+	),
+	answer_cache_path: Path | None = typer.Option(
+		None,
+		"--answerer-cache-path",
+		file_okay=True,
+		dir_okay=False,
+		help="Optional JSONL cache path for the answerer (recommended for retries).",
+	),
+) -> None:
+	"""Re-run the LLM answerer over selections from prior IIRC runs.
+
+	Loads existing `results.jsonl` rows from --input-runs, reconstructs the
+	selected subgraph against --store, and writes new per-row outputs with
+	answer F1/EM under <output-root>/<exp-name>/results.jsonl.
+	"""
+
+	console = Console()
+	resolved_runs = [Path(item.strip()) for item in input_runs.split(",") if item.strip()]
+	if not resolved_runs:
+		raise typer.BadParameter("--input-runs is empty.")
+	for run_dir in resolved_runs:
+		if not run_dir.is_dir():
+			raise typer.BadParameter(f"Input run dir not found: {run_dir}")
+	selector_filter = (
+		[s.strip() for s in selectors.split(",") if s.strip()] if selectors else None
+	)
+	budget_filter = (
+		[s.strip() for s in budget_labels.split(",") if s.strip()]
+		if budget_labels
+		else None
+	)
+	output_dir = run_reanswer(
+		input_runs=resolved_runs,
+		store_uri=store,
+		output_root=output_root,
+		exp_name=exp_name,
+		answerer_mode=answerer,
+		answer_provider=answer_provider,
+		answer_model=answer_model,
+		answer_api_key_env=answer_api_key_env,
+		answer_base_url=answer_base_url,
+		answer_cache_path=answer_cache_path,
+		selector_filter=selector_filter,
+		budget_label_filter=budget_filter,
+		max_cases=max_cases,
+	)
+	console.print(f"[green]reanswer complete[/green] -> {output_dir}")
 
 
 @experiments_app.command("merge-2wiki-results")
