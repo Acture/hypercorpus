@@ -2,7 +2,7 @@ from typing import cast
 
 from hypercorpus.copilot import CopilotSdkCompletion, DEFAULT_COPILOT_MODEL
 from hypercorpus.answering import Answerer, LLMAnswerer, LLMAnswererConfig
-from hypercorpus.subgraph import SubgraphExtractor
+from hypercorpus.subgraph import FullDocumentExtractor, SubgraphExtractor
 
 
 def test_subgraph_extractor_keeps_query_relevant_context(sample_graph):
@@ -135,9 +135,55 @@ def test_llm_answerer_defaults_to_copilot_sdk(sample_graph):
 	assert request["model"] == DEFAULT_COPILOT_MODEL
 	assert request["system_prompt"] == (
 		"Answer only from the supplied evidence context. "
-		'Return JSON with a single string field: {"answer": "..."}'
+		"Reply with the shortest exact answer span — a name, number, "
+		"date, or short phrase. No full sentences, no leading articles "
+		"(a/an/the), no explanations, no units unless asked. "
+		'Return JSON: {"answer": "..."}'
 	)
 	assert request["timeout_s"] == 120.0
 	user_prompt = cast(str, request["user_prompt"])
 	assert "Question:\nWhich city hosts the launch site?" in user_prompt
 	assert "Evidence context:\n" in user_prompt
+
+
+
+
+def test_full_document_extractor_emits_every_sentence_per_node(sample_graph):
+	subgraph = FullDocumentExtractor().extract(
+		"Which city hosts the launch site?",
+		sample_graph,
+		["mission", "cape"],
+	)
+	mission_sentences = [
+		s.text for s in subgraph.snippets if s.node_id == "mission"
+	]
+	cape_sentences = [s.text for s in subgraph.snippets if s.node_id == "cape"]
+	assert mission_sentences == [
+		"Moon Launch Program uses Cape Canaveral as its launch site.",
+		"The program was directed by Alice Johnson.",
+	]
+	assert cape_sentences == ["Cape Canaveral is a city in Florida."]
+	assert subgraph.relations == []
+	assert subgraph.token_cost_estimate > 0
+
+
+def test_full_document_extractor_includes_non_overlapping_sentences(sample_graph):
+	query = "What year did the program get directed?"
+	full = FullDocumentExtractor().extract(query, sample_graph, ["director"])
+	legacy = SubgraphExtractor(max_snippets_per_node=2).extract(
+		query, sample_graph, ["director"]
+	)
+	full_texts = {s.text for s in full.snippets}
+	assert "Alice Johnson directed the Moon Launch Program in 1969." in full_texts
+	for legacy_snip in legacy.snippets:
+		assert legacy_snip.text in full_texts
+
+
+def test_full_document_extractor_respects_token_cap(sample_graph):
+	subgraph = FullDocumentExtractor(max_input_tokens=5).extract(
+		"any query",
+		sample_graph,
+		["mission", "cape", "director", "florida"],
+	)
+	assert subgraph.token_cost_estimate <= 5
+	assert all(s.text for s in subgraph.snippets)

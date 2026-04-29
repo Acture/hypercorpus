@@ -116,3 +116,69 @@ class SubgraphExtractor:
 			relations=relations,
 			token_cost_estimate=token_cost_estimate,
 		)
+
+
+class FullDocumentExtractor:
+	"""Builds a QuerySubgraph that exposes the full document text per visited node.
+
+	Unlike `SubgraphExtractor`, which pre-filters sentences by lexical overlap with
+	the query (capped at `max_snippets_per_node=2` by default), this extractor is
+	meant for the answerer's evidence context: it emits every sentence of every
+	visited document, in document order, without lexical filtering. Relations are
+	intentionally omitted since the full sentence text already carries the link
+	context.
+
+	A global token cap (`max_input_tokens`, default 50_000) is enforced by
+	dropping nodes from the tail of `visited_nodes` once the budget is exceeded.
+	The first sentence that triggered the overflow is also dropped, ensuring the
+	context never exceeds the cap.
+	"""
+
+	def __init__(
+		self,
+		*,
+		max_input_tokens: int = 50_000,
+	):
+		self.max_input_tokens = max_input_tokens
+
+	def extract(
+		self,
+		query: str,
+		graph: LinkContextGraph,
+		visited_nodes: list[str],
+	) -> QuerySubgraph:
+		node_ids = list(dict.fromkeys(visited_nodes))
+		snippets: list[EvidenceSnippet] = []
+		token_cost = 0
+
+		for node_id in node_ids:
+			document = graph.get_document(node_id)
+			if document is None:
+				continue
+			for sentence in document.sentences:
+				sentence_tokens = approx_token_count(sentence)
+				if token_cost + sentence_tokens > self.max_input_tokens:
+					return QuerySubgraph(
+						query=query,
+						node_ids=node_ids,
+						snippets=snippets,
+						relations=[],
+						token_cost_estimate=token_cost,
+					)
+				snippets.append(
+					EvidenceSnippet(
+						node_id=node_id,
+						title=document.title,
+						text=sentence,
+						score=1.0,
+					)
+				)
+				token_cost += sentence_tokens
+
+		return QuerySubgraph(
+			query=query,
+			node_ids=node_ids,
+			snippets=snippets,
+			relations=[],
+			token_cost_estimate=token_cost,
+		)

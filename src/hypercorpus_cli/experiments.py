@@ -2322,6 +2322,17 @@ def reanswer_iirc(
 		dir_okay=False,
 		help="Optional JSONL cache path for the answerer (recommended for retries).",
 	),
+	evidence_mode: str = typer.Option(
+		"full_document",
+		"--evidence-mode",
+		help="How the answerer's evidence context is built: 'full_document' (default; emits every sentence of every visited node, capped by --max-input-tokens) or 'lexical_snippets' (legacy: top-K query-overlap sentences per node).",
+	),
+	max_input_tokens: int = typer.Option(
+		50_000,
+		"--max-input-tokens",
+		min=1,
+		help="Token cap on the answerer evidence context (only used when --evidence-mode=full_document).",
+	),
 ) -> None:
 	"""Re-run the LLM answerer over selections from prior IIRC runs.
 
@@ -2359,6 +2370,8 @@ def reanswer_iirc(
 		selector_filter=selector_filter,
 		budget_label_filter=budget_filter,
 		max_cases=max_cases,
+		evidence_mode=evidence_mode,
+		max_input_tokens=max_input_tokens,
 	)
 	console.print(f"[green]reanswer complete[/green] -> {output_dir}")
 

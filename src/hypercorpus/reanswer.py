@@ -26,8 +26,10 @@ from hypercorpus.answering import (
 )
 from hypercorpus.datasets.store import ShardedDocumentStore
 from hypercorpus.eval import EvaluationCase, _em
-from hypercorpus.subgraph import SubgraphExtractor
+from hypercorpus.subgraph import FullDocumentExtractor, SubgraphExtractor
 from hypercorpus.text import answer_f1
+
+ExtractorLike = SubgraphExtractor | FullDocumentExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +200,7 @@ def reanswer_row(
 	*,
 	graph: Any,
 	answerer: SupportsAnswer,
-	extractor: SubgraphExtractor,
+	extractor: ExtractorLike,
 ) -> ReanswerOutcome:
 	case = _case_from_row(row)
 	subgraph = extractor.extract(case.query, graph, list(row.selected_node_ids))
@@ -296,6 +298,8 @@ def run_reanswer(
 	max_cases: int | None = None,
 	max_snippets_per_node: int = 2,
 	max_relations: int = 8,
+	evidence_mode: str = "full_document",
+	max_input_tokens: int = 50_000,
 	store_factory: Any = None,
 	progress_log_every: int = 1,
 ) -> Path:
@@ -335,10 +339,18 @@ def run_reanswer(
 		base_url=answer_base_url,
 		cache_path=answer_cache_path,
 	)
-	extractor = SubgraphExtractor(
-		max_snippets_per_node=max_snippets_per_node,
-		max_relations=max_relations,
-	)
+	extractor: ExtractorLike
+	if evidence_mode == "full_document":
+		extractor = FullDocumentExtractor(max_input_tokens=max_input_tokens)
+	elif evidence_mode == "lexical_snippets":
+		extractor = SubgraphExtractor(
+			max_snippets_per_node=max_snippets_per_node,
+			max_relations=max_relations,
+		)
+	else:
+		raise ValueError(
+			f"Unknown evidence_mode={evidence_mode!r}; expected 'full_document' or 'lexical_snippets'."
+		)
 
 	outcomes: list[ReanswerOutcome] = []
 	with results_path.open("w", encoding="utf-8") as handle:
