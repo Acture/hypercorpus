@@ -1717,6 +1717,28 @@ class CanonicalDenseSelector(_SentenceTransformerSupport):
 _DENSE_RERANK_DEFAULT_POOL_K = 64
 
 
+def _budget_fill_checkpoint_interval() -> int:
+	"""Read the env-var-controlled checkpoint interval for the budget_fill loop.
+
+	The fill loop persists resume state on every accepted candidate by default
+	(interval=1). For very large `budget_fill_pool_k` overrides, the per-iteration
+	atomic JSON write becomes the dominant cost. Setting this env var to a larger
+	value (e.g. 200) batches checkpoints. The final state is always flushed by
+	the outer experiment driver after `select()` returns, so resume safety is
+	preserved at the (case, selector, budget) granularity even with larger
+	intervals.
+	"""
+
+	raw = os.environ.get("HYPERCORPUS_BUDGET_FILL_CHECKPOINT_INTERVAL")
+	if raw is None:
+		return 1
+	try:
+		value = int(raw)
+	except ValueError:
+		return 1
+	return value if value > 0 else 1
+
+
 class CanonicalDenseRerankSelector(_SentenceTransformerSupport):
 	"""Dense retrieval + cross-encoder reranking baseline."""
 
@@ -3253,9 +3275,12 @@ class BudgetFillSelector(_SentenceTransformerSupport):
 			if stop_callback is not None:
 				stop_callback()
 
+		checkpoint_interval = _budget_fill_checkpoint_interval()
+		final_offset = candidate_index - 1
 		for offset, (node_id, score) in enumerate(
 			seed_candidates[candidate_index:], start=candidate_index
 		):
+			final_offset = offset
 			if node_id in selected_node_set:
 				continue
 			if first_backfill_score is None:
@@ -3299,7 +3324,10 @@ class BudgetFillSelector(_SentenceTransformerSupport):
 			debug_trace.append(
 				f"fill_add:{self.spec.budget_fill_mode}:{node_id}:{score:.4f}"
 			)
-			if checkpoint_callback is not None:
+			if (
+				checkpoint_callback is not None
+				and (offset + 1) % checkpoint_interval == 0
+			):
 				checkpoint_callback(
 					self._checkpoint_payload(
 						case=case,
@@ -3318,6 +3346,29 @@ class BudgetFillSelector(_SentenceTransformerSupport):
 				)
 			if stop_callback is not None:
 				stop_callback()
+
+		if (
+			checkpoint_callback is not None
+			and checkpoint_interval > 1
+			and final_offset >= candidate_index
+			and (final_offset + 1) % checkpoint_interval != 0
+		):
+			checkpoint_callback(
+				self._checkpoint_payload(
+					case=case,
+					result=result,
+					seed_candidates=seed_candidates,
+					candidate_index=final_offset + 1,
+					selected_node_ids=selected_node_ids,
+					selected_node_set=selected_node_set,
+					ranked_nodes=ranked_nodes,
+					trace=trace,
+					debug_trace=debug_trace,
+					token_cost_estimate=token_cost_estimate,
+					first_backfill_score=first_backfill_score,
+					budget_token_limit=budget_token_limit,
+				)
+			)
 
 		selector_metadata = _apply_budget_fill_metadata(
 			result.selector_metadata, self.spec
