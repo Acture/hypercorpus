@@ -195,6 +195,14 @@ class ReanswerOutcome:
 	total_tokens: int | None
 
 
+SYSTEM_PROMPT_FOR_BUDGET = (
+	"Answer only from the supplied evidence context. Reply with the shortest "
+	"exact answer span — a name, number, date, or short phrase. No full "
+	"sentences, no leading articles (a/an/the), no explanations, no units "
+	"unless asked. Return JSON: {\"answer\": \"...\"}"
+)
+
+
 def reanswer_row(
 	row: ReanswerInputRow,
 	*,
@@ -203,7 +211,24 @@ def reanswer_row(
 	extractor: ExtractorLike,
 ) -> ReanswerOutcome:
 	case = _case_from_row(row)
-	subgraph = extractor.extract(case.query, graph, list(row.selected_node_ids))
+	# When the extractor is real-token-budget aware (FullDocumentExtractor),
+	# include the system prompt + question shell in its overhead estimate so
+	# the cap reflects the actual prompt size sent to the LLM.
+	if isinstance(extractor, FullDocumentExtractor):
+		overhead = (
+			SYSTEM_PROMPT_FOR_BUDGET
+			+ "\nQuestion:\n"
+			+ case.query
+			+ "\n\nEvidence context:\n"
+		)
+		subgraph = extractor.extract(
+			case.query,
+			graph,
+			list(row.selected_node_ids),
+			prompt_overhead_text=overhead,
+		)
+	else:
+		subgraph = extractor.extract(case.query, graph, list(row.selected_node_ids))
 	started = time.perf_counter()
 	answer = answerer.answer(case.query, subgraph)
 	runtime_s = time.perf_counter() - started
