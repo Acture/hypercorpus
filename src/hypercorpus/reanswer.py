@@ -355,9 +355,32 @@ def run_reanswer(
 	outcomes: list[ReanswerOutcome] = []
 	with results_path.open("w", encoding="utf-8") as handle:
 		for index, row in enumerate(rows):
-			outcome = reanswer_row(
-				row, graph=store, answerer=answerer, extractor=extractor
-			)
+			try:
+				outcome = reanswer_row(
+					row, graph=store, answerer=answerer, extractor=extractor
+				)
+			except Exception as exc:  # noqa: BLE001 — keep the run alive
+				logger.warning(
+					"Reanswer FAILED on case=%s selector=%s budget=%s: %s",
+					row.case_id,
+					row.selector,
+					row.budget_label,
+					exc,
+				)
+				outcome = ReanswerOutcome(
+					row=row,
+					answer="",
+					answer_em=0.0,
+					answer_f1=0.0,
+					mode="error",
+					model=None,
+					confidence=0.0,
+					evidence_count=0,
+					runtime_s=0.0,
+					prompt_tokens=None,
+					completion_tokens=None,
+					total_tokens=None,
+				)
 			outcomes.append(outcome)
 			handle.write(
 				json.dumps(outcome_to_record(outcome), ensure_ascii=False) + "\n"
