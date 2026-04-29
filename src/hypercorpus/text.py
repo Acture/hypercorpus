@@ -81,7 +81,8 @@ def extract_capitalized_phrases(text: str) -> list[str]:
 def normalize_answer(text: str) -> str:
 	text = text.lower().strip()
 	text = text.translate(str.maketrans("", "", string.punctuation))
-	return " ".join(text.split())
+	tokens = [tok for tok in text.split() if tok not in {"a", "an", "the"}]
+	return " ".join(tokens)
 
 
 def normalized_answer_tokens(text: str) -> list[str]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from hypercorpus.graph import LinkContextGraph
 from hypercorpus.text import approx_token_count, normalized_token_overlap
@@ -114,5 +115,116 @@ class SubgraphExtractor:
 			node_ids=node_ids,
 			snippets=snippets,
 			relations=relations,
+			token_cost_estimate=token_cost_estimate,
+		)
+
+
+class FullDocumentExtractor:
+	"""Builds a QuerySubgraph that exposes the full document text per visited node.
+
+	Unlike `SubgraphExtractor`, which pre-filters sentences by lexical overlap
+	with the query (capped at `max_snippets_per_node=2` by default), this
+	extractor is meant for the answerer's evidence context: it emits one
+	`EvidenceSnippet` per visited node, with `text` being the full document
+	(all sentences joined by a space), in node-arrival order. Relations are
+	intentionally omitted since the full sentence text already carries the
+	link context.
+
+	A real-token cap (`max_input_tokens`, default 55_000) is enforced against
+	the actual rendered prompt size using `tiktoken` (`gpt-4`/cl100k by
+	default). When the cap is exceeded, trailing nodes are dropped one at a
+	time and the prompt is re-rendered until the count fits. This means the
+	cap accounts for:
+
+	  * subword tokenization (GPT-4 produces ~1.6×–2.2× more tokens than the
+	    whitespace-based `approx_token_count` for English Wikipedia text);
+	  * per-snippet renderer boilerplate (`[snippet] node | title\\nscore=...`);
+	  * the system prompt + question + JSON wrapper overhead.
+
+	The caller passes those overheads via `prompt_overhead_text` (a single
+	concatenated string approximating the system prompt + question shell).
+	If `tiktoken` is unavailable, the extractor falls back to
+	`approx_token_count(rendered) * 2` as a safe over-estimate.
+	"""
+
+	def __init__(
+		self,
+		*,
+		max_input_tokens: int = 55_000,
+		tokenizer_model: str = "gpt-4",
+	):
+		self.max_input_tokens = max_input_tokens
+		self.tokenizer_model = tokenizer_model
+		self._encoder: Any = None
+
+	def _count_tokens(self, text: str) -> int:
+		if self._encoder is None:
+			try:
+				import tiktoken
+
+				self._encoder = tiktoken.encoding_for_model(self.tokenizer_model)
+			except Exception:  # noqa: BLE001 — tiktoken or model lookup failed
+				self._encoder = False
+		if self._encoder is False:
+			# Conservative over-estimate when tiktoken is unavailable.
+			return approx_token_count(text) * 2
+		return len(self._encoder.encode(text))
+
+	def extract(
+		self,
+		query: str,
+		graph: LinkContextGraph,
+		visited_nodes: list[str],
+		*,
+		prompt_overhead_text: str = "",
+	) -> QuerySubgraph:
+		node_ids = list(dict.fromkeys(visited_nodes))
+
+		# Build one snippet per node containing the full document text. This
+		# minimizes per-snippet renderer boilerplate compared to one snippet
+		# per sentence (cuts ~8k tokens for 64-node dense+fill cases).
+		all_snippets: list[EvidenceSnippet] = []
+		for node_id in node_ids:
+			document = graph.get_document(node_id)
+			if document is None:
+				continue
+			text = " ".join(document.sentences)
+			if not text.strip():
+				continue
+			all_snippets.append(
+				EvidenceSnippet(
+					node_id=node_id,
+					title=document.title,
+					text=text,
+					score=1.0,
+				)
+			)
+
+		# Iteratively drop trailing snippets until the rendered prompt fits.
+		from hypercorpus.answering import _render_subgraph
+
+		snippets = list(all_snippets)
+		overhead_tokens = self._count_tokens(prompt_overhead_text) if prompt_overhead_text else 0
+		while snippets:
+			rendered = _render_subgraph(
+				QuerySubgraph(
+					query=query,
+					node_ids=node_ids,
+					snippets=snippets,
+					relations=[],
+					token_cost_estimate=0,
+				)
+			)
+			total = self._count_tokens(rendered) + overhead_tokens
+			if total <= self.max_input_tokens:
+				break
+			snippets.pop()  # drop trailing (lowest-priority) node
+
+		token_cost_estimate = sum(approx_token_count(s.text) for s in snippets)
+		return QuerySubgraph(
+			query=query,
+			node_ids=node_ids,
+			snippets=snippets,
+			relations=[],
 			token_cost_estimate=token_cost_estimate,
 		)

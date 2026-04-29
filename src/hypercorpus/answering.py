@@ -72,7 +72,7 @@ class LLMAnswererConfig:
 	base_url: str | None = None
 	cache_path: Path | None = None
 	temperature: float = 0.0
-	prompt_version: str = "v1"
+	prompt_version: str = "v2"
 
 	def __post_init__(self) -> None:
 		if self.model is None:
@@ -324,7 +324,10 @@ class LLMAnswerer:
 				model=model,
 				system_prompt=(
 					"Answer only from the supplied evidence context. "
-					'Return JSON with a single string field: {"answer": "..."}'
+					"Reply with the shortest exact answer span — a name, number, "
+					"date, or short phrase. No full sentences, no leading articles "
+					"(a/an/the), no explanations, no units unless asked. "
+					'Return JSON: {"answer": "..."}'
 				),
 				user_prompt=f"Question:\n{query}\n\nEvidence context:\n{context}",
 			)
@@ -343,7 +346,11 @@ class LLMAnswerer:
 					"role": "system",
 					"content": (
 						"Answer only from the supplied evidence context. "
-						'Return JSON with a single string field: {"answer": "..."}'
+						"Reply with the shortest exact answer span — a name, "
+						"number, date, or short phrase. No full sentences, no "
+						"leading articles (a/an/the), no explanations, no units "
+						"unless asked. "
+						'Return JSON: {"answer": "..."}'
 					),
 				},
 				{
