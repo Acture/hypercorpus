@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import sqlite3
@@ -430,6 +431,22 @@ class ShardedDocumentStore:
 			scored.sort(key=lambda item: item[1], reverse=True)
 		return scored[:k]
 
+	def search_bm25(self, query: str, k: int = 1) -> list[tuple[str, float]]:
+		if k <= 0:
+			return []
+		rows = self._fts_search(query, limit=k)
+		if not rows:
+			return []
+		relevance_scores = [-float(row["bm25_score"]) for row in rows]
+		min_score = min(relevance_scores)
+		max_score = max(relevance_scores)
+		if math.isclose(min_score, max_score):
+			return [(str(row["node_id"]), 1.0) for row in rows]
+		return [
+			(str(row["node_id"]), (score - min_score) / (max_score - min_score))
+			for row, score in zip(rows, relevance_scores)
+		]
+
 	def total_token_estimate(self) -> int:
 		return self.manifest.total_token_estimate
 
@@ -532,10 +549,10 @@ class ShardedDocumentStore:
 		fts_query = " OR ".join(f'"{token}"' for token in tokens)
 		rows = self._connection.execute(
 			"""
-            SELECT node_id, title, text
+            SELECT node_id, title, text, bm25(documents_fts) AS bm25_score
             FROM documents_fts
             WHERE documents_fts MATCH ?
-            ORDER BY bm25(documents_fts)
+            ORDER BY bm25_score, node_id
             LIMIT ?
             """,
 			(fts_query, limit),
@@ -545,6 +562,7 @@ class ShardedDocumentStore:
 				"node_id": str(row[0]),
 				"title": str(row[1]),
 				"text": str(row[2]),
+				"bm25_score": float(row[3]),
 			}
 			for row in rows
 		]
