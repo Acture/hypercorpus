@@ -65,9 +65,12 @@ from hypercorpus.walker import (
 
 logger = logging.getLogger(__name__)
 
-SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
-BudgetFillMode = Literal["score_floor", "always", "relative_drop", "neighbor", "diverse"]
+SeedStrategyName = Literal["sentence_transformer", "lexical_overlap", "bm25"]
+BudgetFillMode = Literal[
+	"score_floor", "always", "relative_drop", "neighbor", "diverse"
+]
 BaselineName = Literal[
+	"bm25",
 	"dense",
 	"dense_rerank",
 	"iterative_dense",
@@ -92,8 +95,9 @@ SelectorPresetName = Literal[
 	"full", "paper_recommended", "paper_recommended_local", "branchy_profiles"
 ]
 
-_SEED_STRATEGIES: set[str] = {"sentence_transformer", "lexical_overlap"}
+_SEED_STRATEGIES: set[str] = {"sentence_transformer", "lexical_overlap", "bm25"}
 _BASELINES: set[str] = {
+	"bm25",
 	"dense",
 	"dense_rerank",
 	"iterative_dense",
@@ -129,6 +133,9 @@ _BUDGET_FILL_SUFFIXES: dict[str, BudgetFillMode] = {
 _DEFAULT_BUDGET_FILL_MMR_LAMBDA = 0.7
 _SELECTOR_PATTERN = re.compile(
 	r"^top_(?P<seed_top_k>\d+)_seed__(?P<seed_strategy>sentence_transformer|lexical_overlap)__hop_(?P<hop_budget>\d+|adaptive)__(?P<rest>.+)$"
+)
+_BM25_SELECTOR_PATTERN = re.compile(
+	r"^top_(?P<seed_top_k>\d+)_seed__bm25__hop_(?P<hop_budget>\d+)$"
 )
 _DIAGNOSTIC_SELECTORS = ("gold_support_context", "full_corpus_upper_bound")
 _OVERLAP_PROFILE_DEFAULT = "overlap_balanced"
@@ -1711,6 +1718,58 @@ class CanonicalDenseSelector(_SentenceTransformerSupport):
 			),
 			selector_usage=SelectorUsage(runtime_s=runtime_s),
 			stop_reason="top_k_retrieval",
+		)
+
+
+class CanonicalBM25Selector:
+	def __init__(self, spec: SelectorSpec):
+		self.spec = spec
+		self.name = spec.canonical_name
+
+	def select(
+		self,
+		graph: LinkContextGraph,
+		case: SelectionCase,
+		budget: RuntimeBudget,
+		*,
+		resume_state: dict[str, Any] | None = None,
+		checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+		stop_callback: Callable[[], None] | None = None,
+	) -> CorpusSelectionResult:
+		started_at = time.perf_counter()
+		seed_candidates = _select_seed_candidates(
+			graph,
+			case.query,
+			self.spec.seed_top_k or 1,
+			seed_strategy="bm25",
+			embedder=None,
+		)
+		root_candidates = [node_id for node_id, _score in seed_candidates]
+		node_scores = dict(seed_candidates)
+		runtime_s = time.perf_counter() - started_at
+		return _build_corpus_selection_result(
+			selector_name=self.name,
+			graph=graph,
+			query=case.query,
+			node_scores=node_scores,
+			link_scores={},
+			budget=SelectorBudget(
+				max_nodes=None,
+				max_hops=0,
+				max_tokens=_runtime_budget_token_limit(graph, budget),
+			),
+			strategy="bm25",
+			mode=SelectionMode.STANDALONE,
+			debug_trace=[
+				f"seed:{node_id}:{score:.4f}" for node_id, score in seed_candidates
+			],
+			root_node_ids=root_candidates,
+			trace=_trace_from_seed_candidates(seed_candidates),
+			selector_metadata=_baseline_selector_metadata(
+				self.spec, seed_backend="bm25", seed_model=None
+			),
+			selector_usage=SelectorUsage(runtime_s=runtime_s),
+			stop_reason="bm25_retrieval",
 		)
 
 
@@ -3544,6 +3603,31 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		if budget_fill_mode is not None or profile_name is not None:
 			raise ValueError(f"Unknown selector: {name}")
 		return FullCorpusUpperBoundSelector.spec
+	bm25_match = _BM25_SELECTOR_PATTERN.fullmatch(spec_name)
+	if bm25_match is not None:
+		seed_top_k = int(bm25_match.group("seed_top_k"))
+		hop_budget = int(bm25_match.group("hop_budget"))
+		if (
+			profile_name is not None
+			or seed_top_k != 1
+			or hop_budget != 0
+			or budget_fill_mode not in (None, "relative_drop")
+		):
+			raise ValueError(f"Unknown selector: {name}")
+		return SelectorSpec(
+			canonical_name=name,
+			base_canonical_name=spec_name,
+			family="baseline",
+			seed_strategy="bm25",
+			seed_top_k=seed_top_k,
+			hop_budget=hop_budget,
+			baseline="bm25",
+			budget_fill_mode=budget_fill_mode,
+			budget_fill_pool_k=64 if budget_fill_mode is not None else None,
+			budget_fill_relative_drop_ratio=0.5
+			if budget_fill_mode == "relative_drop"
+			else None,
+		)
 	match = _SELECTOR_PATTERN.fullmatch(spec_name)
 	if match is None:
 		raise ValueError(f"Unknown selector: {name}")
@@ -3689,6 +3773,12 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
 					f"top_3_seed__{seed_strategy}__hop_3__{search_structure}__link_context_llm__lookahead_2",
 				]
 			)
+	names.extend(
+		[
+			"top_1_seed__bm25__hop_0",
+			"top_1_seed__bm25__hop_0__budget_fill_relative_drop",
+		]
+	)
 	if include_diagnostics:
 		names.extend(_DIAGNOSTIC_SELECTORS)
 	names.append(EXTERNAL_MDR_SELECTOR_NAME)
@@ -3860,6 +3950,8 @@ def _build_canonical_selector(
 	| None = None,
 ) -> CorpusSelector:
 	if spec.family == "baseline":
+		if spec.baseline == "bm25":
+			return CanonicalBM25Selector(spec)
 		if spec.baseline == "dense":
 			return CanonicalDenseSelector(
 				spec,
@@ -4175,6 +4267,8 @@ def _seed_backend_metadata(
 		)
 	if spec.seed_strategy == "lexical_overlap":
 		return "lexical_overlap", None
+	if spec.seed_strategy == "bm25":
+		return "bm25", None
 	return None, None
 
 
@@ -4203,6 +4297,8 @@ def _select_seed_candidates(
 			embedder,
 			candidate_ids=candidate_ids,
 		)
+	if seed_strategy == "bm25":
+		return _bm25_seed_candidates(graph, query, top_k, candidate_ids=candidate_ids)
 	raise ValueError(f"Unsupported seed strategy: {seed_strategy}")
 
 
@@ -4315,6 +4411,29 @@ def _lexical_seed_candidates(
 
 _ST_PREFILTER_MULTIPLIER = 50
 _ST_PREFILTER_MIN = 200
+
+
+def _bm25_seed_candidates(
+	graph: LinkContextGraph,
+	query: str,
+	top_k: int,
+	*,
+	candidate_ids: Sequence[str] | None = None,
+) -> list[tuple[str, float]]:
+	search_bm25 = getattr(graph, "search_bm25", None)
+	if not callable(search_bm25):
+		raise ValueError("BM25 seed strategy requires a graph with search_bm25().")
+	candidate_set = set(candidate_ids) if candidate_ids is not None else None
+	search_k = top_k if candidate_set is None else max(top_k, len(candidate_set))
+	scored = [
+		(str(node_id), float(score))
+		for node_id, score in search_bm25(query, k=search_k)
+	]
+	if candidate_set is not None:
+		scored = [
+			(node_id, score) for node_id, score in scored if node_id in candidate_set
+		]
+	return scored[:top_k]
 
 
 def _sentence_transformer_seed_candidates(
