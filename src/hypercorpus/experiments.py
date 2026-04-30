@@ -1615,7 +1615,8 @@ def run_store_experiment(
 		seed_top_k=seed_top_k,
 		prefilter_mode=prefilter_mode,
 	)
-	budgets = _resolve_budgets(		token_budgets=resolved.token_budgets,
+	budgets = _resolve_budgets(
+		token_budgets=resolved.token_budgets,
 		budget_ratios=resolved.budget_ratios,
 	)
 	total_selection_count = len(selected_cases) * len(selectors) * len(budgets)
@@ -4457,6 +4458,24 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
 			if row["selection"].get("selector_usage") is not None
 			and float(row["selection"]["selector_usage"].get("step_count", 0)) > 0
 		]
+		ppr_iter_counts = [
+			float(row["selection"]["selector_usage"].get("ppr_iter_count", 0))
+			for row in rows
+			if row["selection"].get("selector_usage") is not None
+			and float(row["selection"]["selector_usage"].get("ppr_iter_count", 0)) > 0
+		]
+		ppr_final_deltas = [
+			float(row["selection"]["selector_usage"].get("ppr_final_delta", 0.0))
+			for row in rows
+			if row["selection"].get("selector_usage") is not None
+			and float(row["selection"]["selector_usage"].get("ppr_iter_count", 0)) > 0
+		]
+		ppr_wall_clock = [
+			float(row["selection"]["selector_usage"].get("ppr_wall_clock_s", 0.0))
+			for row in rows
+			if row["selection"].get("selector_usage") is not None
+			and float(row["selection"]["selector_usage"].get("ppr_iter_count", 0)) > 0
+		]
 		answer_em = [
 			float(row["end_to_end"]["em"])
 			for row in rows
@@ -4509,6 +4528,9 @@ def _summarize_result_records(records: Sequence[dict[str, Any]]) -> ExperimentSu
 				"avg_selector_parse_failure_rate": _average_or_none(
 					selector_parse_failure_rates
 				),
+				"avg_ppr_iter_count": _average_or_none(ppr_iter_counts),
+				"avg_ppr_final_delta": _average_or_none(ppr_final_deltas),
+				"avg_ppr_wall_clock_s": _average_or_none(ppr_wall_clock),
 				"avg_answer_em": _average_or_none(answer_em),
 				"avg_answer_f1": _average_or_none(answer_f1),
 			}

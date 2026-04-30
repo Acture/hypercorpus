@@ -66,12 +66,15 @@ from hypercorpus.walker import (
 logger = logging.getLogger(__name__)
 
 SeedStrategyName = Literal["sentence_transformer", "lexical_overlap"]
-BudgetFillMode = Literal["score_floor", "always", "relative_drop", "neighbor", "diverse"]
+BudgetFillMode = Literal[
+	"score_floor", "always", "relative_drop", "neighbor", "diverse"
+]
 BaselineName = Literal[
 	"dense",
 	"dense_rerank",
 	"iterative_dense",
 	"mdr_light",
+	"semantic_ppr",
 	"topology_neighbors",
 	"anchor_neighbors",
 	"link_context_neighbors",
@@ -98,6 +101,7 @@ _BASELINES: set[str] = {
 	"dense_rerank",
 	"iterative_dense",
 	"mdr_light",
+	"semantic_ppr",
 	"topology_neighbors",
 	"anchor_neighbors",
 	"link_context_neighbors",
@@ -294,6 +298,16 @@ class SelectorUsage:
 	controller_fork_actions: int = 0
 	controller_backtrack_actions: int = 0
 	controller_prefiltered_candidates: int = 0
+	ppr_iter_count: int = 0
+	ppr_final_delta: float = 0.0
+	ppr_wall_clock_s: float = 0.0
+
+
+@dataclass(slots=True)
+class _SemanticPPRRunStats:
+	iter_count: int
+	final_delta: float
+	wall_clock_s: float
 
 
 @dataclass(slots=True)
@@ -544,6 +558,9 @@ def selector_usage_to_dict(usage: SelectorUsage | None) -> dict[str, Any] | None
 		"controller_fork_actions": usage.controller_fork_actions,
 		"controller_backtrack_actions": usage.controller_backtrack_actions,
 		"controller_prefiltered_candidates": usage.controller_prefiltered_candidates,
+		"ppr_iter_count": usage.ppr_iter_count,
+		"ppr_final_delta": usage.ppr_final_delta,
+		"ppr_wall_clock_s": usage.ppr_wall_clock_s,
 	}
 
 
@@ -575,6 +592,9 @@ def selector_usage_from_dict(payload: dict[str, Any] | None) -> SelectorUsage | 
 		controller_prefiltered_candidates=int(
 			payload.get("controller_prefiltered_candidates", 0)
 		),
+		ppr_iter_count=int(payload.get("ppr_iter_count", 0)),
+		ppr_final_delta=float(payload.get("ppr_final_delta", 0.0)),
+		ppr_wall_clock_s=float(payload.get("ppr_wall_clock_s", 0.0)),
 	)
 
 
@@ -993,7 +1013,7 @@ class SemanticPPRSelector:
 	) -> CorpusSelectionResult:
 		budget = budget or SelectorBudget()
 		scorer = scorer or LinkContextOverlapStepScorer()
-		node_scores, link_scores, debug_trace = self._run_ppr(
+		node_scores, link_scores, debug_trace, stats = self._run_ppr(
 			graph, query, start_nodes, scorer
 		)
 		return _build_corpus_selection_result(
@@ -1008,6 +1028,12 @@ class SemanticPPRSelector:
 			debug_trace=debug_trace,
 			root_node_ids=start_nodes,
 			trace=_trace_from_ranked_nodes(node_scores),
+			selector_usage=SelectorUsage(
+				runtime_s=stats.wall_clock_s,
+				ppr_iter_count=stats.iter_count,
+				ppr_final_delta=stats.final_delta,
+				ppr_wall_clock_s=stats.wall_clock_s,
+			),
 		)
 
 	def _run_ppr(
@@ -1022,6 +1048,7 @@ class SemanticPPRSelector:
 		dict[str, float],
 		dict[tuple[str, str, str, str, int, str | None], ScoredLink],
 		list[str],
+		_SemanticPPRRunStats,
 	]:
 		if not start_nodes:
 			raise ValueError("semantic_ppr requires at least one start node.")
@@ -1031,6 +1058,7 @@ class SemanticPPRSelector:
 		if not personalization:
 			personalization = {node_id: 1 / len(start_nodes) for node_id in start_nodes}
 
+		started_at = time.perf_counter()
 		transitions: dict[str, dict[str, float]] = {}
 		representative_links: dict[tuple[str, str], ScoredLink] = {}
 		debug_trace = [
@@ -1074,6 +1102,8 @@ class SemanticPPRSelector:
 					representative_links[(source, target)] = link
 
 		probabilities = dict(personalization)
+		iter_count = 0
+		final_delta = 0.0
 		for iteration in range(self.max_iter):
 			updated = {
 				node_id: self.alpha * personalization.get(node_id, 0.0)
@@ -1104,10 +1134,26 @@ class SemanticPPRSelector:
 				abs(updated.get(node_id, 0.0) - probabilities.get(node_id, 0.0))
 				for node_id in graph.nodes
 			)
+			iter_count = iteration + 1
+			final_delta = delta
 			debug_trace.append(f"iter:{iteration}:delta={delta:.6f}")
 			probabilities = updated
 			if delta < self.tol:
 				break
+
+		wall_clock_s = time.perf_counter() - started_at
+		debug_trace.extend(
+			[
+				f"ppr_iter_count:{iter_count}",
+				f"ppr_final_delta:{final_delta:.6f}",
+				f"ppr_wall_clock_s:{wall_clock_s:.6f}",
+			]
+		)
+		stats = _SemanticPPRRunStats(
+			iter_count=iter_count,
+			final_delta=final_delta,
+			wall_clock_s=wall_clock_s,
+		)
 
 		link_scores: dict[tuple[str, str, str, str, int, str | None], ScoredLink] = {}
 		for (source, target), scored_link in representative_links.items():
@@ -1119,7 +1165,7 @@ class SemanticPPRSelector:
 			edge_score = source_prob * (outgoing[target] / total_weight)
 			updated_link = replace(scored_link, score=edge_score)
 			link_scores[_link_key(updated_link)] = updated_link
-		return probabilities, link_scores, debug_trace
+		return probabilities, link_scores, debug_trace, stats
 
 
 class _PathfindingSelector:
@@ -1220,7 +1266,7 @@ class _PathfindingSelector:
 			)
 		if stop_callback is not None:
 			stop_callback()
-		ppr_node_scores, ppr_link_scores, ppr_trace = self._ppr._run_ppr(
+		ppr_node_scores, ppr_link_scores, ppr_trace, ppr_stats = self._ppr._run_ppr(
 			graph,
 			query,
 			list(dict.fromkeys([*start_nodes, *path_result.selected_node_ids])),
@@ -1239,7 +1285,9 @@ class _PathfindingSelector:
 			strategy=f"{self.strategy_name}_ppr",
 			debug_trace=[*path_result.debug_trace, *ppr_trace],
 			selector_metadata=path_result.selector_metadata,
-			selector_usage=path_result.selector_usage,
+			selector_usage=_selector_usage_with_ppr_stats(
+				path_result.selector_usage, ppr_stats
+			),
 			selector_logs=path_result.selector_logs,
 		)
 
@@ -1711,6 +1759,104 @@ class CanonicalDenseSelector(_SentenceTransformerSupport):
 			),
 			selector_usage=SelectorUsage(runtime_s=runtime_s),
 			stop_reason="top_k_retrieval",
+		)
+
+
+class CanonicalSemanticPPRSelector(_SentenceTransformerSupport):
+	def __init__(
+		self,
+		spec: SelectorSpec,
+		*,
+		embedder_config: SentenceTransformerSelectorConfig | None = None,
+		embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder]
+		| None = None,
+	):
+		super().__init__(
+			embedder_config=embedder_config, embedder_factory=embedder_factory
+		)
+		self.spec = spec
+		self.name = spec.canonical_name
+		self._ppr = SemanticPPRSelector()
+
+	def select(
+		self,
+		graph: LinkContextGraph,
+		case: SelectionCase,
+		budget: RuntimeBudget,
+		*,
+		resume_state: dict[str, Any] | None = None,
+		checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+		stop_callback: Callable[[], None] | None = None,
+	) -> CorpusSelectionResult:
+		del resume_state, checkpoint_callback, stop_callback
+		started_at = time.perf_counter()
+		seed_candidates = _select_seed_candidates(
+			graph,
+			case.query,
+			self.spec.seed_top_k or 1,
+			seed_strategy=self.spec.seed_strategy or "sentence_transformer",
+			embedder=_seed_embedder(self.spec, self._get_embedder),
+		)
+		root_candidates = [node_id for node_id, _score in seed_candidates]
+		seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
+		if not root_candidates:
+			runtime_s = time.perf_counter() - started_at
+			return _build_corpus_selection_result(
+				selector_name=self.name,
+				graph=graph,
+				query=case.query,
+				node_scores={},
+				link_scores={},
+				budget=SelectorBudget(
+					max_nodes=self.spec.seed_top_k or 1,
+					max_hops=0,
+					max_tokens=_runtime_budget_token_limit(graph, budget),
+				),
+				strategy="semantic_ppr",
+				mode=SelectionMode.STANDALONE,
+				debug_trace=["semantic_ppr:no_seed"],
+				root_node_ids=[],
+				trace=[],
+				selector_metadata=_baseline_selector_metadata(
+					self.spec, seed_backend=seed_backend, seed_model=seed_model
+				),
+				selector_usage=SelectorUsage(runtime_s=runtime_s),
+				stop_reason="semantic_ppr_no_seed",
+			)
+		node_scores, link_scores, debug_trace, ppr_stats = self._ppr._run_ppr(
+			graph,
+			case.query,
+			root_candidates,
+			LinkContextOverlapStepScorer(),
+			seed_weights=dict(seed_candidates),
+		)
+		runtime_s = time.perf_counter() - started_at
+		return _build_corpus_selection_result(
+			selector_name=self.name,
+			graph=graph,
+			query=case.query,
+			node_scores=node_scores,
+			link_scores=link_scores,
+			budget=SelectorBudget(
+				max_nodes=self.spec.seed_top_k or 1,
+				max_hops=0,
+				max_tokens=_runtime_budget_token_limit(graph, budget),
+			),
+			strategy="semantic_ppr",
+			mode=SelectionMode.STANDALONE,
+			debug_trace=debug_trace,
+			root_node_ids=root_candidates,
+			trace=_trace_from_ranked_nodes(node_scores),
+			selector_metadata=_baseline_selector_metadata(
+				self.spec, seed_backend=seed_backend, seed_model=seed_model
+			),
+			selector_usage=SelectorUsage(
+				runtime_s=runtime_s,
+				ppr_iter_count=ppr_stats.iter_count,
+				ppr_final_delta=ppr_stats.final_delta,
+				ppr_wall_clock_s=ppr_stats.wall_clock_s,
+			),
+			stop_reason="semantic_ppr",
 		)
 
 
@@ -3570,8 +3716,18 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		if baseline == "mdr_light":
 			if seed_strategy != "sentence_transformer" or hop_budget < 1:
 				raise ValueError(f"Unknown selector: {name}")
+		if baseline == "semantic_ppr":
+			if seed_strategy != "sentence_transformer" or hop_budget != 0:
+				raise ValueError(f"Unknown selector: {name}")
 		if (
-			baseline not in {"dense", "dense_rerank", "iterative_dense", "mdr_light"}
+			baseline
+			not in {
+				"dense",
+				"dense_rerank",
+				"iterative_dense",
+				"mdr_light",
+				"semantic_ppr",
+			}
 			and hop_budget != 1
 		):
 			raise ValueError(f"Unknown selector: {name}")
@@ -3614,7 +3770,10 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		"constrained_multipath",
 	}:
 		raise ValueError(f"Unknown selector: {name}")
-	if edge_scorer == "link_context_prefilter_top1" and search_structure != "single_path_walk":
+	if (
+		edge_scorer == "link_context_prefilter_top1"
+		and search_structure != "single_path_walk"
+	):
 		raise ValueError(f"Unknown selector: {name}")
 	if search_structure == "constrained_multipath" and (
 		edge_scorer != "link_context_llm_controller" or lookahead != "lookahead_2"
@@ -3673,6 +3832,8 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
 				[
 					f"top_1_seed__{seed_strategy}__hop_0__dense_rerank",
 					f"top_3_seed__{seed_strategy}__hop_0__dense_rerank",
+					f"top_1_seed__{seed_strategy}__hop_0__semantic_ppr",
+					f"top_1_seed__{seed_strategy}__hop_0__semantic_ppr__budget_fill_relative_drop",
 					f"top_1_seed__{seed_strategy}__hop_2__iterative_dense",
 					f"top_3_seed__{seed_strategy}__hop_2__iterative_dense",
 					f"top_1_seed__{seed_strategy}__hop_2__mdr_light",
@@ -3882,6 +4043,12 @@ def _build_canonical_selector(
 			)
 		if spec.baseline == "mdr_light":
 			return CanonicalMDRLightSelector(
+				spec,
+				embedder_config=sentence_transformer_config,
+				embedder_factory=sentence_transformer_embedder_factory,
+			)
+		if spec.baseline == "semantic_ppr":
+			return CanonicalSemanticPPRSelector(
 				spec,
 				embedder_config=sentence_transformer_config,
 				embedder_factory=sentence_transformer_embedder_factory,
@@ -4280,9 +4447,7 @@ def _mmr_rerank_candidates(
 		for i, nid in enumerate(remaining):
 			relevance = sim_by_id[nid]
 			if selected_embs:
-				max_sim = max(
-					_dot_similarity(emb_by_id[nid], s) for s in selected_embs
-				)
+				max_sim = max(_dot_similarity(emb_by_id[nid], s) for s in selected_embs)
 			else:
 				max_sim = 0.0
 			mmr = mmr_lambda * relevance - (1 - mmr_lambda) * max_sim
@@ -5109,6 +5274,20 @@ def _selector_usage_from_logs(
 			)
 			for log in controller_logs
 		),
+	)
+
+
+def _selector_usage_with_ppr_stats(
+	usage: SelectorUsage | None,
+	stats: _SemanticPPRRunStats,
+) -> SelectorUsage:
+	base = usage or SelectorUsage()
+	return replace(
+		base,
+		runtime_s=base.runtime_s + stats.wall_clock_s,
+		ppr_iter_count=stats.iter_count,
+		ppr_final_delta=stats.final_delta,
+		ppr_wall_clock_s=stats.wall_clock_s,
 	)
 
 

@@ -216,6 +216,9 @@ class SelectorBudgetSummary:
 	avg_answer_em: float | None
 	avg_answer_f1: float | None
 	avg_support_set_em: float | None = None
+	avg_ppr_iter_count: float | None = None
+	avg_ppr_final_delta: float | None = None
+	avg_ppr_wall_clock_s: float | None = None
 
 	@property
 	def selector_budget_tokens(self) -> int | None:
@@ -320,6 +323,13 @@ class _SelectorBudgetAccumulator:
 	avg_selector_parse_failure_rate: _AverageAccumulator = field(
 		default_factory=_AverageAccumulator
 	)
+	avg_ppr_iter_count: _AverageAccumulator = field(default_factory=_AverageAccumulator)
+	avg_ppr_final_delta: _AverageAccumulator = field(
+		default_factory=_AverageAccumulator
+	)
+	avg_ppr_wall_clock_s: _AverageAccumulator = field(
+		default_factory=_AverageAccumulator
+	)
 	avg_answer_em: _AverageAccumulator = field(default_factory=_AverageAccumulator)
 	avg_answer_f1: _AverageAccumulator = field(default_factory=_AverageAccumulator)
 
@@ -354,6 +364,10 @@ class _SelectorBudgetAccumulator:
 				self.avg_selector_parse_failure_rate.add(
 					usage.parse_failure_steps / usage.step_count
 				)
+			if usage.ppr_iter_count > 0:
+				self.avg_ppr_iter_count.add(float(usage.ppr_iter_count))
+				self.avg_ppr_final_delta.add(usage.ppr_final_delta)
+				self.avg_ppr_wall_clock_s.add(usage.ppr_wall_clock_s)
 		if result.end_to_end is not None:
 			self.avg_answer_em.add(result.end_to_end.em)
 			self.avg_answer_f1.add(result.end_to_end.f1)
@@ -390,6 +404,9 @@ class _SelectorBudgetAccumulator:
 			avg_selector_llm_calls=self.avg_selector_llm_calls.average(),
 			avg_selector_fallback_rate=self.avg_selector_fallback_rate.average(),
 			avg_selector_parse_failure_rate=self.avg_selector_parse_failure_rate.average(),
+			avg_ppr_iter_count=self.avg_ppr_iter_count.average(),
+			avg_ppr_final_delta=self.avg_ppr_final_delta.average(),
+			avg_ppr_wall_clock_s=self.avg_ppr_wall_clock_s.average(),
 			avg_answer_em=self.avg_answer_em.average(),
 			avg_answer_f1=self.avg_answer_f1.average(),
 		)

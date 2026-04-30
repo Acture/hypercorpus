@@ -50,6 +50,9 @@ SUMMARY_REPORT_FIELDNAMES = [
 	"selector_total_tokens",
 	"selector_runtime_s",
 	"selector_llm_calls",
+	"ppr_iter_count",
+	"ppr_final_delta",
+	"ppr_wall_clock_s",
 ]
 
 STUDY_COMPARISON_FIELDNAMES = [
@@ -465,6 +468,9 @@ def _selector_budget_report_row(
 		"selector_total_tokens": selector_budget.avg_selector_total_tokens,
 		"selector_runtime_s": selector_budget.avg_selector_runtime_s,
 		"selector_llm_calls": selector_budget.avg_selector_llm_calls,
+		"ppr_iter_count": selector_budget.avg_ppr_iter_count,
+		"ppr_final_delta": selector_budget.avg_ppr_final_delta,
+		"ppr_wall_clock_s": selector_budget.avg_ppr_wall_clock_s,
 	}
 	row.update(spec)
 	return row
