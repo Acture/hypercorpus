@@ -72,6 +72,7 @@ BaselineName = Literal[
 	"dense_rerank",
 	"iterative_dense",
 	"mdr_light",
+	"bfs_khop",
 	"topology_neighbors",
 	"anchor_neighbors",
 	"link_context_neighbors",
@@ -130,6 +131,7 @@ _DEFAULT_BUDGET_FILL_MMR_LAMBDA = 0.7
 _SELECTOR_PATTERN = re.compile(
 	r"^top_(?P<seed_top_k>\d+)_seed__(?P<seed_strategy>sentence_transformer|lexical_overlap)__hop_(?P<hop_budget>\d+|adaptive)__(?P<rest>.+)$"
 )
+_BFS_KHOP_BASELINE_PATTERN = re.compile(r"^bfs_khop_(?P<depth>[1-9]\d*)$")
 _DIAGNOSTIC_SELECTORS = ("gold_support_context", "full_corpus_upper_bound")
 _OVERLAP_PROFILE_DEFAULT = "overlap_balanced"
 _SENTENCE_TRANSFORMER_PROFILE_DEFAULT = "st_balanced"
@@ -735,6 +737,7 @@ class SelectorSpec:
 	budget_fill_relative_drop_ratio: float | None = None
 	walk_score_threshold: float | None = None
 	rerank_pool_k: int | None = None
+	bfs_khop_depth: int | None = None
 	link_context_mask_mode: str | None = None
 
 
@@ -2470,6 +2473,148 @@ class CanonicalNeighborSelector(_SentenceTransformerSupport):
 		raise ValueError(f"Unsupported neighbor baseline: {self.spec.baseline}")
 
 
+class CanonicalBFSKhopSelector(_SentenceTransformerSupport):
+	def __init__(
+		self,
+		spec: SelectorSpec,
+		*,
+		embedder_config: SentenceTransformerSelectorConfig | None = None,
+		embedder_factory: Callable[[SentenceTransformerEmbedderConfig], TextEmbedder]
+		| None = None,
+	):
+		super().__init__(
+			embedder_config=embedder_config, embedder_factory=embedder_factory
+		)
+		self.spec = spec
+		self.name = spec.canonical_name
+
+	def select(
+		self,
+		graph: LinkContextGraph,
+		case: SelectionCase,
+		budget: RuntimeBudget,
+		*,
+		resume_state: dict[str, Any] | None = None,
+		checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+		stop_callback: Callable[[], None] | None = None,
+	) -> CorpusSelectionResult:
+		del resume_state, checkpoint_callback, stop_callback
+		started_at = time.perf_counter()
+		max_depth = self.spec.bfs_khop_depth
+		if max_depth is None or max_depth < 1:
+			raise ValueError(f"Invalid BFS-k-hop selector depth: {max_depth}")
+		seed_candidates = _select_seed_candidates(
+			graph,
+			case.query,
+			self.spec.seed_top_k or 1,
+			seed_strategy=self.spec.seed_strategy or "lexical_overlap",
+			embedder=_seed_embedder(self.spec, self._get_embedder),
+		)
+		root_candidates = [node_id for node_id, _score in seed_candidates]
+		depths: dict[str, int] = {}
+		parent_links: dict[str, LinkContext] = {}
+		queue: list[str] = []
+		for root_node_id in root_candidates:
+			if root_node_id in depths:
+				continue
+			depths[root_node_id] = 0
+			queue.append(root_node_id)
+		queue_index = 0
+		while queue_index < len(queue):
+			source = queue[queue_index]
+			queue_index += 1
+			source_depth = depths[source]
+			if source_depth >= max_depth:
+				continue
+			for target in graph.neighbors(source):
+				if target in depths:
+					continue
+				links = graph.links_between(source, target)
+				if not links:
+					continue
+				depths[target] = source_depth + 1
+				parent_links[target] = min(
+					links,
+					key=lambda link: (
+						link.sent_idx,
+						link.anchor_text,
+						link.sentence,
+						link.ref_id or "",
+					),
+				)
+				queue.append(target)
+		ordered_node_ids = sorted(
+			depths,
+			key=lambda node_id: (
+				depths[node_id],
+				-len(graph.neighbors(node_id)),
+				node_id,
+			),
+		)
+		rank_count = len(ordered_node_ids)
+		node_scores = {
+			node_id: float(rank_count - index)
+			for index, node_id in enumerate(ordered_node_ids)
+		}
+		link_scores: dict[tuple[str, str, str, str, int, str | None], ScoredLink] = {}
+		trace: list[SelectionTraceStep] = []
+		for index, node_id in enumerate(ordered_node_ids):
+			link = parent_links.get(node_id)
+			score = node_scores[node_id]
+			if link is None:
+				trace.append(
+					SelectionTraceStep(index=index, node_id=node_id, score=score)
+				)
+				continue
+			scored_link = ScoredLink.from_link(
+				link,
+				score=score,
+				source_strategy=self.name,
+				selected_reason="bfs_khop",
+			)
+			link_scores[_link_key(scored_link)] = scored_link
+			trace.append(
+				SelectionTraceStep(
+					index=index,
+					node_id=node_id,
+					score=score,
+					source_node_id=link.source,
+					anchor_text=link.anchor_text,
+					sentence=link.sentence,
+				)
+			)
+		runtime_s = time.perf_counter() - started_at
+		seed_backend, seed_model = _seed_backend_metadata(self.spec, self._get_embedder)
+		return _build_corpus_selection_result(
+			selector_name=self.name,
+			graph=graph,
+			query=case.query,
+			node_scores=node_scores,
+			link_scores=link_scores,
+			budget=SelectorBudget(
+				max_nodes=None,
+				max_hops=max_depth,
+				max_tokens=_runtime_budget_token_limit(graph, budget),
+			),
+			strategy=str(self.spec.baseline),
+			mode=SelectionMode.STANDALONE,
+			debug_trace=[
+				f"seed:{node_id}:{score:.4f}" for node_id, score in seed_candidates
+			]
+			+ [
+				f"bfs:{node_id}:depth={depths[node_id]}:degree={len(graph.neighbors(node_id))}"
+				for node_id in ordered_node_ids
+			],
+			root_node_ids=root_candidates,
+			trace=trace,
+			selector_metadata=_baseline_selector_metadata(
+				self.spec, seed_backend=seed_backend, seed_model=seed_model
+			),
+			selector_usage=SelectorUsage(runtime_s=runtime_s),
+			stop_reason="bfs_khop_expansion",
+		)
+
+
 class CanonicalSinglePathSelector(_SentenceTransformerSupport):
 	def __init__(
 		self,
@@ -3557,6 +3702,36 @@ def parse_selector_spec(name: str) -> SelectorSpec:
 		if hop_budget is None:
 			raise ValueError(f"Unknown selector: {name}")
 		baseline = parts[0]
+		bfs_khop_match = _BFS_KHOP_BASELINE_PATTERN.fullmatch(baseline)
+		if bfs_khop_match is not None:
+			bfs_khop_depth = int(bfs_khop_match.group("depth"))
+			if (
+				seed_top_k != 1
+				or seed_strategy != "sentence_transformer"
+				or hop_budget != 0
+			):
+				raise ValueError(f"Unknown selector: {name}")
+			spec = SelectorSpec(
+				canonical_name=name,
+				base_canonical_name=spec_name,
+				family="baseline",
+				profile_name=profile_name,
+				seed_strategy=seed_strategy,  # type: ignore[arg-type]
+				seed_top_k=seed_top_k,
+				hop_budget=hop_budget,
+				baseline="bfs_khop",
+				budget_fill_mode=budget_fill_mode,
+				budget_fill_pool_k=64 if budget_fill_mode is not None else None,
+				budget_fill_score_floor=0.05
+				if budget_fill_mode == "score_floor"
+				else None,
+				budget_fill_relative_drop_ratio=0.5
+				if budget_fill_mode in ("relative_drop", "neighbor", "diverse")
+				else None,
+				bfs_khop_depth=bfs_khop_depth,
+			)
+			_validate_profile_for_spec(spec, raw_name=name)
+			return spec
 		if baseline not in _BASELINES:
 			raise ValueError(f"Unknown selector: {name}")
 		if baseline == "dense" and hop_budget != 0:
@@ -3673,6 +3848,7 @@ def available_selector_names(*, include_diagnostics: bool = True) -> list[str]:
 				[
 					f"top_1_seed__{seed_strategy}__hop_0__dense_rerank",
 					f"top_3_seed__{seed_strategy}__hop_0__dense_rerank",
+					f"top_1_seed__{seed_strategy}__hop_0__bfs_khop_2",
 					f"top_1_seed__{seed_strategy}__hop_2__iterative_dense",
 					f"top_3_seed__{seed_strategy}__hop_2__iterative_dense",
 					f"top_1_seed__{seed_strategy}__hop_2__mdr_light",
@@ -3882,6 +4058,12 @@ def _build_canonical_selector(
 			)
 		if spec.baseline == "mdr_light":
 			return CanonicalMDRLightSelector(
+				spec,
+				embedder_config=sentence_transformer_config,
+				embedder_factory=sentence_transformer_embedder_factory,
+			)
+		if spec.baseline == "bfs_khop":
+			return CanonicalBFSKhopSelector(
 				spec,
 				embedder_config=sentence_transformer_config,
 				embedder_factory=sentence_transformer_embedder_factory,
